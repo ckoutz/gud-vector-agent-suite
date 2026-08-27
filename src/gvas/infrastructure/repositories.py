@@ -420,7 +420,7 @@ class SqlWorkflowRunRepository:
         if row.status == WorkflowRunStatus.SUCCEEDED.value:
             return self._claim(row)
         row.status = WorkflowRunStatus.RUNNING.value
-        row.attempts += 1 if row.attempts else 1
+        row.attempts += 1
         row.started_at = datetime.now(UTC)
         row.finished_at = None
         row.error = None

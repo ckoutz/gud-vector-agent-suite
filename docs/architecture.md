@@ -85,6 +85,12 @@ delivery command while custom commands remain unlinked.
 Handlers must choose a deterministic `correlation_id` for a given inbound
 message. It is the replay key for get-or-create outbound replies.
 
+Deleting an inbound message now cascades to its outbound replies, and deleting
+those replies cascades to their linked reply commands. This retention behavior
+follows from the required business-scoped composite foreign keys: they enforce
+that no reference can cross tenant boundaries while preserving the cascade
+chain.
+
 ## Persistence
 
 `0001_initial_shared_records` is the only unreleased migration and is kept in

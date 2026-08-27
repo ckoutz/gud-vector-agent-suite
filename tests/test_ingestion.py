@@ -321,7 +321,7 @@ async def test_provider_calls_happen_without_open_uow(
 ) -> None:
     business_id = BusinessId(uuid4())
     await seed_business(session_factory, business_id)
-    state = {"open": False}
+    state: dict[str, bool | str | None] = {"open": False, "violation": None}
 
     class TrackingUnitOfWork(SqlUnitOfWork):
         async def __aenter__(self) -> "TrackingUnitOfWork":
@@ -346,7 +346,8 @@ async def test_provider_calls_happen_without_open_uow(
 
     class GuardResolver:
         async def resolve(self, message: NormalizedOwnerMessage) -> IntentResolution:
-            if state["open"]:
+            if state["open"] is True:
+                state["violation"] = "resolver called with an open unit of work"
                 raise AssertionError("resolver called with an open unit of work")
             return IntentResolution(intent=WorkflowIntent("echo"))
 
@@ -354,7 +355,8 @@ async def test_provider_calls_happen_without_open_uow(
         intent = WorkflowIntent("echo")
 
         async def handle(self, context: WorkflowContext) -> WorkflowResult:
-            if state["open"]:
+            if state["open"] is True:
+                state["violation"] = "handler called with an open unit of work"
                 raise AssertionError("handler called with an open unit of work")
             return WorkflowResult(status=WorkflowRunStatus.SUCCEEDED)
 
@@ -366,6 +368,7 @@ async def test_provider_calls_happen_without_open_uow(
         TrackingFactory(), WorkflowRouter([GuardHandler()]), GuardResolver()
     ).process(ingestion.message_id)
     assert outcome.status is ProcessingStatus.COMPLETED
+    assert state["violation"] is None
 
 
 @pytest.mark.asyncio
