@@ -1,0 +1,30 @@
+from typing import Protocol
+
+from gvas.domain.messages import (
+    AttachmentPayload,
+    AttachmentReference,
+    AudioReference,
+    ConversationRef,
+    CustomerDeliveryRequest,
+    DeliveryReceipt,
+    OutboundOwnerMessage,
+    TranscriptResult,
+)
+
+
+class OwnerReplyPort(Protocol):
+    async def send(
+        self, conversation_ref: ConversationRef, message: OutboundOwnerMessage
+    ) -> DeliveryReceipt: ...
+
+
+class AttachmentAccessPort(Protocol):
+    async def fetch(self, attachment: AttachmentReference) -> AttachmentPayload: ...
+
+
+class TranscriptionPort(Protocol):
+    async def transcribe(self, audio: AudioReference) -> TranscriptResult: ...
+
+
+class CustomerQuoteDeliveryPort(Protocol):
+    async def deliver(self, request: CustomerDeliveryRequest) -> DeliveryReceipt: ...
