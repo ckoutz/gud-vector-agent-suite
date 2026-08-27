@@ -131,9 +131,9 @@ resolution failures leave the run `RUNNING` with its error for later retry;
 unknown intents and handler failures are durable failed outcomes. Provider or
 AI calls never happen while a UoW is open.
 
-The lease makes resolver and handler execution exclusive, but it does not fence
-the second persistence transaction against the lease that was granted. Workflow
-runs therefore carry a fresh `lease_token` for every acquired lease, and
+The lease makes resolver and handler execution exclusive, and every subsequent
+write is fenced against the exact granted lease. Workflow runs therefore carry
+a fresh `lease_token` for every acquired lease, and
 `set_intent`, `set_error`, and `finish` update only a `RUNNING` row with the
 matching token. A stale claimant raises `LostWorkflowLeaseError` and its
 transaction writes nothing. Outbox updates are fenced the same way with the

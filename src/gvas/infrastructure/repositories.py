@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
+from typing import Any, cast
 from uuid import uuid4
 
 from sqlalchemy import and_, or_, select, update
+from sqlalchemy.engine import CursorResult, Result
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
@@ -55,6 +57,10 @@ from gvas.infrastructure.models import (
 def _validate_aware(value: datetime, name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{name} must be timezone-aware")
+
+
+def _rowcount(result: Result[Any]) -> int:
+    return cast(CursorResult[Any], result).rowcount
 
 
 class SqlBusinessRepository:
@@ -487,14 +493,14 @@ class SqlWorkflowRunRepository:
         result = await self.session.execute(
             update(WorkflowRun).where(*self._lease_filter(claim)).values(intent=intent)
         )
-        if getattr(result, "rowcount", 0) != 1:
+        if _rowcount(result) != 1:
             raise LostWorkflowLeaseError("workflow claim is no longer active")
 
     async def set_error(self, claim: WorkflowRunClaim, error: str) -> None:
         result = await self.session.execute(
             update(WorkflowRun).where(*self._lease_filter(claim)).values(error=error)
         )
-        if getattr(result, "rowcount", 0) != 1:
+        if _rowcount(result) != 1:
             raise LostWorkflowLeaseError("workflow claim is no longer active")
 
     async def finish(
@@ -508,7 +514,7 @@ class SqlWorkflowRunRepository:
             .where(*self._lease_filter(claim))
             .values(status=status.value, finished_at=datetime.now(UTC), error=error)
         )
-        if getattr(result, "rowcount", 0) != 1:
+        if _rowcount(result) != 1:
             raise LostWorkflowLeaseError("workflow claim is no longer active")
 
 
@@ -649,5 +655,5 @@ class SqlOutboxRepository:
                 locked_by=None,
             )
         )
-        if getattr(result, "rowcount", 0) != 1:
+        if _rowcount(result) != 1:
             raise LostOutboxLeaseError("outbox record lease is no longer active")
