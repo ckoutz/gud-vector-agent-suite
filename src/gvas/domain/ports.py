@@ -1,5 +1,6 @@
 from typing import Protocol
 
+from gvas.domain.intents import IntentResolution
 from gvas.domain.messages import (
     AttachmentPayload,
     AttachmentReference,
@@ -7,9 +8,14 @@ from gvas.domain.messages import (
     ConversationRef,
     CustomerDeliveryRequest,
     DeliveryReceipt,
+    NormalizedOwnerMessage,
     OutboundOwnerMessage,
     TranscriptResult,
 )
+
+
+class IntentResolutionPort(Protocol):
+    async def resolve(self, message: NormalizedOwnerMessage) -> IntentResolution: ...
 
 
 class OwnerReplyPort(Protocol):

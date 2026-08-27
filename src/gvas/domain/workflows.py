@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from gvas.domain.enums import WorkflowRunStatus
 from gvas.domain.identifiers import WorkflowIntent, WorkflowRunId
-from gvas.domain.messages import InboundOwnerMessage, OutboundOwnerMessage
+from gvas.domain.messages import NormalizedOwnerMessage, OutboundOwnerMessage
 from gvas.domain.outbox import OutboxCommand
 
 
@@ -12,7 +12,8 @@ class WorkflowContext(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     run_id: WorkflowRunId
-    message: InboundOwnerMessage
+    intent: WorkflowIntent
+    message: NormalizedOwnerMessage
 
 
 class WorkflowResult(BaseModel):

@@ -1,5 +1,4 @@
 from datetime import UTC, datetime
-from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -9,14 +8,25 @@ from gvas.domain.enums import DeliveryStatus, OutboxStatus, WorkflowRunStatus
 from gvas.domain.identifiers import (
     BusinessId,
     ConversationId,
+    EndpointId,
     MessageId,
     RoutingData,
     WorkflowIntent,
     WorkflowRunId,
 )
-from gvas.domain.messages import ConversationRef, InboundOwnerMessage, OutboundOwnerMessage
+from gvas.domain.messages import (
+    ChannelEndpointRef,
+    ConversationRef,
+    DeliveryReceipt,
+    InboundOwnerMessage,
+    OutboundOwnerMessage,
+)
 from gvas.domain.outbox import DEFAULT_MAX_ATTEMPTS, OutboxCommand, OutboxRecord
-from gvas.domain.repositories import BusinessRecord, OwnerChannelEndpointRecord
+from gvas.domain.repositories import (
+    BusinessRecord,
+    OutboundDeliveryRecord,
+    OwnerChannelEndpointRecord,
+)
 from gvas.infrastructure.models import (
     Business,
     Conversation,
@@ -47,23 +57,57 @@ class SqlOwnerChannelEndpointRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get_for_conversation(
-        self, business_id: BusinessId, external_id: str
-    ) -> OwnerChannelEndpointRecord | None:
-        row = await self.session.scalar(
-            select(OwnerChannelEndpoint).where(
-                OwnerChannelEndpoint.business_id == business_id,
-                OwnerChannelEndpoint.external_endpoint_id == external_id,
-            )
-        )
-        if row is None:
-            return None
+    @staticmethod
+    def _record(row: OwnerChannelEndpoint) -> OwnerChannelEndpointRecord:
         return OwnerChannelEndpointRecord(
-            endpoint_id=row.id,
+            endpoint_id=EndpointId(row.id),
             business_id=BusinessId(row.business_id),
+            source_namespace=row.source_namespace,
+            external_endpoint_id=row.external_endpoint_id,
             owner_external_id=row.owner_external_id,
             routing=row.routing,
         )
+
+    async def get(self, endpoint_id: EndpointId) -> OwnerChannelEndpointRecord | None:
+        row = await self.session.scalar(
+            select(OwnerChannelEndpoint).where(OwnerChannelEndpoint.id == endpoint_id)
+        )
+        return self._record(row) if row is not None else None
+
+    async def get_or_create(
+        self, reference: ChannelEndpointRef, routing: RoutingData
+    ) -> EndpointId:
+        row = await self.session.scalar(
+            select(OwnerChannelEndpoint).where(
+                OwnerChannelEndpoint.business_id == reference.business_id,
+                OwnerChannelEndpoint.source_namespace == reference.source_namespace,
+                OwnerChannelEndpoint.external_endpoint_id == reference.external_endpoint_id,
+            )
+        )
+        if row is not None:
+            return EndpointId(row.id)
+        row = OwnerChannelEndpoint(
+            business_id=reference.business_id,
+            source_namespace=reference.source_namespace,
+            external_endpoint_id=reference.external_endpoint_id,
+            routing=routing,
+        )
+        try:
+            async with self.session.begin_nested():
+                self.session.add(row)
+                await self.session.flush()
+        except IntegrityError:
+            existing = await self.session.scalar(
+                select(OwnerChannelEndpoint).where(
+                    OwnerChannelEndpoint.business_id == reference.business_id,
+                    OwnerChannelEndpoint.source_namespace == reference.source_namespace,
+                    OwnerChannelEndpoint.external_endpoint_id == reference.external_endpoint_id,
+                )
+            )
+            if existing is None:
+                raise
+            return EndpointId(existing.id)
+        return EndpointId(row.id)
 
 
 class SqlConversationRepository:
@@ -71,14 +115,11 @@ class SqlConversationRepository:
         self.session = session
 
     async def get_or_create(
-        self,
-        reference: ConversationRef,
-        routing: RoutingData,
-        endpoint_id: UUID | None = None,
+        self, reference: ConversationRef, endpoint_id: EndpointId, routing: RoutingData
     ) -> ConversationId:
         result = await self.session.execute(
             select(Conversation).where(
-                Conversation.business_id == reference.business_id,
+                Conversation.endpoint_id == endpoint_id,
                 Conversation.external_conversation_id == reference.external_conversation_id,
             )
         )
@@ -91,8 +132,20 @@ class SqlConversationRepository:
             external_conversation_id=reference.external_conversation_id,
             routing=routing,
         )
-        self.session.add(conversation)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                self.session.add(conversation)
+                await self.session.flush()
+        except IntegrityError:
+            existing = await self.session.scalar(
+                select(Conversation).where(
+                    Conversation.endpoint_id == endpoint_id,
+                    Conversation.external_conversation_id == reference.external_conversation_id,
+                )
+            )
+            if existing is None:
+                raise
+            return ConversationId(existing.id)
         return ConversationId(conversation.id)
 
 
@@ -101,26 +154,30 @@ class SqlInboundMessageRepository:
         self.session = session
 
     async def create(
-        self, message: InboundOwnerMessage, conversation_id: ConversationId
+        self,
+        message: InboundOwnerMessage,
+        conversation_id: ConversationId,
+        endpoint_id: EndpointId,
     ) -> MessageId | None:
         existing = await self.session.scalar(
             select(InboundMessage).where(
-                InboundMessage.business_id == message.business_id,
-                InboundMessage.message_key == message.message_key,
+                InboundMessage.endpoint_id == endpoint_id,
+                InboundMessage.message_key == message.message.message_key,
             )
         )
         if existing is not None:
             return None
+        normalized = message.message
         row = InboundMessage(
-            business_id=message.business_id,
+            business_id=normalized.business_id,
+            endpoint_id=endpoint_id,
             conversation_id=conversation_id,
-            message_key=message.message_key,
-            sender_external_id=message.sender.external_id,
-            sender_role=message.sender.role.value,
-            intent=message.intent,
-            received_at=message.received_at,
-            parts=[part.model_dump(mode="json") for part in message.parts],
-            reply_to=message.reply_to.model_dump(mode="json") if message.reply_to else None,
+            message_key=normalized.message_key,
+            sender_external_id=normalized.sender.external_id,
+            sender_role=normalized.sender.role.value,
+            received_at=normalized.received_at,
+            parts=[part.model_dump(mode="json") for part in normalized.parts],
+            reply_to=normalized.reply_to.model_dump(mode="json") if normalized.reply_to else None,
             routing=message.routing,
         )
         try:
@@ -141,20 +198,64 @@ class SqlOutboundMessageRepository:
         message: OutboundOwnerMessage,
         conversation_id: ConversationId,
         inbound_message_id: MessageId,
+    ) -> MessageId:
+        row = OutboundMessage(
+            business_id=message.business_id,
+            conversation_id=conversation_id,
+            inbound_message_id=inbound_message_id,
+            parts=[part.model_dump(mode="json") for part in message.parts],
+            reply_to=message.reply_to.model_dump(mode="json") if message.reply_to else None,
+            status=DeliveryStatus.ACCEPTED.value,
+            correlation_id=message.correlation_id,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        return MessageId(row.id)
+
+    async def get_for_delivery(
+        self, outbound_message_id: MessageId
+    ) -> OutboundDeliveryRecord | None:
+        result = await self.session.execute(
+            select(OutboundMessage, Conversation, OwnerChannelEndpoint)
+            .join(Conversation, Conversation.id == OutboundMessage.conversation_id)
+            .join(OwnerChannelEndpoint, OwnerChannelEndpoint.id == Conversation.endpoint_id)
+            .where(OutboundMessage.id == outbound_message_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        outbound, conversation, endpoint = row
+        return OutboundDeliveryRecord(
+            outbound_message_id=MessageId(outbound.id),
+            message=OutboundOwnerMessage(
+                business_id=BusinessId(outbound.business_id),
+                conversation_ref=ConversationRef(
+                    business_id=BusinessId(conversation.business_id),
+                    external_conversation_id=conversation.external_conversation_id,
+                ),
+                parts=tuple(outbound.parts),
+                correlation_id=outbound.correlation_id,
+                reply_to=(None if outbound.reply_to is None else outbound.reply_to),
+            ),
+            endpoint_id=EndpointId(endpoint.id),
+            conversation_routing=conversation.routing,
+            endpoint_routing=endpoint.routing,
+            status=DeliveryStatus(outbound.status),
+        )
+
+    async def record_delivery(
+        self, outbound_message_id: MessageId, receipt: DeliveryReceipt
     ) -> None:
-        self.session.add(
-            OutboundMessage(
-                business_id=message.business_id,
-                conversation_id=conversation_id,
-                inbound_message_id=inbound_message_id,
-                parts=[part.model_dump(mode="json") for part in message.parts],
-                reply_to=message.reply_to.model_dump(mode="json") if message.reply_to else None,
-                routing=message.routing,
-                status=DeliveryStatus.ACCEPTED.value,
-                correlation_id=message.correlation_id,
+        await self.session.execute(
+            update(OutboundMessage)
+            .where(OutboundMessage.id == outbound_message_id)
+            .values(
+                status=receipt.status.value,
+                provider_message_id=receipt.provider_message_id,
+                delivered_at=receipt.occurred_at,
+                delivery_detail=receipt.detail,
             )
         )
-        await self.session.flush()
 
 
 class SqlWorkflowRunRepository:
@@ -203,6 +304,7 @@ class SqlOutboxRepository:
         row = OutboxMessage(
             id=command.command_id,
             business_id=command.business_id,
+            outbound_message_id=command.outbound_message_id,
             command_type=command.command_type,
             payload=command.payload,
             status=OutboxStatus.PENDING.value,
@@ -249,6 +351,7 @@ class SqlOutboxRepository:
                         command_type=row.command_type,
                         payload=row.payload,
                         dedup_key=row.dedup_key,
+                        outbound_message_id=row.outbound_message_id,
                     ),
                     status=OutboxStatus.IN_PROGRESS,
                     attempts=row.attempts,

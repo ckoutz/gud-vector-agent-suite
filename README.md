@@ -1,8 +1,9 @@
 # Güd Vector Agent Suite
 
-Round 1 is a channel-agnostic foundation for receiving normalized owner messages,
-routing them by workflow intent, and persisting replies and outbox commands. It
-does not contain channel adapters or external delivery providers.
+Round 1 is a channel-agnostic foundation for receiving normalized owner message
+envelopes, resolving intent through an application port, and atomically
+persisting workflow replies and delivery commands. It does not contain channel
+adapters or external delivery providers.
 
 The layering and boundary contract is documented in
 [`docs/architecture.md`](docs/architecture.md). Domain code is pure and
@@ -35,5 +36,8 @@ docker compose up --build
 
 The health endpoint is available at `http://localhost:8000/healthz`.
 
-Outbox workers claim with an explicit worker identity. Attempts increment at claim time, and
-failed retries calculate availability from the supplied current time.
+The default composition uses `UnconfiguredIntentResolver`, which accepts and
+persists inbound messages without creating workflow runs until an intent
+resolver is configured. Outbox workers claim with an explicit worker identity;
+attempts increment at claim time, and failed retries calculate availability from
+the supplied current time.

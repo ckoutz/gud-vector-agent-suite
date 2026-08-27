@@ -9,7 +9,6 @@ from gvas.domain.identifiers import (
     BusinessId,
     MessageKey,
     RoutingData,
-    WorkflowIntent,
 )
 
 
@@ -69,23 +68,41 @@ def _aware(value: datetime) -> datetime:
     return value
 
 
-class InboundOwnerMessage(DomainModel):
+class NormalizedOwnerMessage(DomainModel):
     message_key: MessageKey
     business_id: BusinessId
     conversation_ref: ConversationRef
     sender: SenderRef
     received_at: datetime
     parts: tuple[ContentPart, ...] = Field(min_length=1)
-    intent: WorkflowIntent
     reply_to: ReplyRef | None = None
-    routing: RoutingData
 
     _received_at_aware = field_validator("received_at")(_aware)
 
     @model_validator(mode="after")
-    def business_matches_conversation(self) -> "InboundOwnerMessage":
+    def business_matches_conversation(self) -> "NormalizedOwnerMessage":
         if self.conversation_ref.business_id != self.business_id:
             raise ValueError("conversation business must match message business")
+        return self
+
+
+class ChannelEndpointRef(DomainModel):
+    """Opaque adapter-owned endpoint identity; core never branches on its namespace."""
+
+    business_id: BusinessId
+    source_namespace: str = Field(min_length=1)
+    external_endpoint_id: str = Field(min_length=1)
+
+
+class InboundOwnerMessage(DomainModel):
+    message: NormalizedOwnerMessage
+    endpoint: ChannelEndpointRef
+    routing: RoutingData
+
+    @model_validator(mode="after")
+    def business_matches_endpoint(self) -> "InboundOwnerMessage":
+        if self.endpoint.business_id != self.message.business_id:
+            raise ValueError("endpoint business must match message business")
         return self
 
 
@@ -95,7 +112,6 @@ class OutboundOwnerMessage(DomainModel):
     parts: tuple[ContentPart, ...] = Field(min_length=1)
     correlation_id: str = Field(min_length=1)
     reply_to: ReplyRef | None = None
-    routing: RoutingData
 
     @model_validator(mode="after")
     def business_matches_conversation(self) -> "OutboundOwnerMessage":

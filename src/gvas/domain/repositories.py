@@ -1,19 +1,25 @@
 from datetime import datetime
 from typing import Protocol
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-from gvas.domain.enums import WorkflowRunStatus
+from gvas.domain.enums import DeliveryStatus, WorkflowRunStatus
 from gvas.domain.identifiers import (
     BusinessId,
     ConversationId,
+    EndpointId,
     MessageId,
     RoutingData,
     WorkflowIntent,
     WorkflowRunId,
 )
-from gvas.domain.messages import ConversationRef, InboundOwnerMessage, OutboundOwnerMessage
+from gvas.domain.messages import (
+    ChannelEndpointRef,
+    ConversationRef,
+    DeliveryReceipt,
+    InboundOwnerMessage,
+    OutboundOwnerMessage,
+)
 from gvas.domain.outbox import OutboxCommand, OutboxRecord
 
 
@@ -28,10 +34,23 @@ class BusinessRecord(BaseModel):
 class OwnerChannelEndpointRecord(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    endpoint_id: UUID
+    endpoint_id: EndpointId
     business_id: BusinessId
-    owner_external_id: str
+    source_namespace: str
+    external_endpoint_id: str
+    owner_external_id: str | None
     routing: RoutingData
+
+
+class OutboundDeliveryRecord(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    outbound_message_id: MessageId
+    message: OutboundOwnerMessage
+    endpoint_id: EndpointId
+    conversation_routing: RoutingData
+    endpoint_routing: RoutingData
+    status: DeliveryStatus
 
 
 class BusinessRepository(Protocol):
@@ -39,20 +58,22 @@ class BusinessRepository(Protocol):
 
 
 class OwnerChannelEndpointRepository(Protocol):
-    async def get_for_conversation(
-        self, business_id: BusinessId, external_id: str
-    ) -> OwnerChannelEndpointRecord | None: ...
+    async def get(self, endpoint_id: EndpointId) -> OwnerChannelEndpointRecord | None: ...
+
+    async def get_or_create(
+        self, reference: ChannelEndpointRef, routing: RoutingData
+    ) -> EndpointId: ...
 
 
 class ConversationRepository(Protocol):
     async def get_or_create(
-        self, reference: ConversationRef, routing: RoutingData, endpoint_id: UUID | None = None
+        self, reference: ConversationRef, endpoint_id: EndpointId, routing: RoutingData
     ) -> ConversationId: ...
 
 
 class InboundMessageRepository(Protocol):
     async def create(
-        self, message: InboundOwnerMessage, conversation_id: ConversationId
+        self, message: InboundOwnerMessage, conversation_id: ConversationId, endpoint_id: EndpointId
     ) -> MessageId | None: ...
 
 
@@ -62,6 +83,14 @@ class OutboundMessageRepository(Protocol):
         message: OutboundOwnerMessage,
         conversation_id: ConversationId,
         inbound_message_id: MessageId,
+    ) -> MessageId: ...
+
+    async def get_for_delivery(
+        self, outbound_message_id: MessageId
+    ) -> OutboundDeliveryRecord | None: ...
+
+    async def record_delivery(
+        self, outbound_message_id: MessageId, receipt: DeliveryReceipt
     ) -> None: ...
 
 

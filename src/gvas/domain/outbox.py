@@ -1,11 +1,14 @@
 from datetime import datetime
+from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gvas.domain.enums import OutboxStatus
-from gvas.domain.identifiers import BusinessId, JsonValue, OutboxCommandId
+from gvas.domain.identifiers import BusinessId, JsonValue, MessageId, OutboxCommandId
 
 DEFAULT_MAX_ATTEMPTS = 3
+OWNER_REPLY_COMMAND_TYPE = "owner_reply.deliver"
+OWNER_REPLY_COMMAND_NAMESPACE = UUID("4f54e5f4-6a71-4c68-8d37-7cb0e5e95a4a")
 
 
 class OutboxCommand(BaseModel):
@@ -16,6 +19,29 @@ class OutboxCommand(BaseModel):
     command_type: str = Field(min_length=1)
     payload: dict[str, JsonValue]
     dedup_key: str | None = None
+    outbound_message_id: MessageId | None = None
+
+    @model_validator(mode="after")
+    def validate_owner_reply_link(self) -> "OutboxCommand":
+        is_owner_reply = self.command_type == OWNER_REPLY_COMMAND_TYPE
+        if is_owner_reply != (self.outbound_message_id is not None):
+            raise ValueError("owner reply commands require exactly one outbound message linkage")
+        return self
+
+
+def owner_reply_command(business_id: BusinessId, outbound_message_id: MessageId) -> OutboxCommand:
+    return OutboxCommand(
+        command_id=OutboxCommandId(uuid5(OWNER_REPLY_COMMAND_NAMESPACE, str(outbound_message_id))),
+        business_id=business_id,
+        command_type=OWNER_REPLY_COMMAND_TYPE,
+        payload={"outbound_message_id": str(outbound_message_id)},
+        dedup_key=f"owner_reply:{outbound_message_id}",
+        outbound_message_id=outbound_message_id,
+    )
+
+
+class ReservedOutboxCommandTypeError(ValueError):
+    pass
 
 
 class InvalidOutboxTransitionError(ValueError):
