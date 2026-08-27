@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from gvas.domain.enums import MediaKind, SenderRole
-from gvas.domain.identifiers import BusinessId, MessageId, MessageKey
+from gvas.domain.identifiers import BusinessId, MessageId, MessageKey, OutboxCommandId
 from gvas.domain.messages import (
     AttachmentReference,
     ChannelEndpointRef,
@@ -151,9 +151,57 @@ def test_owner_reply_command_is_deterministic_and_linked() -> None:
         )
 
 
-def test_owner_message_process_command_is_deterministic_and_unlinked() -> None:
+def test_owner_message_process_command_is_deterministic_and_linked() -> None:
     inbound_message_id = MessageId(uuid4())
     command = owner_message_process_command(BusinessId(uuid4()), inbound_message_id)
     assert command.command_type == OWNER_MESSAGE_PROCESS_COMMAND_TYPE
+    assert command.inbound_message_id == inbound_message_id
     assert command.outbound_message_id is None
     assert command == owner_message_process_command(command.business_id, inbound_message_id)
+
+
+def test_framework_command_links_are_exclusive() -> None:
+    business_id = BusinessId(uuid4())
+    inbound_id = MessageId(uuid4())
+    outbound_id = MessageId(uuid4())
+    with pytest.raises(ValidationError):
+        OutboxCommand(
+            command_id=OutboxCommandId(uuid4()),
+            business_id=business_id,
+            command_type=OWNER_MESSAGE_PROCESS_COMMAND_TYPE,
+            payload={},
+        )
+    with pytest.raises(ValidationError):
+        OutboxCommand(
+            command_id=OutboxCommandId(uuid4()),
+            business_id=business_id,
+            command_type=OWNER_MESSAGE_PROCESS_COMMAND_TYPE,
+            payload={},
+            inbound_message_id=inbound_id,
+            outbound_message_id=outbound_id,
+        )
+    with pytest.raises(ValidationError):
+        OutboxCommand(
+            command_id=OutboxCommandId(uuid4()),
+            business_id=business_id,
+            command_type=OWNER_REPLY_COMMAND_TYPE,
+            payload={},
+            outbound_message_id=outbound_id,
+            inbound_message_id=inbound_id,
+        )
+    with pytest.raises(ValidationError):
+        OutboxCommand(
+            command_id=OutboxCommandId(uuid4()),
+            business_id=business_id,
+            command_type="custom",
+            payload={},
+            inbound_message_id=inbound_id,
+        )
+    with pytest.raises(ValidationError):
+        OutboxCommand(
+            command_id=OutboxCommandId(uuid4()),
+            business_id=business_id,
+            command_type="custom",
+            payload={},
+            outbound_message_id=outbound_id,
+        )

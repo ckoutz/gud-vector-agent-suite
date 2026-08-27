@@ -28,6 +28,13 @@ uv run mypy src tests
 uv run pytest
 ```
 
+To execute the PostgreSQL-backed concurrency tests as well as the SQLite suite:
+
+```bash
+GVAS_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/gvas \
+  uv run pytest
+```
+
 ```bash
 uv run alembic upgrade head
 uv run alembic downgrade base
@@ -41,4 +48,5 @@ The default composition uses `UnconfiguredIntentResolver`. Ingress persists the
 inbound message and one `owner_message.process` command; processing remains
 resumable until an intent resolver is configured. Outbox workers claim with an
 explicit worker identity; attempts increment at claim time, and failed retries
-calculate availability from the supplied current time.
+calculate availability from the supplied current time. Processing and outbox
+lease cutoffs are caller-supplied; there is no default lease duration.

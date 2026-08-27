@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +30,7 @@ from gvas.domain.repositories import (
     InboundProcessingRecord,
     OutboundDeliveryRecord,
     OwnerChannelEndpointRecord,
+    WorkflowClaimResult,
     WorkflowRunClaim,
 )
 from gvas.infrastructure.models import (
@@ -41,6 +42,11 @@ from gvas.infrastructure.models import (
     OwnerChannelEndpoint,
     WorkflowRun,
 )
+
+
+def _validate_aware(value: datetime, name: str) -> None:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be timezone-aware")
 
 
 class SqlBusinessRepository:
@@ -371,6 +377,7 @@ class SqlWorkflowRunRepository:
     @staticmethod
     def _claim(row: WorkflowRun) -> WorkflowRunClaim:
         return WorkflowRunClaim(
+            result=WorkflowClaimResult.ACQUIRED,
             run_id=WorkflowRunId(row.id),
             status=WorkflowRunStatus(row.status),
             intent=None if row.intent is None else WorkflowIntent(row.intent),
@@ -378,8 +385,15 @@ class SqlWorkflowRunRepository:
         )
 
     async def claim(
-        self, business_id: BusinessId, inbound_message_id: MessageId
+        self,
+        business_id: BusinessId,
+        inbound_message_id: MessageId,
+        *,
+        now: datetime,
+        stale_before: datetime,
     ) -> WorkflowRunClaim:
+        _validate_aware(now, "now")
+        _validate_aware(stale_before, "stale_before")
         row = await self.session.scalar(
             select(WorkflowRun)
             .where(
@@ -395,7 +409,8 @@ class SqlWorkflowRunRepository:
                 intent=None,
                 status=WorkflowRunStatus.RUNNING.value,
                 attempts=1,
-                started_at=datetime.now(UTC),
+                started_at=now,
+                leased_at=now,
             )
             try:
                 async with self.session.begin_nested():
@@ -412,16 +427,37 @@ class SqlWorkflowRunRepository:
                 )
                 if row is None:
                     raise
-                return self._reclaim(row)
+                return self._claim_existing(row, now, stale_before)
             return self._claim(row)
-        return self._reclaim(row)
+        return self._claim_existing(row, now, stale_before)
 
-    def _reclaim(self, row: WorkflowRun) -> WorkflowRunClaim:
+    def _claim_existing(
+        self, row: WorkflowRun, now: datetime, stale_before: datetime
+    ) -> WorkflowRunClaim:
         if row.status == WorkflowRunStatus.SUCCEEDED.value:
-            return self._claim(row)
+            return WorkflowRunClaim(
+                result=WorkflowClaimResult.TERMINAL,
+                run_id=WorkflowRunId(row.id),
+                status=WorkflowRunStatus(row.status),
+                intent=None if row.intent is None else WorkflowIntent(row.intent),
+                attempts=row.attempts,
+            )
+        leased_at = row.leased_at
+        if leased_at is not None and leased_at.tzinfo is None:
+            leased_at = leased_at.replace(tzinfo=UTC)
+        if row.status == WorkflowRunStatus.RUNNING.value and (
+            leased_at is not None and leased_at > stale_before
+        ):
+            return WorkflowRunClaim(
+                result=WorkflowClaimResult.BUSY,
+                run_id=WorkflowRunId(row.id),
+                status=WorkflowRunStatus(row.status),
+                intent=None if row.intent is None else WorkflowIntent(row.intent),
+                attempts=row.attempts,
+            )
         row.status = WorkflowRunStatus.RUNNING.value
         row.attempts += 1
-        row.started_at = datetime.now(UTC)
+        row.leased_at = now
         row.finished_at = None
         row.error = None
         return self._claim(row)
@@ -459,6 +495,14 @@ class SqlOutboxRepository:
                 raise CrossBusinessReferenceError(
                     "outbox command references an outbound message from another business"
                 )
+        if command.inbound_message_id is not None:
+            inbound = await self.session.scalar(
+                select(InboundMessage).where(InboundMessage.id == command.inbound_message_id)
+            )
+            if inbound is None or inbound.business_id != command.business_id:
+                raise CrossBusinessReferenceError(
+                    "outbox command references an inbound message from another business"
+                )
         existing = (
             await self.session.scalar(
                 select(OutboxMessage).where(
@@ -475,6 +519,7 @@ class SqlOutboxRepository:
             id=command.command_id,
             business_id=command.business_id,
             outbound_message_id=command.outbound_message_id,
+            inbound_message_id=command.inbound_message_id,
             command_type=command.command_type,
             payload=command.payload,
             status=OutboxStatus.PENDING.value,
@@ -490,16 +535,29 @@ class SqlOutboxRepository:
         except IntegrityError:
             return
 
-    async def claim_batch(self, limit: int, now: datetime, claimed_by: str) -> list[OutboxRecord]:
+    async def claim_batch(
+        self, limit: int, now: datetime, claimed_by: str, *, stale_before: datetime
+    ) -> list[OutboxRecord]:
+        _validate_aware(now, "now")
+        _validate_aware(stale_before, "stale_before")
         rows = list(
             (
                 await self.session.scalars(
                     select(OutboxMessage)
                     .where(
-                        OutboxMessage.status.in_(
-                            [OutboxStatus.PENDING.value, OutboxStatus.FAILED.value]
+                        or_(
+                            and_(
+                                OutboxMessage.status.in_(
+                                    [OutboxStatus.PENDING.value, OutboxStatus.FAILED.value]
+                                ),
+                                OutboxMessage.available_at <= now,
+                            ),
+                            and_(
+                                OutboxMessage.status == OutboxStatus.IN_PROGRESS.value,
+                                OutboxMessage.locked_at.is_not(None),
+                                OutboxMessage.locked_at <= stale_before,
+                            ),
                         ),
-                        OutboxMessage.available_at <= now,
                     )
                     .order_by(OutboxMessage.available_at)
                     .limit(limit)
@@ -522,6 +580,7 @@ class SqlOutboxRepository:
                         payload=row.payload,
                         dedup_key=row.dedup_key,
                         outbound_message_id=row.outbound_message_id,
+                        inbound_message_id=row.inbound_message_id,
                     ),
                     status=OutboxStatus.IN_PROGRESS,
                     attempts=row.attempts,

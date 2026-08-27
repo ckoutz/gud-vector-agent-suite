@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
@@ -11,7 +12,7 @@ from gvas.domain.outbox import (
     owner_reply_command,
 )
 from gvas.domain.ports import IntentResolutionPort
-from gvas.domain.repositories import UnitOfWork
+from gvas.domain.repositories import UnitOfWork, WorkflowClaimResult
 from gvas.domain.workflows import UnknownWorkflowIntentError, WorkflowContext, WorkflowRouter
 
 
@@ -19,6 +20,7 @@ class ProcessingStatus(StrEnum):
     COMPLETED = "completed"
     ALREADY_PROCESSED = "already_processed"
     MISSING = "missing"
+    BUSY = "busy"
     INTENT_UNRESOLVED = "intent_unresolved"
     UNKNOWN_INTENT = "unknown_intent"
     HANDLER_FAILED = "handler_failed"
@@ -47,20 +49,31 @@ class ProcessOwnerMessageService:
         self._router = router
         self._intent_resolver = intent_resolver
 
-    async def process(self, inbound_message_id: MessageId) -> ProcessingOutcome:
+    async def process(
+        self, inbound_message_id: MessageId, *, now: datetime, stale_before: datetime
+    ) -> ProcessingOutcome:
         async with self._unit_of_work_factory() as unit_of_work:
             record = await unit_of_work.inbound_messages.get_for_processing(inbound_message_id)
             if record is None:
                 await unit_of_work.commit()
                 return ProcessingOutcome(ProcessingStatus.MISSING)
             claim = await unit_of_work.workflow_runs.claim(
-                record.business_id, record.inbound_message_id
+                record.business_id,
+                record.inbound_message_id,
+                now=now,
+                stale_before=stale_before,
             )
             await unit_of_work.commit()
 
-        if claim.status is WorkflowRunStatus.SUCCEEDED:
+        if claim.result is WorkflowClaimResult.TERMINAL:
             return ProcessingOutcome(
                 ProcessingStatus.ALREADY_PROCESSED,
+                run_id=claim.run_id,
+                intent=claim.intent,
+            )
+        if claim.result is WorkflowClaimResult.BUSY:
+            return ProcessingOutcome(
+                ProcessingStatus.BUSY,
                 run_id=claim.run_id,
                 intent=claim.intent,
             )

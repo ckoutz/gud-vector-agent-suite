@@ -15,9 +15,13 @@ class OutboxService:
             await unit_of_work.outbox.enqueue(command)
             await unit_of_work.commit()
 
-    async def claim_batch(self, limit: int, now: datetime, claimed_by: str) -> list[OutboxRecord]:
+    async def claim_batch(
+        self, limit: int, now: datetime, claimed_by: str, *, stale_before: datetime
+    ) -> list[OutboxRecord]:
         async with self._unit_of_work_factory() as unit_of_work:
-            records = await unit_of_work.outbox.claim_batch(limit, now, claimed_by)
+            records = await unit_of_work.outbox.claim_batch(
+                limit, now, claimed_by, stale_before=stale_before
+            )
             await unit_of_work.commit()
             return records
 

@@ -34,8 +34,13 @@ class Business(Base):
 class OwnerChannelEndpoint(Base):
     __tablename__ = "owner_channel_endpoints"
     __table_args__ = (
-        UniqueConstraint("business_id", "id"),
-        UniqueConstraint("business_id", "source_namespace", "external_endpoint_id"),
+        UniqueConstraint("business_id", "id", name="uq_owner_channel_endpoints_business_id_id"),
+        UniqueConstraint(
+            "business_id",
+            "source_namespace",
+            "external_endpoint_id",
+            name="uq_owner_channel_endpoints_business_id",
+        ),
         Index("ix_owner_channel_endpoints_business_id", "business_id"),
     )
 
@@ -158,6 +163,7 @@ class WorkflowRun(Base):
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     attempts: Mapped[int] = mapped_column(nullable=False, default=0)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    leased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
 
@@ -170,8 +176,14 @@ class OutboxMessage(Base):
             ["outbound_messages.business_id", "outbound_messages.id"],
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ["business_id", "inbound_message_id"],
+            ["inbound_messages.business_id", "inbound_messages.id"],
+            ondelete="CASCADE",
+        ),
         UniqueConstraint("business_id", "dedup_key"),
         UniqueConstraint("outbound_message_id"),
+        UniqueConstraint("inbound_message_id"),
         Index("ix_outbox_messages_claim", "status", "available_at"),
     )
 
@@ -180,6 +192,7 @@ class OutboxMessage(Base):
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
     outbound_message_id: Mapped[UUID | None] = mapped_column()
+    inbound_message_id: Mapped[UUID | None] = mapped_column()
     command_type: Mapped[str] = mapped_column(String(255), nullable=False)
     payload: Mapped[dict[str, JsonValue]] = mapped_column(json_type, nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)

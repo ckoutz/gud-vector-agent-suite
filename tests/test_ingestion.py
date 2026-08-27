@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -30,6 +30,7 @@ from gvas.domain.outbox import (
     OWNER_REPLY_COMMAND_TYPE,
     OutboxCommand,
     ReservedOutboxCommandTypeError,
+    owner_message_process_command,
     owner_reply_command,
 )
 from gvas.domain.repositories import CrossBusinessReferenceError
@@ -41,7 +42,11 @@ from gvas.infrastructure.models import (
     OutboxMessage,
     WorkflowRun,
 )
+from gvas.infrastructure.repositories import SqlOutboxRepository
 from gvas.infrastructure.unit_of_work import SqlUnitOfWork, SqlUnitOfWorkFactory
+
+TEST_NOW = datetime(2025, 1, 1, tzinfo=UTC)
+TEST_STALE_BEFORE = datetime(2024, 1, 1, tzinfo=UTC)
 
 
 class EchoResolver:
@@ -158,6 +163,13 @@ async def test_ingress_persists_process_command_without_processing(
         command = await session.scalar(select(OutboxMessage))
         assert command is not None
         assert command.command_type == OWNER_MESSAGE_PROCESS_COMMAND_TYPE
+        assert command.inbound_message_id == outcome.message_id
+        claim_now = datetime.now(UTC) + timedelta(days=1)
+        claimed = await SqlOutboxRepository(session).claim_batch(
+            1, claim_now, "test", stale_before=claim_now - timedelta(days=1)
+        )
+        assert len(claimed) == 1
+        assert claimed[0].command.inbound_message_id == outcome.message_id
 
 
 @pytest.mark.asyncio
@@ -192,8 +204,12 @@ async def test_processing_success_is_terminal_and_replay_safe(
     processing = ProcessOwnerMessageService(
         SqlUnitOfWorkFactory(session_factory), WorkflowRouter([handler]), EchoResolver()
     )
-    first = await processing.process(ingestion.message_id)
-    second = await processing.process(ingestion.message_id)
+    first = await processing.process(
+        ingestion.message_id, now=TEST_NOW, stale_before=TEST_STALE_BEFORE
+    )
+    second = await processing.process(
+        ingestion.message_id, now=TEST_NOW, stale_before=TEST_STALE_BEFORE
+    )
     assert first.status is ProcessingStatus.COMPLETED
     assert second.status is ProcessingStatus.ALREADY_PROCESSED
     assert handler.calls == 1
@@ -217,7 +233,7 @@ async def test_processing_reclaim_does_not_duplicate_reply(
     processing = ProcessOwnerMessageService(
         SqlUnitOfWorkFactory(session_factory), WorkflowRouter([handler]), EchoResolver()
     )
-    await processing.process(ingestion.message_id)
+    await processing.process(ingestion.message_id, now=TEST_NOW, stale_before=TEST_STALE_BEFORE)
     async with session_factory() as session:
         await session.execute(
             update(WorkflowRun)
@@ -225,7 +241,9 @@ async def test_processing_reclaim_does_not_duplicate_reply(
             .where(WorkflowRun.inbound_message_id == ingestion.message_id)
         )
         await session.commit()
-    replay = await processing.process(ingestion.message_id)
+    replay = await processing.process(
+        ingestion.message_id, now=TEST_NOW, stale_before=TEST_STALE_BEFORE
+    )
     assert replay.status is ProcessingStatus.COMPLETED
     assert handler.calls == 2
     async with session_factory() as session:
@@ -254,7 +272,7 @@ async def test_handler_failure_is_durable(
         SqlUnitOfWorkFactory(session_factory),
         WorkflowRouter([FailingHandler()]),
         EchoResolver(),
-    ).process(ingestion.message_id)
+    ).process(ingestion.message_id, now=TEST_NOW, stale_before=TEST_STALE_BEFORE)
     assert outcome.status is ProcessingStatus.HANDLER_FAILED
     assert outcome.detail == "RuntimeError('handler failed')"
     async with session_factory() as session:
@@ -279,12 +297,16 @@ async def test_unresolved_intent_is_resumable(
         SqlUnitOfWorkFactory(session_factory),
         WorkflowRouter([]),
         UnconfiguredIntentResolver(),
-    ).process(ingestion.message_id)
+    ).process(ingestion.message_id, now=TEST_NOW, stale_before=TEST_STALE_BEFORE)
     assert unresolved.status is ProcessingStatus.INTENT_UNRESOLVED
     handler = ReplyHandler()
     completed = await ProcessOwnerMessageService(
         SqlUnitOfWorkFactory(session_factory), WorkflowRouter([handler]), EchoResolver()
-    ).process(ingestion.message_id)
+    ).process(
+        ingestion.message_id,
+        now=TEST_NOW,
+        stale_before=TEST_NOW + timedelta(days=1),
+    )
     assert completed.status is ProcessingStatus.COMPLETED
     async with session_factory() as session:
         run = await session.scalar(select(WorkflowRun))
@@ -306,7 +328,7 @@ async def test_unknown_intent_is_failed(
     assert ingestion.message_id is not None
     outcome = await ProcessOwnerMessageService(
         SqlUnitOfWorkFactory(session_factory), WorkflowRouter([]), EchoResolver()
-    ).process(ingestion.message_id)
+    ).process(ingestion.message_id, now=TEST_NOW, stale_before=TEST_STALE_BEFORE)
     assert outcome.status is ProcessingStatus.UNKNOWN_INTENT
     async with session_factory() as session:
         run = await session.scalar(select(WorkflowRun))
@@ -366,7 +388,7 @@ async def test_provider_calls_happen_without_open_uow(
     assert ingestion.message_id is not None
     outcome = await ProcessOwnerMessageService(
         TrackingFactory(), WorkflowRouter([GuardHandler()]), GuardResolver()
-    ).process(ingestion.message_id)
+    ).process(ingestion.message_id, now=TEST_NOW, stale_before=TEST_STALE_BEFORE)
     assert outcome.status is ProcessingStatus.COMPLETED
     assert state["violation"] is None
 
@@ -386,7 +408,7 @@ async def test_reserved_commands_are_rejected_during_processing(
             SqlUnitOfWorkFactory(session_factory),
             WorkflowRouter([ReservedHandler()]),
             EchoResolver(),
-        ).process(ingestion.message_id)
+        ).process(ingestion.message_id, now=TEST_NOW, stale_before=TEST_STALE_BEFORE)
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(OutboundMessage)) == 0
 
@@ -446,5 +468,10 @@ async def test_cross_tenant_references_are_rejected(
     with pytest.raises(CrossBusinessReferenceError):
         async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
             await unit_of_work.outbox.enqueue(owner_reply_command(second_business, outbound_id))
+    with pytest.raises(CrossBusinessReferenceError):
+        async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+            await unit_of_work.outbox.enqueue(
+                owner_message_process_command(second_business, inbound_id)
+            )
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(OutboundMessage)) == 1

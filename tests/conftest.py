@@ -1,6 +1,8 @@
+import os
 from collections.abc import AsyncIterator
 from typing import Protocol
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
@@ -38,3 +40,20 @@ async def session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield factory
     await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def postgres_session_factory() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    database_url = os.getenv("GVAS_TEST_DATABASE_URL")
+    if database_url is None:
+        pytest.skip("GVAS_TEST_DATABASE_URL is not set")
+    engine: AsyncEngine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        yield factory
+    finally:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.drop_all)
+        await engine.dispose()

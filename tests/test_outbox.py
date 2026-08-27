@@ -53,13 +53,53 @@ async def test_claim_deduplicates_and_records_lock(
         item = command(business_id, "dedup")
         await repository.enqueue(item)
         await repository.enqueue(item)
-        claimed = await repository.claim_batch(10, now + timedelta(seconds=1), "worker")
+        claimed = await repository.claim_batch(
+            10,
+            now + timedelta(seconds=1),
+            "worker",
+            stale_before=now,
+        )
         assert len(claimed) == 1
         assert claimed[0].attempts == 1
         row = await session.scalar(select(OutboxMessage))
         assert row is not None
         assert row.locked_by == "worker"
         assert row.locked_at == (now + timedelta(seconds=1)).replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_claim_reclaims_stale_in_progress_lease(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    service = OutboxService(SqlUnitOfWorkFactory(session_factory))
+    now = datetime.now(UTC)
+    await service.enqueue(command(business_id, "lease"))
+
+    first = (
+        await service.claim_batch(1, now + timedelta(seconds=1), "worker-a", stale_before=now)
+    )[0]
+    fresh = await service.claim_batch(
+        1,
+        now + timedelta(seconds=2),
+        "worker-b",
+        stale_before=now,
+    )
+    assert fresh == []
+
+    reclaimed = (
+        await service.claim_batch(
+            1, now + timedelta(seconds=2), "worker-b", stale_before=now + timedelta(seconds=1)
+        )
+    )[0]
+    assert reclaimed.command.command_id == first.command.command_id
+    assert reclaimed.attempts == 2
+    async with session_factory() as session:
+        row = await session.scalar(select(OutboxMessage))
+        assert row is not None
+        assert row.locked_by == "worker-b"
+        assert row.locked_at == (now + timedelta(seconds=2)).replace(tzinfo=None)
 
 
 @pytest.mark.asyncio
@@ -90,7 +130,9 @@ async def test_service_retry_backoff_counts_attempts_once(
     now = datetime.now(UTC)
     await service.enqueue(command(business_id, "retry"))
 
-    first_claim = (await service.claim_batch(1, now + timedelta(seconds=1), "worker"))[0]
+    first_claim = (
+        await service.claim_batch(1, now + timedelta(seconds=1), "worker", stale_before=now)
+    )[0]
     first = await service.mark_failed(
         first_claim, timedelta(seconds=10), "temporary", now + timedelta(seconds=1)
     )
@@ -98,14 +140,22 @@ async def test_service_retry_backoff_counts_attempts_once(
     assert first.attempts == 1
     assert first.available_at == now + timedelta(seconds=11)
 
-    second_claim = (await service.claim_batch(1, now + timedelta(seconds=11), "worker"))[0]
+    second_claim = (
+        await service.claim_batch(
+            1, now + timedelta(seconds=11), "worker", stale_before=now + timedelta(seconds=1)
+        )
+    )[0]
     second = await service.mark_failed(
         second_claim, timedelta(seconds=10), "temporary", now + timedelta(seconds=11)
     )
     assert second.status is OutboxStatus.FAILED
     assert second.attempts == 2
 
-    third_claim = (await service.claim_batch(1, now + timedelta(seconds=21), "worker"))[0]
+    third_claim = (
+        await service.claim_batch(
+            1, now + timedelta(seconds=21), "worker", stale_before=now + timedelta(seconds=11)
+        )
+    )[0]
     third = await service.mark_failed(
         third_claim, timedelta(seconds=10), "permanent", now + timedelta(seconds=21)
     )
@@ -122,14 +172,18 @@ async def test_service_success_dead_and_invalid_transitions(
     service = OutboxService(SqlUnitOfWorkFactory(session_factory))
     now = datetime.now(UTC)
     await service.enqueue(command(business_id, "success"))
-    claimed = (await service.claim_batch(1, now + timedelta(seconds=1), "worker"))[0]
+    claimed = (
+        await service.claim_batch(1, now + timedelta(seconds=1), "worker", stale_before=now)
+    )[0]
     succeeded = await service.mark_succeeded(claimed)
     assert succeeded.status is OutboxStatus.SUCCEEDED
     with pytest.raises(InvalidOutboxTransitionError):
         await service.mark_succeeded(succeeded)
 
     await service.enqueue(command(business_id, "manual-dead"))
-    claimed = (await service.claim_batch(1, now + timedelta(seconds=1), "worker"))[0]
+    claimed = (
+        await service.claim_batch(1, now + timedelta(seconds=1), "worker", stale_before=now)
+    )[0]
     dead = await service.mark_dead(claimed, "cancelled")
     assert dead.status is OutboxStatus.DEAD
 

@@ -23,17 +23,18 @@ class OutboxCommand(BaseModel):
     payload: dict[str, JsonValue]
     dedup_key: str | None = None
     outbound_message_id: MessageId | None = None
+    inbound_message_id: MessageId | None = None
 
     @model_validator(mode="after")
-    def validate_owner_reply_link(self) -> "OutboxCommand":
-        is_owner_reply = self.command_type == OWNER_REPLY_COMMAND_TYPE
-        if is_owner_reply != (self.outbound_message_id is not None):
-            raise ValueError("owner reply commands require exactly one outbound message linkage")
-        if (
-            self.command_type == OWNER_MESSAGE_PROCESS_COMMAND_TYPE
-            and self.outbound_message_id is not None
-        ):
-            raise ValueError("owner message process commands cannot link an outbound message")
+    def validate_framework_links(self) -> "OutboxCommand":
+        if self.command_type == OWNER_MESSAGE_PROCESS_COMMAND_TYPE:
+            if self.inbound_message_id is None or self.outbound_message_id is not None:
+                raise ValueError("owner message process commands require an inbound-only linkage")
+        elif self.command_type == OWNER_REPLY_COMMAND_TYPE:
+            if self.outbound_message_id is None or self.inbound_message_id is not None:
+                raise ValueError("owner reply commands require an outbound-only linkage")
+        elif self.inbound_message_id is not None or self.outbound_message_id is not None:
+            raise ValueError("custom commands cannot carry framework message linkages")
         return self
 
 
@@ -59,6 +60,7 @@ def owner_message_process_command(
         command_type=OWNER_MESSAGE_PROCESS_COMMAND_TYPE,
         payload={"inbound_message_id": str(inbound_message_id)},
         dedup_key=f"owner_message:{inbound_message_id}",
+        inbound_message_id=inbound_message_id,
     )
 
 

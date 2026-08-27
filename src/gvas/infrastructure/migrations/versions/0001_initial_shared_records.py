@@ -110,6 +110,7 @@ def upgrade() -> None:
         sa.Column("status", sa.String(length=50), nullable=False),
         sa.Column("attempts", sa.Integer(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("leased_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
         sa.ForeignKeyConstraint(["business_id"], ["businesses.id"], name=op.f("fk_workflow_runs_business_id_businesses"), ondelete="CASCADE"),
@@ -123,6 +124,7 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("business_id", sa.Uuid(), nullable=False),
         sa.Column("outbound_message_id", sa.Uuid(), nullable=True),
+        sa.Column("inbound_message_id", sa.Uuid(), nullable=True),
         sa.Column("command_type", sa.String(length=255), nullable=False),
         sa.Column("payload", json_type, nullable=False),
         sa.Column("status", sa.String(length=50), nullable=False),
@@ -134,9 +136,11 @@ def upgrade() -> None:
         sa.Column("locked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("locked_by", sa.String(length=255), nullable=True),
         sa.ForeignKeyConstraint(["business_id"], ["businesses.id"], name=op.f("fk_outbox_messages_business_id_businesses"), ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["business_id", "inbound_message_id"], ["inbound_messages.business_id", "inbound_messages.id"], name=op.f("fk_outbox_messages_business_id_inbound_message_id_inbound_messages"), ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["business_id", "outbound_message_id"], ["outbound_messages.business_id", "outbound_messages.id"], name=op.f("fk_outbox_messages_business_id_outbound_message_id_outbound_messages"), ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_outbox_messages")),
         sa.UniqueConstraint("business_id", "dedup_key", name=op.f("uq_outbox_messages_business_id_dedup_key")),
+        sa.UniqueConstraint("inbound_message_id", name=op.f("uq_outbox_messages_inbound_message_id")),
         sa.UniqueConstraint("outbound_message_id", name=op.f("uq_outbox_messages_outbound_message_id")),
     )
     op.create_index(op.f("ix_outbox_messages_claim"), "outbox_messages", ["status", "available_at"])

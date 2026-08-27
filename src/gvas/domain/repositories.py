@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import StrEnum
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -54,6 +55,12 @@ class OutboundDeliveryRecord(BaseModel):
     status: DeliveryStatus
 
 
+class WorkflowClaimResult(StrEnum):
+    ACQUIRED = "acquired"
+    TERMINAL = "terminal"
+    BUSY = "busy"
+
+
 class InboundProcessingRecord(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -67,6 +74,7 @@ class InboundProcessingRecord(BaseModel):
 class WorkflowRunClaim(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    result: WorkflowClaimResult
     run_id: WorkflowRunId
     status: WorkflowRunStatus
     intent: WorkflowIntent | None
@@ -134,7 +142,12 @@ class OutboundMessageRepository(Protocol):
 
 class WorkflowRunRepository(Protocol):
     async def claim(
-        self, business_id: BusinessId, inbound_message_id: MessageId
+        self,
+        business_id: BusinessId,
+        inbound_message_id: MessageId,
+        *,
+        now: datetime,
+        stale_before: datetime,
     ) -> WorkflowRunClaim: ...
 
     async def set_intent(self, run_id: WorkflowRunId, intent: WorkflowIntent) -> None: ...
@@ -149,7 +162,7 @@ class WorkflowRunRepository(Protocol):
 class OutboxRepository(Protocol):
     async def enqueue(self, command: OutboxCommand) -> None: ...
     async def claim_batch(
-        self, limit: int, now: datetime, claimed_by: str
+        self, limit: int, now: datetime, claimed_by: str, *, stale_before: datetime
     ) -> list[OutboxRecord]: ...
     async def update(self, record: OutboxRecord) -> None: ...
 

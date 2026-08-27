@@ -79,17 +79,21 @@ command ID, and has a unique `owner_reply:<message-id>` deduplication key.
 Workflow handlers may return custom commands, but both framework command types
 are reserved.
 
-The outbox command has a nullable foreign key to `outbound_messages.id` with
-`CASCADE` delete and a unique constraint, so an outbound reply has at most one
-delivery command while custom commands remain unlinked.
+The `owner_message.process` command has a structural, nullable inbound-message
+link in addition to its payload copy. Its composite business-scoped foreign key
+and unique constraint ensure one process command per inbound message and
+cascade the command when that inbound message is deleted. The outbox command
+also has a nullable foreign key to `outbound_messages.id` with `CASCADE` delete
+and a unique constraint, so an outbound reply has at most one delivery command
+while custom commands remain unlinked.
 Handlers must choose a deterministic `correlation_id` for a given inbound
 message. It is the replay key for get-or-create outbound replies.
 
-Deleting an inbound message now cascades to its outbound replies, and deleting
-those replies cascades to their linked reply commands. This retention behavior
-follows from the required business-scoped composite foreign keys: they enforce
-that no reference can cross tenant boundaries while preserving the cascade
-chain.
+Deleting an inbound message now cascades to its outbound replies, its process
+command, and (through the replies) their linked reply commands. This retention
+behavior follows from the required business-scoped composite foreign keys:
+they enforce that no reference can cross tenant boundaries while preserving the
+cascade chain.
 
 ## Persistence
 
@@ -103,8 +107,8 @@ agreement with `infrastructure/models.py`.
 | `conversations` | required endpoint, external conversation ID, routing; unique per endpoint |
 | `inbound_messages` | required endpoint and conversation, message key, normalized content, envelope routing; unique per endpoint |
 | `outbound_messages` | business/conversation correlation, replay key, content, delivery status and receipt metadata |
-| `workflow_runs` | optional resolved intent, inbound message, execution status and attempts; one run per inbound |
-| `outbox_messages` | custom or owner-reply command, retry state, lock metadata, optional outbound link |
+| `workflow_runs` | optional resolved intent, inbound message, execution status, attempts, and current processing lease; one run per inbound |
+| `outbox_messages` | custom, owner-reply, or owner-message-process command, retry state, lock metadata, and optional structural message link |
 
 Identity is endpoint-scoped. Two endpoints belonging to one business may use
 the same external conversation and message keys without deduplicating each
@@ -119,15 +123,21 @@ envelope idempotently, and enqueueing one `owner_message.process` command.
 Duplicate inbound inserts explicitly roll back. `ProcessOwnerMessageService`
 claims the one workflow run per inbound message, closes the UoW before intent
 resolution and handler execution, then persists the intent, replay-safe replies,
-custom commands, and terminal status in a second short transaction. Intent
+custom commands, and terminal status in a second short transaction. Claims use a
+caller-supplied `now` and `stale_before`: a recent `RUNNING` lease returns
+`BUSY` without resolving or invoking the handler, while a missing or stale lease
+can be reclaimed. There is no default lease duration or stale cutoff. Intent
 resolution failures leave the run `RUNNING` with its error for later retry;
 unknown intents and handler failures are durable failed outcomes. Provider or
 AI calls never happen while a UoW is open.
 
 `OutboxService` enqueues commands, claims available rows with worker identity,
 increments attempts at claim time, and computes retry availability from an
-explicit timezone-aware current time. No dispatcher or external delivery
-implementation exists in Round 1.
+explicit timezone-aware current time. Its caller-supplied `stale_before` allows
+reclaiming abandoned in-progress leases. A future dispatcher must still
+dead-letter commands that exhaust `max_attempts`; otherwise a poison command can
+be reclaimed forever. No dispatcher or external delivery implementation exists
+in Round 1.
 
 Custom outbox deduplication is business-scoped: the same deduplication key can
 be used independently by different businesses, while repeated commands for one
