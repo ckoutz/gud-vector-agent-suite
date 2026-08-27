@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.domain.quotes import QuoteRepository
 from gvas.domain.repositories import (
     BusinessRepository,
     ConversationRepository,
@@ -17,6 +18,7 @@ from gvas.infrastructure.repositories import (
     SqlOutboundMessageRepository,
     SqlOutboxRepository,
     SqlOwnerChannelEndpointRepository,
+    SqlQuoteRepository,
     SqlWorkflowRunRepository,
 )
 
@@ -29,6 +31,7 @@ class SqlUnitOfWork:
     outbound_messages: OutboundMessageRepository
     workflow_runs: WorkflowRunRepository
     outbox: OutboxRepository
+    quotes: QuoteRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -43,6 +46,7 @@ class SqlUnitOfWork:
         self.outbound_messages = SqlOutboundMessageRepository(self._session)
         self.workflow_runs = SqlWorkflowRunRepository(self._session)
         self.outbox = SqlOutboxRepository(self._session)
+        self.quotes = SqlQuoteRepository(self._session)
         return self
 
     async def __aexit__(
