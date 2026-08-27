@@ -41,6 +41,12 @@ message identity, conversation, sender, timestamp, and ordered content parts.
 branches on their contents. `routing` exists only on the ingestion envelope and
 in persistence read models needed by a future delivery adapter.
 
+Ingestion upserts the channel endpoint from the adapter-supplied
+`ChannelEndpointRef` and stores the message's opaque routing blob as that
+endpoint's routing on first sight. A future administrative provisioning flow can
+pre-register endpoints with richer routing. `source_namespace` is compared for
+identity but is never branched on.
+
 Adapters never assign intent. The application resolves it through
 `IntentResolutionPort`. The default `UnconfiguredIntentResolver` records the
 inbound message and returns an accepted outcome without creating a workflow run

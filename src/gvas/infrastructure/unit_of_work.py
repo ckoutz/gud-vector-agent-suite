@@ -36,7 +36,6 @@ class SqlUnitOfWork:
 
     async def __aenter__(self) -> "SqlUnitOfWork":
         self._session = self._session_factory()
-        await self._session.begin_nested()
         self.businesses = SqlBusinessRepository(self._session)
         self.owner_channel_endpoints = SqlOwnerChannelEndpointRepository(self._session)
         self.conversations = SqlConversationRepository(self._session)

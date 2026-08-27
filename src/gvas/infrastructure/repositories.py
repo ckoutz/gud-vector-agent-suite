@@ -235,7 +235,7 @@ class SqlOutboundMessageRepository:
                 ),
                 parts=tuple(outbound.parts),
                 correlation_id=outbound.correlation_id,
-                reply_to=(None if outbound.reply_to is None else outbound.reply_to),
+                reply_to=outbound.reply_to,
             ),
             endpoint_id=EndpointId(endpoint.id),
             conversation_routing=conversation.routing,
