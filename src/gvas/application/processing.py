@@ -12,7 +12,12 @@ from gvas.domain.outbox import (
     owner_reply_command,
 )
 from gvas.domain.ports import IntentResolutionPort
-from gvas.domain.repositories import UnitOfWork, WorkflowClaimResult
+from gvas.domain.repositories import (
+    LostWorkflowLeaseError,
+    UnitOfWork,
+    WorkflowClaimResult,
+    WorkflowRunClaim,
+)
 from gvas.domain.workflows import UnknownWorkflowIntentError, WorkflowContext, WorkflowRouter
 
 
@@ -21,6 +26,7 @@ class ProcessingStatus(StrEnum):
     ALREADY_PROCESSED = "already_processed"
     MISSING = "missing"
     BUSY = "busy"
+    LEASE_LOST = "lease_lost"
     INTENT_UNRESOLVED = "intent_unresolved"
     UNKNOWN_INTENT = "unknown_intent"
     HANDLER_FAILED = "handler_failed"
@@ -84,8 +90,16 @@ class ProcessOwnerMessageService:
                 intent = (await self._intent_resolver.resolve(record.message)).intent
             except IntentUnresolvedError as error:
                 async with self._unit_of_work_factory() as unit_of_work:
-                    await unit_of_work.workflow_runs.set_error(claim.run_id, str(error))
-                    await unit_of_work.commit()
+                    try:
+                        await unit_of_work.workflow_runs.set_error(claim, str(error))
+                        await unit_of_work.commit()
+                    except LostWorkflowLeaseError:
+                        await unit_of_work.rollback()
+                        return ProcessingOutcome(
+                            ProcessingStatus.LEASE_LOST,
+                            run_id=claim.run_id,
+                            detail=str(error),
+                        )
                 return ProcessingOutcome(
                     ProcessingStatus.INTENT_UNRESOLVED,
                     run_id=claim.run_id,
@@ -95,7 +109,13 @@ class ProcessOwnerMessageService:
         try:
             handler = self._router.route(intent)
         except UnknownWorkflowIntentError as error:
-            await self._finish_failed(claim.run_id, intent, str(error))
+            if not await self._finish_failed(claim, intent, str(error)):
+                return ProcessingOutcome(
+                    ProcessingStatus.LEASE_LOST,
+                    run_id=claim.run_id,
+                    intent=intent,
+                    detail=str(error),
+                )
             return ProcessingOutcome(
                 ProcessingStatus.UNKNOWN_INTENT,
                 run_id=claim.run_id,
@@ -109,7 +129,13 @@ class ProcessOwnerMessageService:
             )
         except Exception as error:
             detail = repr(error)
-            await self._finish_failed(claim.run_id, intent, detail)
+            if not await self._finish_failed(claim, intent, detail):
+                return ProcessingOutcome(
+                    ProcessingStatus.LEASE_LOST,
+                    run_id=claim.run_id,
+                    intent=intent,
+                    detail=detail,
+                )
             return ProcessingOutcome(
                 ProcessingStatus.HANDLER_FAILED,
                 run_id=claim.run_id,
@@ -118,22 +144,31 @@ class ProcessOwnerMessageService:
             )
 
         async with self._unit_of_work_factory() as unit_of_work:
-            await unit_of_work.workflow_runs.set_intent(claim.run_id, intent)
-            for reply in result.replies:
-                outbound_message_id = await unit_of_work.outbound_messages.create(
-                    reply, record.conversation_id, record.inbound_message_id
-                )
-                await unit_of_work.outbox.enqueue(
-                    owner_reply_command(reply.business_id, outbound_message_id)
-                )
-            for command in result.commands:
-                if command.command_type in RESERVED_COMMAND_TYPES:
-                    raise ReservedOutboxCommandTypeError(
-                        f"{command.command_type} is reserved for framework processing"
+            try:
+                await unit_of_work.workflow_runs.set_intent(claim, intent)
+                for reply in result.replies:
+                    outbound_message_id = await unit_of_work.outbound_messages.create(
+                        reply, record.conversation_id, record.inbound_message_id
                     )
-                await unit_of_work.outbox.enqueue(command)
-            await unit_of_work.workflow_runs.finish(claim.run_id, result.status, result.detail)
-            await unit_of_work.commit()
+                    await unit_of_work.outbox.enqueue(
+                        owner_reply_command(reply.business_id, outbound_message_id)
+                    )
+                for command in result.commands:
+                    if command.command_type in RESERVED_COMMAND_TYPES:
+                        raise ReservedOutboxCommandTypeError(
+                            f"{command.command_type} is reserved for framework processing"
+                        )
+                    await unit_of_work.outbox.enqueue(command)
+                await unit_of_work.workflow_runs.finish(claim, result.status, result.detail)
+                await unit_of_work.commit()
+            except LostWorkflowLeaseError:
+                await unit_of_work.rollback()
+                return ProcessingOutcome(
+                    ProcessingStatus.LEASE_LOST,
+                    run_id=claim.run_id,
+                    intent=intent,
+                    detail=result.detail,
+                )
         return ProcessingOutcome(
             ProcessingStatus.COMPLETED,
             run_id=claim.run_id,
@@ -142,9 +177,14 @@ class ProcessOwnerMessageService:
         )
 
     async def _finish_failed(
-        self, run_id: WorkflowRunId, intent: WorkflowIntent, detail: str
-    ) -> None:
+        self, claim: WorkflowRunClaim, intent: WorkflowIntent, detail: str
+    ) -> bool:
         async with self._unit_of_work_factory() as unit_of_work:
-            await unit_of_work.workflow_runs.set_intent(run_id, intent)
-            await unit_of_work.workflow_runs.finish(run_id, WorkflowRunStatus.FAILED, detail)
-            await unit_of_work.commit()
+            try:
+                await unit_of_work.workflow_runs.set_intent(claim, intent)
+                await unit_of_work.workflow_runs.finish(claim, WorkflowRunStatus.FAILED, detail)
+                await unit_of_work.commit()
+            except LostWorkflowLeaseError:
+                await unit_of_work.rollback()
+                return False
+        return True

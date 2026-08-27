@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gvas.domain.enums import WorkflowRunStatus
 from gvas.domain.identifiers import WorkflowIntent, WorkflowRunId
@@ -16,6 +16,9 @@ class WorkflowContext(BaseModel):
     message: NormalizedOwnerMessage
 
 
+TERMINAL_WORKFLOW_STATUSES = frozenset({WorkflowRunStatus.SUCCEEDED, WorkflowRunStatus.FAILED})
+
+
 class WorkflowResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -23,6 +26,12 @@ class WorkflowResult(BaseModel):
     replies: tuple[OutboundOwnerMessage, ...] = Field(default_factory=tuple)
     commands: tuple[OutboxCommand, ...] = Field(default_factory=tuple)
     detail: str | None = None
+
+    @model_validator(mode="after")
+    def validate_terminal_status(self) -> "WorkflowResult":
+        if self.status not in TERMINAL_WORKFLOW_STATUSES:
+            raise ValueError("workflow results must have a terminal status")
+        return self
 
 
 class WorkflowHandler(Protocol):

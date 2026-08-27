@@ -132,14 +132,15 @@ unknown intents and handler failures are durable failed outcomes. Provider or
 AI calls never happen while a UoW is open.
 
 The lease makes resolver and handler execution exclusive, but it does not fence
-the second persistence transaction against the lease that was granted. If a
-lease becomes stale and another worker reclaims it, both workers can write
-final run state, so terminal status and error are last-writer-wins. Replies and
-their delivery commands remain safe because their `(inbound_message_id,
-correlation_id)` and outbox-link uniqueness make durable output idempotent; only
-the run's final status can be overwritten. A fencing token based on
-`leased_at` would address this if the limitation becomes material, but Round 1
-does not implement fencing.
+the second persistence transaction against the lease that was granted. Workflow
+runs therefore carry a fresh `lease_token` for every acquired lease, and
+`set_intent`, `set_error`, and `finish` update only a `RUNNING` row with the
+matching token. A stale claimant raises `LostWorkflowLeaseError` and its
+transaction writes nothing. Outbox updates are fenced the same way with the
+claimed `attempts` generation and `locked_by` worker identity; a stale claimant
+raises `LostOutboxLeaseError` instead of clobbering a newer claim. The dispatcher
+must treat either error as a lost claim. `WorkflowResult` is also restricted to
+terminal `SUCCEEDED` or `FAILED` invocation states.
 
 `OutboxService` enqueues commands, claims available rows with worker identity,
 increments attempts at claim time, and computes retry availability from an

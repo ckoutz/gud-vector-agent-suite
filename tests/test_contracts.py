@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from gvas.domain.enums import MediaKind, SenderRole
+from gvas.domain.enums import MediaKind, SenderRole, WorkflowRunStatus
 from gvas.domain.identifiers import BusinessId, MessageId, MessageKey, OutboxCommandId
 from gvas.domain.messages import (
     AttachmentReference,
@@ -22,6 +22,7 @@ from gvas.domain.outbox import (
     owner_message_process_command,
     owner_reply_command,
 )
+from gvas.domain.repositories import WorkflowClaimResult, WorkflowRunClaim
 
 
 def normalized(business_id: BusinessId | None = None) -> NormalizedOwnerMessage:
@@ -204,4 +205,27 @@ def test_framework_command_links_are_exclusive() -> None:
             command_type="custom",
             payload={},
             outbound_message_id=outbound_id,
+        )
+
+
+def test_workflow_claim_token_only_exists_for_acquired_claims() -> None:
+    common = {
+        "run_id": uuid4(),
+        "status": WorkflowRunStatus.RUNNING,
+        "intent": None,
+        "attempts": 1,
+    }
+    acquired = WorkflowRunClaim(
+        **common,
+        result=WorkflowClaimResult.ACQUIRED,
+        lease_token=uuid4(),
+    )
+    assert acquired.lease_token is not None
+    with pytest.raises(ValidationError):
+        WorkflowRunClaim(**common, result=WorkflowClaimResult.ACQUIRED)
+    with pytest.raises(ValidationError):
+        WorkflowRunClaim(
+            **common,
+            result=WorkflowClaimResult.BUSY,
+            lease_token=uuid4(),
         )

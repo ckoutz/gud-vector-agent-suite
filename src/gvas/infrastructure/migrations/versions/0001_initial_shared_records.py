@@ -111,6 +111,7 @@ def upgrade() -> None:
         sa.Column("attempts", sa.Integer(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("leased_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("lease_token", sa.Uuid(), nullable=False),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("error", sa.Text(), nullable=True),
         sa.ForeignKeyConstraint(["business_id"], ["businesses.id"], name=op.f("fk_workflow_runs_business_id_businesses"), ondelete="CASCADE"),

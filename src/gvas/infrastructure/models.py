@@ -164,6 +164,7 @@ class WorkflowRun(Base):
     attempts: Mapped[int] = mapped_column(nullable=False, default=0)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     leased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_token: Mapped[UUID] = mapped_column(nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
 

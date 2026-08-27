@@ -1,8 +1,9 @@
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from gvas.domain.enums import DeliveryStatus, WorkflowRunStatus
 from gvas.domain.identifiers import (
@@ -79,6 +80,17 @@ class WorkflowRunClaim(BaseModel):
     status: WorkflowRunStatus
     intent: WorkflowIntent | None
     attempts: int
+    lease_token: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_lease_token(self) -> "WorkflowRunClaim":
+        if (self.result is WorkflowClaimResult.ACQUIRED) != (self.lease_token is not None):
+            raise ValueError("only acquired workflow claims may carry a lease token")
+        return self
+
+
+class LostWorkflowLeaseError(ValueError):
+    pass
 
 
 class EndpointBusinessMismatchError(ValueError):
@@ -150,12 +162,15 @@ class WorkflowRunRepository(Protocol):
         stale_before: datetime,
     ) -> WorkflowRunClaim: ...
 
-    async def set_intent(self, run_id: WorkflowRunId, intent: WorkflowIntent) -> None: ...
+    async def set_intent(self, claim: WorkflowRunClaim, intent: WorkflowIntent) -> None: ...
 
-    async def set_error(self, run_id: WorkflowRunId, error: str) -> None: ...
+    async def set_error(self, claim: WorkflowRunClaim, error: str) -> None: ...
 
     async def finish(
-        self, run_id: WorkflowRunId, status: WorkflowRunStatus, error: str | None = None
+        self,
+        claim: WorkflowRunClaim,
+        status: WorkflowRunStatus,
+        error: str | None = None,
     ) -> None: ...
 
 

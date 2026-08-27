@@ -8,7 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from gvas.application.outbox_service import OutboxService
 from gvas.domain.enums import OutboxStatus
 from gvas.domain.identifiers import BusinessId, OutboxCommandId
-from gvas.domain.outbox import InvalidOutboxTransitionError, OutboxCommand, OutboxRecord
+from gvas.domain.outbox import (
+    InvalidOutboxTransitionError,
+    LostOutboxLeaseError,
+    OutboxCommand,
+    OutboxRecord,
+)
 from gvas.infrastructure.models import Business, OutboxMessage
 from gvas.infrastructure.repositories import SqlOutboxRepository
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
@@ -186,6 +191,39 @@ async def test_service_success_dead_and_invalid_transitions(
     )[0]
     dead = await service.mark_dead(claimed, "cancelled")
     assert dead.status is OutboxStatus.DEAD
+
+
+@pytest.mark.asyncio
+async def test_stale_outbox_claim_cannot_update_reclaimed_row(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    service = OutboxService(SqlUnitOfWorkFactory(session_factory))
+    now = datetime.now(UTC)
+    await service.enqueue(command(business_id, "fenced"))
+
+    first = (
+        await service.claim_batch(1, now + timedelta(seconds=1), "worker-a", stale_before=now)
+    )[0]
+    reclaimed = (
+        await service.claim_batch(
+            1,
+            now + timedelta(seconds=2),
+            "worker-b",
+            stale_before=now + timedelta(seconds=1),
+        )
+    )[0]
+
+    with pytest.raises(LostOutboxLeaseError):
+        await service.mark_succeeded(first)
+
+    async with session_factory() as session:
+        row = await session.scalar(select(OutboxMessage))
+        assert row is not None
+        assert row.status == OutboxStatus.IN_PROGRESS.value
+        assert row.attempts == reclaimed.attempts == 2
+        assert row.locked_by == "worker-b"
 
 
 def test_outbox_domain_rejects_invalid_transition() -> None:

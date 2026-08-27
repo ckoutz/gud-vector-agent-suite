@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from gvas.domain.enums import DeliveryStatus, OutboxStatus, WorkflowRunStatus
 from gvas.domain.identifiers import (
@@ -22,12 +24,18 @@ from gvas.domain.messages import (
     NormalizedOwnerMessage,
     OutboundOwnerMessage,
 )
-from gvas.domain.outbox import DEFAULT_MAX_ATTEMPTS, OutboxCommand, OutboxRecord
+from gvas.domain.outbox import (
+    DEFAULT_MAX_ATTEMPTS,
+    LostOutboxLeaseError,
+    OutboxCommand,
+    OutboxRecord,
+)
 from gvas.domain.repositories import (
     BusinessRecord,
     CrossBusinessReferenceError,
     EndpointBusinessMismatchError,
     InboundProcessingRecord,
+    LostWorkflowLeaseError,
     OutboundDeliveryRecord,
     OwnerChannelEndpointRecord,
     WorkflowClaimResult,
@@ -382,6 +390,7 @@ class SqlWorkflowRunRepository:
             status=WorkflowRunStatus(row.status),
             intent=None if row.intent is None else WorkflowIntent(row.intent),
             attempts=row.attempts,
+            lease_token=row.lease_token,
         )
 
     async def claim(
@@ -411,6 +420,7 @@ class SqlWorkflowRunRepository:
                 attempts=1,
                 started_at=now,
                 leased_at=now,
+                lease_token=uuid4(),
             )
             try:
                 async with self.session.begin_nested():
@@ -458,28 +468,48 @@ class SqlWorkflowRunRepository:
         row.status = WorkflowRunStatus.RUNNING.value
         row.attempts += 1
         row.leased_at = now
+        row.lease_token = uuid4()
         row.finished_at = None
         row.error = None
         return self._claim(row)
 
-    async def set_intent(self, run_id: WorkflowRunId, intent: WorkflowIntent) -> None:
-        await self.session.execute(
-            update(WorkflowRun).where(WorkflowRun.id == run_id).values(intent=intent)
+    @staticmethod
+    def _lease_filter(claim: WorkflowRunClaim) -> tuple[ColumnElement[bool], ...]:
+        if claim.result is not WorkflowClaimResult.ACQUIRED or claim.lease_token is None:
+            raise LostWorkflowLeaseError("workflow claim does not hold an active lease")
+        return (
+            WorkflowRun.id == claim.run_id,
+            WorkflowRun.lease_token == claim.lease_token,
+            WorkflowRun.status == WorkflowRunStatus.RUNNING.value,
         )
 
-    async def set_error(self, run_id: WorkflowRunId, error: str) -> None:
-        await self.session.execute(
-            update(WorkflowRun).where(WorkflowRun.id == run_id).values(error=error)
+    async def set_intent(self, claim: WorkflowRunClaim, intent: WorkflowIntent) -> None:
+        result = await self.session.execute(
+            update(WorkflowRun).where(*self._lease_filter(claim)).values(intent=intent)
         )
+        if getattr(result, "rowcount", 0) != 1:
+            raise LostWorkflowLeaseError("workflow claim is no longer active")
+
+    async def set_error(self, claim: WorkflowRunClaim, error: str) -> None:
+        result = await self.session.execute(
+            update(WorkflowRun).where(*self._lease_filter(claim)).values(error=error)
+        )
+        if getattr(result, "rowcount", 0) != 1:
+            raise LostWorkflowLeaseError("workflow claim is no longer active")
 
     async def finish(
-        self, run_id: WorkflowRunId, status: WorkflowRunStatus, error: str | None = None
+        self,
+        claim: WorkflowRunClaim,
+        status: WorkflowRunStatus,
+        error: str | None = None,
     ) -> None:
-        await self.session.execute(
+        result = await self.session.execute(
             update(WorkflowRun)
-            .where(WorkflowRun.id == run_id)
+            .where(*self._lease_filter(claim))
             .values(status=status.value, finished_at=datetime.now(UTC), error=error)
         )
+        if getattr(result, "rowcount", 0) != 1:
+            raise LostWorkflowLeaseError("workflow claim is no longer active")
 
 
 class SqlOutboxRepository:
@@ -587,15 +617,28 @@ class SqlOutboxRepository:
                     max_attempts=row.max_attempts,
                     available_at=row.available_at,
                     last_error=row.last_error,
+                    locked_by=row.locked_by,
+                    claim_attempts=row.attempts,
                 )
             )
         await self.session.flush()
         return result
 
     async def update(self, record: OutboxRecord) -> None:
-        await self.session.execute(
+        if (
+            record.locked_by is None
+            or record.claim_attempts is None
+            or record.status is OutboxStatus.PENDING
+        ):
+            raise LostOutboxLeaseError("outbox record does not hold an active lease")
+        result = await self.session.execute(
             update(OutboxMessage)
-            .where(OutboxMessage.id == record.command.command_id)
+            .where(
+                OutboxMessage.id == record.command.command_id,
+                OutboxMessage.status == OutboxStatus.IN_PROGRESS.value,
+                OutboxMessage.attempts == record.claim_attempts,
+                OutboxMessage.locked_by == record.locked_by,
+            )
             .values(
                 status=record.status.value,
                 attempts=record.attempts,
@@ -606,3 +649,5 @@ class SqlOutboxRepository:
                 locked_by=None,
             )
         )
+        if getattr(result, "rowcount", 0) != 1:
+            raise LostOutboxLeaseError("outbox record lease is no longer active")

@@ -72,6 +72,10 @@ class InvalidOutboxTransitionError(ValueError):
     pass
 
 
+class LostOutboxLeaseError(ValueError):
+    pass
+
+
 class OutboxRecord(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -81,6 +85,8 @@ class OutboxRecord(BaseModel):
     max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, ge=1)
     available_at: datetime
     last_error: str | None = None
+    locked_by: str | None = None
+    claim_attempts: int | None = None
 
     @model_validator(mode="after")
     def validate_state(self) -> "OutboxRecord":

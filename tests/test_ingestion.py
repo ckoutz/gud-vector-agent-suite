@@ -33,7 +33,7 @@ from gvas.domain.outbox import (
     owner_message_process_command,
     owner_reply_command,
 )
-from gvas.domain.repositories import CrossBusinessReferenceError
+from gvas.domain.repositories import CrossBusinessReferenceError, LostWorkflowLeaseError
 from gvas.domain.workflows import WorkflowContext, WorkflowResult, WorkflowRouter
 from gvas.infrastructure.models import (
     Business,
@@ -256,6 +256,59 @@ async def test_processing_reclaim_does_not_duplicate_reply(
             )
             == 1
         )
+
+
+@pytest.mark.asyncio
+async def test_stale_workflow_claim_cannot_write_after_reclaim(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    ingestion = await IngestOwnerMessageService(SqlUnitOfWorkFactory(session_factory)).ingest(
+        make_message(business_id)
+    )
+    assert ingestion.message_id is not None
+
+    async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+        first = await unit_of_work.workflow_runs.claim(
+            business_id,
+            ingestion.message_id,
+            now=TEST_NOW,
+            stale_before=TEST_STALE_BEFORE,
+        )
+        await unit_of_work.commit()
+
+    async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+        busy = await unit_of_work.workflow_runs.claim(
+            business_id,
+            ingestion.message_id,
+            now=TEST_NOW,
+            stale_before=TEST_STALE_BEFORE,
+        )
+        await unit_of_work.commit()
+    assert busy.lease_token is None
+
+    async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+        second = await unit_of_work.workflow_runs.claim(
+            business_id,
+            ingestion.message_id,
+            now=TEST_NOW + timedelta(days=1),
+            stale_before=TEST_NOW + timedelta(hours=1),
+        )
+        await unit_of_work.commit()
+
+    assert first.lease_token is not None
+    assert second.lease_token is not None
+    assert second.lease_token != first.lease_token
+    with pytest.raises(LostWorkflowLeaseError):
+        async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+            await unit_of_work.workflow_runs.set_intent(first, WorkflowIntent("echo"))
+
+
+def test_workflow_result_rejects_non_terminal_status() -> None:
+    for status in (WorkflowRunStatus.PENDING, WorkflowRunStatus.RUNNING):
+        with pytest.raises(ValueError, match="terminal"):
+            WorkflowResult(status=status)
 
 
 @pytest.mark.asyncio
