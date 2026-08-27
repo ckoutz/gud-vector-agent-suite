@@ -19,14 +19,18 @@ from gvas.domain.messages import (
     ConversationRef,
     DeliveryReceipt,
     InboundOwnerMessage,
+    NormalizedOwnerMessage,
     OutboundOwnerMessage,
 )
 from gvas.domain.outbox import DEFAULT_MAX_ATTEMPTS, OutboxCommand, OutboxRecord
 from gvas.domain.repositories import (
     BusinessRecord,
+    CrossBusinessReferenceError,
     EndpointBusinessMismatchError,
+    InboundProcessingRecord,
     OutboundDeliveryRecord,
     OwnerChannelEndpointRecord,
+    WorkflowRunClaim,
 )
 from gvas.infrastructure.models import (
     Business,
@@ -167,6 +171,22 @@ class SqlInboundMessageRepository:
         conversation_id: ConversationId,
         endpoint_id: EndpointId,
     ) -> MessageId | None:
+        conversation = await self.session.scalar(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+        endpoint = await self.session.scalar(
+            select(OwnerChannelEndpoint).where(OwnerChannelEndpoint.id == endpoint_id)
+        )
+        if (
+            conversation is None
+            or endpoint is None
+            or conversation.business_id != message.message.business_id
+            or endpoint.business_id != message.message.business_id
+            or conversation.endpoint_id != endpoint_id
+        ):
+            raise CrossBusinessReferenceError(
+                "inbound message references a conversation or endpoint from another business"
+            )
         existing = await self.session.scalar(
             select(InboundMessage).where(
                 InboundMessage.endpoint_id == endpoint_id,
@@ -196,6 +216,47 @@ class SqlInboundMessageRepository:
             return None
         return MessageId(row.id)
 
+    async def get_for_processing(
+        self, inbound_message_id: MessageId
+    ) -> InboundProcessingRecord | None:
+        result = await self.session.execute(
+            select(InboundMessage, Conversation)
+            .join(Conversation, Conversation.id == InboundMessage.conversation_id)
+            .where(InboundMessage.id == inbound_message_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        inbound, conversation = row
+        message = NormalizedOwnerMessage.model_validate(
+            {
+                "message_key": inbound.message_key,
+                "business_id": inbound.business_id,
+                "conversation_ref": {
+                    "business_id": conversation.business_id,
+                    "external_conversation_id": conversation.external_conversation_id,
+                },
+                "sender": {
+                    "external_id": inbound.sender_external_id,
+                    "role": inbound.sender_role,
+                },
+                "received_at": (
+                    inbound.received_at
+                    if inbound.received_at.tzinfo is not None
+                    else inbound.received_at.replace(tzinfo=UTC)
+                ),
+                "parts": inbound.parts,
+                "reply_to": inbound.reply_to,
+            }
+        )
+        return InboundProcessingRecord(
+            inbound_message_id=MessageId(inbound.id),
+            business_id=BusinessId(inbound.business_id),
+            conversation_id=ConversationId(inbound.conversation_id),
+            endpoint_id=EndpointId(inbound.endpoint_id),
+            message=message,
+        )
+
 
 class SqlOutboundMessageRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -207,6 +268,31 @@ class SqlOutboundMessageRepository:
         conversation_id: ConversationId,
         inbound_message_id: MessageId,
     ) -> MessageId:
+        conversation = await self.session.scalar(
+            select(Conversation).where(Conversation.id == conversation_id)
+        )
+        inbound = await self.session.scalar(
+            select(InboundMessage).where(InboundMessage.id == inbound_message_id)
+        )
+        if (
+            conversation is None
+            or inbound is None
+            or conversation.business_id != message.business_id
+            or inbound.business_id != message.business_id
+            or inbound.conversation_id != conversation_id
+        ):
+            raise CrossBusinessReferenceError(
+                "outbound message references a conversation or inbound message "
+                "from another business"
+            )
+        existing = await self.session.scalar(
+            select(OutboundMessage).where(
+                OutboundMessage.inbound_message_id == inbound_message_id,
+                OutboundMessage.correlation_id == message.correlation_id,
+            )
+        )
+        if existing is not None:
+            return MessageId(existing.id)
         row = OutboundMessage(
             business_id=message.business_id,
             conversation_id=conversation_id,
@@ -216,8 +302,20 @@ class SqlOutboundMessageRepository:
             status=DeliveryStatus.ACCEPTED.value,
             correlation_id=message.correlation_id,
         )
-        self.session.add(row)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                self.session.add(row)
+                await self.session.flush()
+        except IntegrityError:
+            existing = await self.session.scalar(
+                select(OutboundMessage).where(
+                    OutboundMessage.inbound_message_id == inbound_message_id,
+                    OutboundMessage.correlation_id == message.correlation_id,
+                )
+            )
+            if existing is None:
+                raise
+            return MessageId(existing.id)
         return MessageId(row.id)
 
     async def get_for_delivery(
@@ -270,20 +368,73 @@ class SqlWorkflowRunRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(
-        self, business_id: BusinessId, inbound_message_id: MessageId, intent: WorkflowIntent
-    ) -> WorkflowRunId:
-        row = WorkflowRun(
-            business_id=business_id,
-            inbound_message_id=inbound_message_id,
-            intent=intent,
-            status=WorkflowRunStatus.RUNNING.value,
-            attempts=1,
-            started_at=datetime.now(UTC),
+    @staticmethod
+    def _claim(row: WorkflowRun) -> WorkflowRunClaim:
+        return WorkflowRunClaim(
+            run_id=WorkflowRunId(row.id),
+            status=WorkflowRunStatus(row.status),
+            intent=None if row.intent is None else WorkflowIntent(row.intent),
+            attempts=row.attempts,
         )
-        self.session.add(row)
-        await self.session.flush()
-        return WorkflowRunId(row.id)
+
+    async def claim(
+        self, business_id: BusinessId, inbound_message_id: MessageId
+    ) -> WorkflowRunClaim:
+        row = await self.session.scalar(
+            select(WorkflowRun)
+            .where(
+                WorkflowRun.business_id == business_id,
+                WorkflowRun.inbound_message_id == inbound_message_id,
+            )
+            .with_for_update()
+        )
+        if row is None:
+            row = WorkflowRun(
+                business_id=business_id,
+                inbound_message_id=inbound_message_id,
+                intent=None,
+                status=WorkflowRunStatus.RUNNING.value,
+                attempts=1,
+                started_at=datetime.now(UTC),
+            )
+            try:
+                async with self.session.begin_nested():
+                    self.session.add(row)
+                    await self.session.flush()
+            except IntegrityError:
+                row = await self.session.scalar(
+                    select(WorkflowRun)
+                    .where(
+                        WorkflowRun.business_id == business_id,
+                        WorkflowRun.inbound_message_id == inbound_message_id,
+                    )
+                    .with_for_update()
+                )
+                if row is None:
+                    raise
+                return self._reclaim(row)
+            return self._claim(row)
+        return self._reclaim(row)
+
+    def _reclaim(self, row: WorkflowRun) -> WorkflowRunClaim:
+        if row.status == WorkflowRunStatus.SUCCEEDED.value:
+            return self._claim(row)
+        row.status = WorkflowRunStatus.RUNNING.value
+        row.attempts += 1 if row.attempts else 1
+        row.started_at = datetime.now(UTC)
+        row.finished_at = None
+        row.error = None
+        return self._claim(row)
+
+    async def set_intent(self, run_id: WorkflowRunId, intent: WorkflowIntent) -> None:
+        await self.session.execute(
+            update(WorkflowRun).where(WorkflowRun.id == run_id).values(intent=intent)
+        )
+
+    async def set_error(self, run_id: WorkflowRunId, error: str) -> None:
+        await self.session.execute(
+            update(WorkflowRun).where(WorkflowRun.id == run_id).values(error=error)
+        )
 
     async def finish(
         self, run_id: WorkflowRunId, status: WorkflowRunStatus, error: str | None = None
@@ -300,6 +451,14 @@ class SqlOutboxRepository:
         self.session = session
 
     async def enqueue(self, command: OutboxCommand) -> None:
+        if command.outbound_message_id is not None:
+            outbound = await self.session.scalar(
+                select(OutboundMessage).where(OutboundMessage.id == command.outbound_message_id)
+            )
+            if outbound is None or outbound.business_id != command.business_id:
+                raise CrossBusinessReferenceError(
+                    "outbox command references an outbound message from another business"
+                )
         existing = (
             await self.session.scalar(
                 select(OutboxMessage).where(

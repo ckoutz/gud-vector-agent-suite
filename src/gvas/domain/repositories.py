@@ -18,6 +18,7 @@ from gvas.domain.messages import (
     ConversationRef,
     DeliveryReceipt,
     InboundOwnerMessage,
+    NormalizedOwnerMessage,
     OutboundOwnerMessage,
 )
 from gvas.domain.outbox import OutboxCommand, OutboxRecord
@@ -53,7 +54,30 @@ class OutboundDeliveryRecord(BaseModel):
     status: DeliveryStatus
 
 
+class InboundProcessingRecord(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    inbound_message_id: MessageId
+    business_id: BusinessId
+    conversation_id: ConversationId
+    endpoint_id: EndpointId
+    message: NormalizedOwnerMessage
+
+
+class WorkflowRunClaim(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run_id: WorkflowRunId
+    status: WorkflowRunStatus
+    intent: WorkflowIntent | None
+    attempts: int
+
+
 class EndpointBusinessMismatchError(ValueError):
+    pass
+
+
+class CrossBusinessReferenceError(ValueError):
     pass
 
 
@@ -78,12 +102,20 @@ class ConversationRepository(Protocol):
 
 
 class InboundMessageRepository(Protocol):
+    """Inbound links must reference the message business and endpoint."""
+
     async def create(
         self, message: InboundOwnerMessage, conversation_id: ConversationId, endpoint_id: EndpointId
     ) -> MessageId | None: ...
 
+    async def get_for_processing(
+        self, inbound_message_id: MessageId
+    ) -> InboundProcessingRecord | None: ...
+
 
 class OutboundMessageRepository(Protocol):
+    """Outbound links must reference the same business as the reply."""
+
     async def create(
         self,
         message: OutboundOwnerMessage,
@@ -101,9 +133,13 @@ class OutboundMessageRepository(Protocol):
 
 
 class WorkflowRunRepository(Protocol):
-    async def create(
-        self, business_id: BusinessId, inbound_message_id: MessageId, intent: WorkflowIntent
-    ) -> WorkflowRunId: ...
+    async def claim(
+        self, business_id: BusinessId, inbound_message_id: MessageId
+    ) -> WorkflowRunClaim: ...
+
+    async def set_intent(self, run_id: WorkflowRunId, intent: WorkflowIntent) -> None: ...
+
+    async def set_error(self, run_id: WorkflowRunId, error: str) -> None: ...
 
     async def finish(
         self, run_id: WorkflowRunId, status: WorkflowRunStatus, error: str | None = None

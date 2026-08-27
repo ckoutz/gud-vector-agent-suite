@@ -57,6 +57,7 @@ class Conversation(Base):
             ["owner_channel_endpoints.business_id", "owner_channel_endpoints.id"],
             ondelete="CASCADE",
         ),
+        UniqueConstraint("business_id", "id"),
         UniqueConstraint("endpoint_id", "external_conversation_id"),
         Index("ix_conversations_endpoint_id", "endpoint_id"),
     )
@@ -78,6 +79,12 @@ class InboundMessage(Base):
             ["owner_channel_endpoints.business_id", "owner_channel_endpoints.id"],
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ["business_id", "conversation_id"],
+            ["conversations.business_id", "conversations.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("business_id", "id"),
         UniqueConstraint("endpoint_id", "message_key"),
         Index("ix_inbound_messages_conversation_id", "conversation_id"),
     )
@@ -87,9 +94,7 @@ class InboundMessage(Base):
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
     endpoint_id: Mapped[UUID] = mapped_column(nullable=False)
-    conversation_id: Mapped[UUID] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
-    )
+    conversation_id: Mapped[UUID] = mapped_column(nullable=False)
     message_key: Mapped[str] = mapped_column(String(255), nullable=False)
     sender_external_id: Mapped[str] = mapped_column(String(255), nullable=False)
     sender_role: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -101,18 +106,28 @@ class InboundMessage(Base):
 
 class OutboundMessage(Base):
     __tablename__ = "outbound_messages"
-    __table_args__ = (Index("ix_outbound_messages_conversation_id", "conversation_id"),)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["business_id", "conversation_id"],
+            ["conversations.business_id", "conversations.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["business_id", "inbound_message_id"],
+            ["inbound_messages.business_id", "inbound_messages.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("business_id", "id"),
+        UniqueConstraint("inbound_message_id", "correlation_id"),
+        Index("ix_outbound_messages_conversation_id", "conversation_id"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     business_id: Mapped[UUID] = mapped_column(
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
-    conversation_id: Mapped[UUID] = mapped_column(
-        ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
-    )
-    inbound_message_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("inbound_messages.id", ondelete="SET NULL")
-    )
+    conversation_id: Mapped[UUID] = mapped_column(nullable=False)
+    inbound_message_id: Mapped[UUID | None] = mapped_column()
     parts: Mapped[list[JsonValue]] = mapped_column(json_type, nullable=False)
     reply_to: Mapped[dict[str, JsonValue] | None] = mapped_column(json_type)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -125,7 +140,12 @@ class OutboundMessage(Base):
 class WorkflowRun(Base):
     __tablename__ = "workflow_runs"
     __table_args__ = (
-        UniqueConstraint("inbound_message_id", "intent"),
+        ForeignKeyConstraint(
+            ["business_id", "inbound_message_id"],
+            ["inbound_messages.business_id", "inbound_messages.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("inbound_message_id"),
         Index("ix_workflow_runs_business_id", "business_id"),
     )
 
@@ -133,10 +153,8 @@ class WorkflowRun(Base):
     business_id: Mapped[UUID] = mapped_column(
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
-    inbound_message_id: Mapped[UUID] = mapped_column(
-        ForeignKey("inbound_messages.id", ondelete="CASCADE"), nullable=False
-    )
-    intent: Mapped[str] = mapped_column(String(255), nullable=False)
+    inbound_message_id: Mapped[UUID] = mapped_column(nullable=False)
+    intent: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     attempts: Mapped[int] = mapped_column(nullable=False, default=0)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -147,6 +165,11 @@ class WorkflowRun(Base):
 class OutboxMessage(Base):
     __tablename__ = "outbox_messages"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["business_id", "outbound_message_id"],
+            ["outbound_messages.business_id", "outbound_messages.id"],
+            ondelete="CASCADE",
+        ),
         UniqueConstraint("business_id", "dedup_key"),
         UniqueConstraint("outbound_message_id"),
         Index("ix_outbox_messages_claim", "status", "available_at"),
@@ -156,9 +179,7 @@ class OutboxMessage(Base):
     business_id: Mapped[UUID] = mapped_column(
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
-    outbound_message_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("outbound_messages.id", ondelete="CASCADE")
-    )
+    outbound_message_id: Mapped[UUID | None] = mapped_column()
     command_type: Mapped[str] = mapped_column(String(255), nullable=False)
     payload: Mapped[dict[str, JsonValue]] = mapped_column(json_type, nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)

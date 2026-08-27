@@ -74,7 +74,7 @@ async def test_adapters_do_not_assign_intent_and_workflow_ignores_routing() -> N
 
     handler = EchoHandler()
     router = WorkflowRouter([handler])
-    selected_handlers = [router.route(item.intent) for item in resolutions]
+    selected_handlers = [router.route(resolution.intent) for resolution in resolutions]
     assert selected_handlers[0] is handler
     assert selected_handlers[1] is handler
 

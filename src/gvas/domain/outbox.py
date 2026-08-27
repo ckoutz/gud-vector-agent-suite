@@ -9,6 +9,9 @@ from gvas.domain.identifiers import BusinessId, JsonValue, MessageId, OutboxComm
 DEFAULT_MAX_ATTEMPTS = 3
 OWNER_REPLY_COMMAND_TYPE = "owner_reply.deliver"
 OWNER_REPLY_COMMAND_NAMESPACE = UUID("4f54e5f4-6a71-4c68-8d37-7cb0e5e95a4a")
+OWNER_MESSAGE_PROCESS_COMMAND_TYPE = "owner_message.process"
+OWNER_MESSAGE_PROCESS_COMMAND_NAMESPACE = UUID("b2b1a0c4-5f3e-4a76-9c1d-2e8f4a6b7c50")
+RESERVED_COMMAND_TYPES = frozenset({OWNER_REPLY_COMMAND_TYPE, OWNER_MESSAGE_PROCESS_COMMAND_TYPE})
 
 
 class OutboxCommand(BaseModel):
@@ -26,6 +29,11 @@ class OutboxCommand(BaseModel):
         is_owner_reply = self.command_type == OWNER_REPLY_COMMAND_TYPE
         if is_owner_reply != (self.outbound_message_id is not None):
             raise ValueError("owner reply commands require exactly one outbound message linkage")
+        if (
+            self.command_type == OWNER_MESSAGE_PROCESS_COMMAND_TYPE
+            and self.outbound_message_id is not None
+        ):
+            raise ValueError("owner message process commands cannot link an outbound message")
         return self
 
 
@@ -37,6 +45,20 @@ def owner_reply_command(business_id: BusinessId, outbound_message_id: MessageId)
         payload={"outbound_message_id": str(outbound_message_id)},
         dedup_key=f"owner_reply:{outbound_message_id}",
         outbound_message_id=outbound_message_id,
+    )
+
+
+def owner_message_process_command(
+    business_id: BusinessId, inbound_message_id: MessageId
+) -> OutboxCommand:
+    return OutboxCommand(
+        command_id=OutboxCommandId(
+            uuid5(OWNER_MESSAGE_PROCESS_COMMAND_NAMESPACE, str(inbound_message_id))
+        ),
+        business_id=business_id,
+        command_type=OWNER_MESSAGE_PROCESS_COMMAND_TYPE,
+        payload={"inbound_message_id": str(inbound_message_id)},
+        dedup_key=f"owner_message:{inbound_message_id}",
     )
 
 

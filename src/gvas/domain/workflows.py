@@ -26,6 +26,8 @@ class WorkflowResult(BaseModel):
 
 
 class WorkflowHandler(Protocol):
+    """Handlers must use deterministic reply correlation IDs for replay safety."""
+
     intent: WorkflowIntent
 
     async def handle(self, context: WorkflowContext) -> WorkflowResult: ...

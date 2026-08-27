@@ -16,8 +16,10 @@ from gvas.domain.messages import (
     TextPart,
 )
 from gvas.domain.outbox import (
+    OWNER_MESSAGE_PROCESS_COMMAND_TYPE,
     OWNER_REPLY_COMMAND_TYPE,
     OutboxCommand,
+    owner_message_process_command,
     owner_reply_command,
 )
 
@@ -147,3 +149,11 @@ def test_owner_reply_command_is_deterministic_and_linked() -> None:
             command_type=OWNER_REPLY_COMMAND_TYPE,
             payload={},
         )
+
+
+def test_owner_message_process_command_is_deterministic_and_unlinked() -> None:
+    inbound_message_id = MessageId(uuid4())
+    command = owner_message_process_command(BusinessId(uuid4()), inbound_message_id)
+    assert command.command_type == OWNER_MESSAGE_PROCESS_COMMAND_TYPE
+    assert command.outbound_message_id is None
+    assert command == owner_message_process_command(command.business_id, inbound_message_id)

@@ -2,22 +2,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from gvas.domain.enums import WorkflowRunStatus
-from gvas.domain.identifiers import MessageId, WorkflowRunId
-from gvas.domain.intents import IntentUnresolvedError
+from gvas.domain.identifiers import MessageId, OutboxCommandId
 from gvas.domain.messages import InboundOwnerMessage
 from gvas.domain.outbox import (
-    OWNER_REPLY_COMMAND_TYPE,
-    ReservedOutboxCommandTypeError,
-    owner_reply_command,
+    owner_message_process_command,
 )
-from gvas.domain.ports import IntentResolutionPort
 from gvas.domain.repositories import UnitOfWork
-from gvas.domain.workflows import (
-    UnknownWorkflowIntentError,
-    WorkflowContext,
-    WorkflowRouter,
-)
 
 
 class IngestionStatus(StrEnum):
@@ -29,7 +19,7 @@ class IngestionStatus(StrEnum):
 class IngestionOutcome:
     status: IngestionStatus
     message_id: MessageId | None = None
-    run_id: WorkflowRunId | None = None
+    process_command_id: OutboxCommandId | None = None
     detail: str | None = None
 
 
@@ -38,15 +28,8 @@ class UnitOfWorkFactory(Protocol):
 
 
 class IngestOwnerMessageService:
-    def __init__(
-        self,
-        unit_of_work_factory: UnitOfWorkFactory,
-        router: WorkflowRouter,
-        intent_resolver: IntentResolutionPort,
-    ) -> None:
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
         self._unit_of_work_factory = unit_of_work_factory
-        self._router = router
-        self._intent_resolver = intent_resolver
 
     async def ingest(self, message: InboundOwnerMessage) -> IngestionOutcome:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -62,55 +45,13 @@ class IngestOwnerMessageService:
             if inbound_message_id is None:
                 await unit_of_work.rollback()
                 return IngestionOutcome(IngestionStatus.DUPLICATE)
-
-            try:
-                resolution = await self._intent_resolver.resolve(message.message)
-            except IntentUnresolvedError as error:
-                await unit_of_work.commit()
-                return IngestionOutcome(
-                    IngestionStatus.ACCEPTED,
-                    message_id=inbound_message_id,
-                    detail=str(error),
-                )
-
-            run_id = await unit_of_work.workflow_runs.create(
-                message.message.business_id, inbound_message_id, resolution.intent
+            process_command = owner_message_process_command(
+                message.message.business_id, inbound_message_id
             )
-            try:
-                handler = self._router.route(resolution.intent)
-            except UnknownWorkflowIntentError as error:
-                await unit_of_work.workflow_runs.finish(
-                    run_id, WorkflowRunStatus.FAILED, str(error)
-                )
-                await unit_of_work.commit()
-                return IngestionOutcome(
-                    IngestionStatus.ACCEPTED,
-                    message_id=inbound_message_id,
-                    run_id=run_id,
-                    detail=str(error),
-                )
-
-            result = await handler.handle(
-                WorkflowContext(run_id=run_id, intent=resolution.intent, message=message.message)
-            )
-            for reply in result.replies:
-                outbound_message_id = await unit_of_work.outbound_messages.create(
-                    reply, conversation_id, inbound_message_id
-                )
-                await unit_of_work.outbox.enqueue(
-                    owner_reply_command(reply.business_id, outbound_message_id)
-                )
-            for command in result.commands:
-                if command.command_type == OWNER_REPLY_COMMAND_TYPE:
-                    raise ReservedOutboxCommandTypeError(
-                        f"{OWNER_REPLY_COMMAND_TYPE} is reserved for replies"
-                    )
-                await unit_of_work.outbox.enqueue(command)
-            await unit_of_work.workflow_runs.finish(run_id, result.status, result.detail)
+            await unit_of_work.outbox.enqueue(process_command)
             await unit_of_work.commit()
             return IngestionOutcome(
                 IngestionStatus.ACCEPTED,
                 message_id=inbound_message_id,
-                run_id=run_id,
-                detail=result.detail,
+                process_command_id=process_command.command_id,
             )

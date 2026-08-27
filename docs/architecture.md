@@ -28,7 +28,9 @@ An adapter translates a provider event into an `InboundOwnerMessage` envelope:
 ```text
 adapter
   -> InboundOwnerMessage(message, endpoint, routing)
-  -> application ingestion
+  -> short ingress transaction
+  -> owner_message.process outbox command
+  -> application processing
   -> IntentResolutionPort.resolve(NormalizedOwnerMessage)
   -> WorkflowContext(run_id, intent, NormalizedOwnerMessage)
   -> handler replies and custom commands
@@ -48,9 +50,9 @@ pre-register endpoints with richer routing. `source_namespace` is compared for
 identity but is never branched on.
 
 Adapters never assign intent. The application resolves it through
-`IntentResolutionPort`. The default `UnconfiguredIntentResolver` records the
-inbound message and returns an accepted outcome without creating a workflow run
-when no resolver is configured.
+`IntentResolutionPort` during processing, after ingress has committed. The
+default `UnconfiguredIntentResolver` leaves processing non-terminal and
+resumable until a resolver is configured.
 
 ## Domain contracts
 
@@ -67,15 +69,21 @@ detail. `IntentUnresolvedError` represents an unavailable resolution.
 
 ## Replies and outbox commands
 
-Every handler reply is persisted as one `outbound_messages` row and exactly one
-`owner_reply.deliver` outbox command in the same unit of work. The command
-contains the outbound message ID, uses a deterministic UUIDv5 command ID, and
-has a unique `owner_reply:<message-id>` deduplication key. Workflow handlers may
-return custom commands, but the reserved owner-reply command type is rejected.
+Ingress persists exactly one `owner_message.process` command for each new inbound
+message. Processing runs outside a database transaction while resolving intent
+and invoking a handler; only short load/claim and persist transactions are
+allowed. Every handler reply is persisted as one `outbound_messages` row and
+exactly one `owner_reply.deliver` outbox command in the persistence transaction.
+The command contains the outbound message ID, uses a deterministic UUIDv5
+command ID, and has a unique `owner_reply:<message-id>` deduplication key.
+Workflow handlers may return custom commands, but both framework command types
+are reserved.
 
 The outbox command has a nullable foreign key to `outbound_messages.id` with
 `CASCADE` delete and a unique constraint, so an outbound reply has at most one
 delivery command while custom commands remain unlinked.
+Handlers must choose a deterministic `correlation_id` for a given inbound
+message. It is the replay key for get-or-create outbound replies.
 
 ## Persistence
 
@@ -88,8 +96,8 @@ agreement with `infrastructure/models.py`.
 | `owner_channel_endpoints` | business, opaque source namespace, external endpoint ID, optional owner metadata, routing |
 | `conversations` | required endpoint, external conversation ID, routing; unique per endpoint |
 | `inbound_messages` | required endpoint and conversation, message key, normalized content, envelope routing; unique per endpoint |
-| `outbound_messages` | business/conversation correlation, content, delivery status and receipt metadata |
-| `workflow_runs` | resolved intent, inbound message, execution status and attempts; unique per inbound/intent |
+| `outbound_messages` | business/conversation correlation, replay key, content, delivery status and receipt metadata |
+| `workflow_runs` | optional resolved intent, inbound message, execution status and attempts; one run per inbound |
 | `outbox_messages` | custom or owner-reply command, retry state, lock metadata, optional outbound link |
 
 Identity is endpoint-scoped. Two endpoints belonging to one business may use
@@ -99,11 +107,16 @@ return typed domain read models.
 
 ## Application services
 
-`IngestOwnerMessageService` upserts the endpoint, upserts the endpoint-scoped
-conversation, inserts the inbound envelope idempotently, resolves intent, then
-creates and executes a workflow run. Duplicate inbound inserts explicitly roll
-back. Unknown workflow intent creates a failed run with no outputs. Replies and
-commands commit atomically.
+`IngestOwnerMessageService` performs only the short ingress transaction:
+upserting the endpoint and endpoint-scoped conversation, inserting the inbound
+envelope idempotently, and enqueueing one `owner_message.process` command.
+Duplicate inbound inserts explicitly roll back. `ProcessOwnerMessageService`
+claims the one workflow run per inbound message, closes the UoW before intent
+resolution and handler execution, then persists the intent, replay-safe replies,
+custom commands, and terminal status in a second short transaction. Intent
+resolution failures leave the run `RUNNING` with its error for later retry;
+unknown intents and handler failures are durable failed outcomes. Provider or
+AI calls never happen while a UoW is open.
 
 `OutboxService` enqueues commands, claims available rows with worker identity,
 increments attempts at claim time, and computes retry availability from an
@@ -113,8 +126,9 @@ implementation exists in Round 1.
 Custom outbox deduplication is business-scoped: the same deduplication key can
 be used independently by different businesses, while repeated commands for one
 business are collapsed. Endpoint and conversation references are also
-business-consistent; composite foreign keys prevent a conversation or inbound
-message from linking an endpoint owned by another business.
+business-consistent. Composite business-scoped foreign keys and repository
+checks prevent conversations, inbound messages, workflow runs, outbound
+messages, and linked outbox commands from crossing tenant boundaries.
 
 ## HTTP and composition
 

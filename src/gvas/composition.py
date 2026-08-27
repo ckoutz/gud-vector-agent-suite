@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from gvas.application.ingestion import IngestOwnerMessageService
 from gvas.application.intents import UnconfiguredIntentResolver
 from gvas.application.outbox_service import OutboxService
+from gvas.application.processing import ProcessOwnerMessageService
 from gvas.config import Settings
 from gvas.domain.ports import IntentResolutionPort
 from gvas.domain.workflows import WorkflowRouter
@@ -19,7 +20,8 @@ class Application:
     unit_of_work_factory: SqlUnitOfWorkFactory
     router: WorkflowRouter
     intent_resolver: IntentResolutionPort
-    ingestion: IngestOwnerMessageService
+    ingest_service: IngestOwnerMessageService
+    processing_service: ProcessOwnerMessageService
     outbox: OutboxService
 
 
@@ -38,7 +40,8 @@ def build_application(
         session_factory=session_factory,
         unit_of_work_factory=unit_of_work_factory,
         router=router,
-        ingestion=IngestOwnerMessageService(unit_of_work_factory, router, resolver),
+        ingest_service=IngestOwnerMessageService(unit_of_work_factory),
+        processing_service=ProcessOwnerMessageService(unit_of_work_factory, router, resolver),
         outbox=OutboxService(unit_of_work_factory),
         intent_resolver=resolver,
     )
