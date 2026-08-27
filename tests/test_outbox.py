@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.application.outbox_service import OutboxService
@@ -60,6 +60,24 @@ async def test_claim_deduplicates_and_records_lock(
         assert row is not None
         assert row.locked_by == "worker"
         assert row.locked_at == (now + timedelta(seconds=1)).replace(tzinfo=None)
+
+
+@pytest.mark.asyncio
+async def test_deduplication_is_scoped_to_business(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    first_business = BusinessId(uuid4())
+    second_business = BusinessId(uuid4())
+    await seed_business(session_factory, first_business)
+    await seed_business(session_factory, second_business)
+    service = OutboxService(SqlUnitOfWorkFactory(session_factory))
+
+    await service.enqueue(command(first_business, "shared"))
+    await service.enqueue(command(second_business, "shared"))
+    await service.enqueue(command(first_business, "shared"))
+
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(OutboxMessage)) == 2
 
 
 @pytest.mark.asyncio

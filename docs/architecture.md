@@ -110,6 +110,12 @@ increments attempts at claim time, and computes retry availability from an
 explicit timezone-aware current time. No dispatcher or external delivery
 implementation exists in Round 1.
 
+Custom outbox deduplication is business-scoped: the same deduplication key can
+be used independently by different businesses, while repeated commands for one
+business are collapsed. Endpoint and conversation references are also
+business-consistent; composite foreign keys prevent a conversation or inbound
+message from linking an endpoint owned by another business.
+
 ## HTTP and composition
 
 `create_app()` exposes only `GET /healthz`; module-level `app` remains available

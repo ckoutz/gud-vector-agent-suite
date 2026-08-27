@@ -41,6 +41,7 @@ def upgrade() -> None:
             ["business_id"], ["businesses.id"], name=op.f("fk_owner_channel_endpoints_business_id_businesses"), ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_owner_channel_endpoints")),
+        sa.UniqueConstraint("business_id", "id", name=op.f("uq_owner_channel_endpoints_business_id_id")),
         sa.UniqueConstraint("business_id", "source_namespace", "external_endpoint_id", name=op.f("uq_owner_channel_endpoints_business_id")),
     )
     op.create_index(op.f("ix_owner_channel_endpoints_business_id"), "owner_channel_endpoints", ["business_id"])
@@ -52,7 +53,7 @@ def upgrade() -> None:
         sa.Column("external_conversation_id", sa.String(length=255), nullable=False),
         sa.Column("routing", json_type, nullable=False),
         sa.ForeignKeyConstraint(["business_id"], ["businesses.id"], name=op.f("fk_conversations_business_id_businesses"), ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["endpoint_id"], ["owner_channel_endpoints.id"], name=op.f("fk_conversations_endpoint_id_owner_channel_endpoints"), ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["business_id", "endpoint_id"], ["owner_channel_endpoints.business_id", "owner_channel_endpoints.id"], name=op.f("fk_conversations_business_id_endpoint_id_owner_channel_endpoints"), ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_conversations")),
         sa.UniqueConstraint("endpoint_id", "external_conversation_id", name=op.f("uq_conversations_endpoint_id")),
     )
@@ -71,7 +72,7 @@ def upgrade() -> None:
         sa.Column("reply_to", json_type, nullable=True),
         sa.Column("routing", json_type, nullable=False),
         sa.ForeignKeyConstraint(["business_id"], ["businesses.id"], name=op.f("fk_inbound_messages_business_id_businesses"), ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(["endpoint_id"], ["owner_channel_endpoints.id"], name=op.f("fk_inbound_messages_endpoint_id_owner_channel_endpoints"), ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["business_id", "endpoint_id"], ["owner_channel_endpoints.business_id", "owner_channel_endpoints.id"], name=op.f("fk_inbound_messages_business_id_endpoint_id_owner_channel_endpoints"), ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["conversation_id"], ["conversations.id"], name=op.f("fk_inbound_messages_conversation_id_conversations"), ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_inbound_messages")),
         sa.UniqueConstraint("endpoint_id", "message_key", name=op.f("uq_inbound_messages_endpoint_id")),
@@ -131,7 +132,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["business_id"], ["businesses.id"], name=op.f("fk_outbox_messages_business_id_businesses"), ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["outbound_message_id"], ["outbound_messages.id"], name=op.f("fk_outbox_messages_outbound_message_id_outbound_messages"), ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_outbox_messages")),
-        sa.UniqueConstraint("dedup_key", name=op.f("uq_outbox_messages_dedup_key")),
+        sa.UniqueConstraint("business_id", "dedup_key", name=op.f("uq_outbox_messages_business_id_dedup_key")),
         sa.UniqueConstraint("outbound_message_id", name=op.f("uq_outbox_messages_outbound_message_id")),
     )
     op.create_index(op.f("ix_outbox_messages_claim"), "outbox_messages", ["status", "available_at"])

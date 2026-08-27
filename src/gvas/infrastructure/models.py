@@ -1,7 +1,15 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from gvas.domain.identifiers import JsonValue
@@ -26,6 +34,7 @@ class Business(Base):
 class OwnerChannelEndpoint(Base):
     __tablename__ = "owner_channel_endpoints"
     __table_args__ = (
+        UniqueConstraint("business_id", "id"),
         UniqueConstraint("business_id", "source_namespace", "external_endpoint_id"),
         Index("ix_owner_channel_endpoints_business_id", "business_id"),
     )
@@ -43,6 +52,11 @@ class OwnerChannelEndpoint(Base):
 class Conversation(Base):
     __tablename__ = "conversations"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["business_id", "endpoint_id"],
+            ["owner_channel_endpoints.business_id", "owner_channel_endpoints.id"],
+            ondelete="CASCADE",
+        ),
         UniqueConstraint("endpoint_id", "external_conversation_id"),
         Index("ix_conversations_endpoint_id", "endpoint_id"),
     )
@@ -51,9 +65,7 @@ class Conversation(Base):
     business_id: Mapped[UUID] = mapped_column(
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
-    endpoint_id: Mapped[UUID] = mapped_column(
-        ForeignKey("owner_channel_endpoints.id", ondelete="CASCADE"), nullable=False
-    )
+    endpoint_id: Mapped[UUID] = mapped_column(nullable=False)
     external_conversation_id: Mapped[str] = mapped_column(String(255), nullable=False)
     routing: Mapped[dict[str, JsonValue]] = mapped_column(json_type, nullable=False)
 
@@ -61,6 +73,11 @@ class Conversation(Base):
 class InboundMessage(Base):
     __tablename__ = "inbound_messages"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["business_id", "endpoint_id"],
+            ["owner_channel_endpoints.business_id", "owner_channel_endpoints.id"],
+            ondelete="CASCADE",
+        ),
         UniqueConstraint("endpoint_id", "message_key"),
         Index("ix_inbound_messages_conversation_id", "conversation_id"),
     )
@@ -69,9 +86,7 @@ class InboundMessage(Base):
     business_id: Mapped[UUID] = mapped_column(
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
-    endpoint_id: Mapped[UUID] = mapped_column(
-        ForeignKey("owner_channel_endpoints.id", ondelete="CASCADE"), nullable=False
-    )
+    endpoint_id: Mapped[UUID] = mapped_column(nullable=False)
     conversation_id: Mapped[UUID] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
@@ -132,7 +147,7 @@ class WorkflowRun(Base):
 class OutboxMessage(Base):
     __tablename__ = "outbox_messages"
     __table_args__ = (
-        UniqueConstraint("dedup_key"),
+        UniqueConstraint("business_id", "dedup_key"),
         UniqueConstraint("outbound_message_id"),
         Index("ix_outbox_messages_claim", "status", "available_at"),
     )

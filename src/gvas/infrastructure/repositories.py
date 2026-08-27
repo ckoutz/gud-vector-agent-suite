@@ -24,6 +24,7 @@ from gvas.domain.messages import (
 from gvas.domain.outbox import DEFAULT_MAX_ATTEMPTS, OutboxCommand, OutboxRecord
 from gvas.domain.repositories import (
     BusinessRecord,
+    EndpointBusinessMismatchError,
     OutboundDeliveryRecord,
     OwnerChannelEndpointRecord,
 )
@@ -117,6 +118,13 @@ class SqlConversationRepository:
     async def get_or_create(
         self, reference: ConversationRef, endpoint_id: EndpointId, routing: RoutingData
     ) -> ConversationId:
+        endpoint = await self.session.scalar(
+            select(OwnerChannelEndpoint).where(OwnerChannelEndpoint.id == endpoint_id)
+        )
+        if endpoint is None or endpoint.business_id != reference.business_id:
+            raise EndpointBusinessMismatchError(
+                "conversation endpoint must belong to the conversation business"
+            )
         result = await self.session.execute(
             select(Conversation).where(
                 Conversation.endpoint_id == endpoint_id,
@@ -294,7 +302,10 @@ class SqlOutboxRepository:
     async def enqueue(self, command: OutboxCommand) -> None:
         existing = (
             await self.session.scalar(
-                select(OutboxMessage).where(OutboxMessage.dedup_key == command.dedup_key)
+                select(OutboxMessage).where(
+                    OutboxMessage.business_id == command.business_id,
+                    OutboxMessage.dedup_key == command.dedup_key,
+                )
             )
             if command.dedup_key is not None
             else None

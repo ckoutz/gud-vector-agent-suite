@@ -53,6 +53,10 @@ class OutboundDeliveryRecord(BaseModel):
     status: DeliveryStatus
 
 
+class EndpointBusinessMismatchError(ValueError):
+    pass
+
+
 class BusinessRepository(Protocol):
     async def get(self, business_id: BusinessId) -> BusinessRecord | None: ...
 
@@ -66,6 +70,8 @@ class OwnerChannelEndpointRepository(Protocol):
 
 
 class ConversationRepository(Protocol):
+    """Endpoint and conversation references must belong to the same business."""
+
     async def get_or_create(
         self, reference: ConversationRef, endpoint_id: EndpointId, routing: RoutingData
     ) -> ConversationId: ...

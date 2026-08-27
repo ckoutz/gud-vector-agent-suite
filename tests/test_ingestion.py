@@ -30,6 +30,7 @@ from gvas.domain.outbox import (
     OutboxCommand,
     ReservedOutboxCommandTypeError,
 )
+from gvas.domain.repositories import EndpointBusinessMismatchError
 from gvas.domain.workflows import WorkflowContext, WorkflowResult, WorkflowRouter
 from gvas.infrastructure.models import (
     Business,
@@ -236,6 +237,53 @@ async def test_duplicate_inbound_savepoint_does_not_poison_unit_of_work(
         await unit_of_work.commit()
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(InboundMessage)) == 2
+
+
+@pytest.mark.asyncio
+async def test_existing_conversation_is_reused_by_later_unit_of_work(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    incoming = make_message(business_id)
+    async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+        endpoint_id = await unit_of_work.owner_channel_endpoints.get_or_create(
+            incoming.endpoint, incoming.routing
+        )
+        first_id = await unit_of_work.conversations.get_or_create(
+            incoming.message.conversation_ref, endpoint_id, incoming.routing
+        )
+        await unit_of_work.commit()
+    async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+        second_id = await unit_of_work.conversations.get_or_create(
+            incoming.message.conversation_ref, endpoint_id, incoming.routing
+        )
+    assert second_id == first_id
+
+
+@pytest.mark.asyncio
+async def test_conversation_rejects_endpoint_from_another_business(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    first_business = BusinessId(uuid4())
+    second_business = BusinessId(uuid4())
+    await seed_business(session_factory, first_business)
+    await seed_business(session_factory, second_business)
+    incoming = make_message(first_business)
+    async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+        endpoint_id = await unit_of_work.owner_channel_endpoints.get_or_create(
+            incoming.endpoint, incoming.routing
+        )
+        await unit_of_work.commit()
+    mismatched_reference = ConversationRef(
+        business_id=second_business,
+        external_conversation_id="conversation",
+    )
+    with pytest.raises(EndpointBusinessMismatchError):
+        async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+            await unit_of_work.conversations.get_or_create(mismatched_reference, endpoint_id, {})
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(Conversation)) == 0
 
 
 @pytest.mark.asyncio
