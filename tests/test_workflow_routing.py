@@ -55,16 +55,21 @@ class FakeChannelAdapter:
 
 @pytest.mark.asyncio
 async def test_routing_ignores_transport_label() -> None:
-    router = WorkflowRouter([EchoHandler()])
+    handler = EchoHandler()
+    router = WorkflowRouter([handler])
     adapter = FakeChannelAdapter()
     messages = [await adapter.translate(transport) for transport in ("slack", "twilio")]
-    results = [
-        await router.route(item.intent).handle(
-            WorkflowContext(run_id=WorkflowRunId(uuid4()), message=item)
-        )
-        for item in messages
-    ]
-    assert results[0].replies[0].model_copy(update={"routing": {}}).model_dump(
+    assert messages[0].model_dump(exclude={"routing"}) == messages[1].model_dump(
         exclude={"routing"}
-    ) == results[1].replies[0].model_copy(update={"routing": {}}).model_dump(exclude={"routing"})
-    assert results[0].status == results[1].status
+    )
+    selected_handlers = [router.route(item.intent) for item in messages]
+    assert selected_handlers[0] is handler
+    assert selected_handlers[1] is handler
+    run_id = WorkflowRunId(uuid4())
+    results = [
+        await selected_handler.handle(WorkflowContext(run_id=run_id, message=item))
+        for selected_handler, item in zip(selected_handlers, messages, strict=True)
+    ]
+    assert results[0].model_dump(exclude={"replies": {"__all__": {"routing"}}}) == results[
+        1
+    ].model_dump(exclude={"replies": {"__all__": {"routing"}}})

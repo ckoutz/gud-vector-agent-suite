@@ -16,36 +16,41 @@ FORBIDDEN = {
 ALLOWED_EXTERNAL = {"pydantic"}
 
 
+def find_violations(layer: str, path: Path, source: str) -> list[str]:
+    violations: list[str] = []
+    lowered = source.lower()
+    for forbidden in ("slack", "twilio"):
+        if forbidden in lowered:
+            violations.append(f"{path}: forbidden transport substring {forbidden}")
+    tree = ast.parse(source, filename=str(path))
+    for node in ast.walk(tree):
+        imported: str | None = None
+        if isinstance(node, ast.Import):
+            imported = node.names[0].name
+        elif isinstance(node, ast.ImportFrom):
+            imported = node.module
+        if imported is None:
+            continue
+        if any(imported == denied or imported.startswith(f"{denied}.") for denied in FORBIDDEN):
+            violations.append(f"{path}: forbidden import {imported}")
+        top_level = imported.split(".", 1)[0]
+        is_stdlib = top_level in sys.stdlib_module_names
+        is_allowed_domain = imported == "gvas.domain" or imported.startswith("gvas.domain.")
+        if not (is_stdlib or top_level in ALLOWED_EXTERNAL or is_allowed_domain):
+            violations.append(f"{path}: disallowed import {imported}")
+        if layer == "application" and imported.startswith("gvas.") and not is_allowed_domain:
+            violations.append(f"{path}: non-domain import {imported}")
+    return violations
+
+
 def test_domain_application_boundaries() -> None:
     for layer in ("domain", "application"):
         for path in (ROOT / layer).rglob("*.py"):
-            source = path.read_text()
-            lowered = source.lower()
-            assert "slack" not in lowered, f"{path}: forbidden transport substring slack"
-            assert "twilio" not in lowered, f"{path}: forbidden transport substring twilio"
-            tree = ast.parse(source, filename=str(path))
-            for node in ast.walk(tree):
-                imported: str | None = None
-                if isinstance(node, ast.Import):
-                    imported = node.names[0].name
-                elif isinstance(node, ast.ImportFrom):
-                    imported = node.module
-                if imported is not None:
-                    assert not any(
-                        imported == denied or imported.startswith(f"{denied}.")
-                        for denied in FORBIDDEN
-                    ), f"{path}: forbidden import {imported}"
-                    top_level = imported.split(".", 1)[0]
-                    is_stdlib = top_level in sys.stdlib_module_names
-                    is_allowed_domain = imported == "gvas.domain" or imported.startswith(
-                        "gvas.domain."
-                    )
-                    assert is_stdlib or top_level in ALLOWED_EXTERNAL or is_allowed_domain, (
-                        f"{path}: disallowed import {imported}"
-                    )
-                    if (
-                        layer == "application"
-                        and imported.startswith("gvas.")
-                        and not is_allowed_domain
-                    ):
-                        raise AssertionError(f"{path}: non-domain import {imported}")
+            assert not find_violations(layer, path, path.read_text())
+
+
+def test_boundary_checker_catches_violations(tmp_path: Path) -> None:
+    path = tmp_path / "invalid.py"
+    violations = find_violations("application", path, "import slack_sdk\nvalue = 'slack'\n")
+    assert any("forbidden transport substring slack" in violation for violation in violations)
+    assert any("forbidden import slack_sdk" in violation for violation in violations)

@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from gvas.domain.enums import DeliveryStatus, MediaKind, RecipientAddressKind, SenderRole
 from gvas.domain.identifiers import (
@@ -75,21 +75,33 @@ class InboundOwnerMessage(DomainModel):
     conversation_ref: ConversationRef
     sender: SenderRef
     received_at: datetime
-    parts: list[ContentPart] = Field(min_length=1)
+    parts: tuple[ContentPart, ...] = Field(min_length=1)
     intent: WorkflowIntent
     reply_to: ReplyRef | None = None
     routing: RoutingData
 
     _received_at_aware = field_validator("received_at")(_aware)
 
+    @model_validator(mode="after")
+    def business_matches_conversation(self) -> "InboundOwnerMessage":
+        if self.conversation_ref.business_id != self.business_id:
+            raise ValueError("conversation business must match message business")
+        return self
+
 
 class OutboundOwnerMessage(DomainModel):
     business_id: BusinessId
     conversation_ref: ConversationRef
-    parts: list[ContentPart] = Field(min_length=1)
+    parts: tuple[ContentPart, ...] = Field(min_length=1)
     correlation_id: str = Field(min_length=1)
     reply_to: ReplyRef | None = None
     routing: RoutingData
+
+    @model_validator(mode="after")
+    def business_matches_conversation(self) -> "OutboundOwnerMessage":
+        if self.conversation_ref.business_id != self.business_id:
+            raise ValueError("conversation business must match message business")
+        return self
 
 
 class DeliveryReceipt(DomainModel):
@@ -137,5 +149,5 @@ class CustomerDeliveryRequest(DomainModel):
     recipient: CustomerRecipient
     subject: str | None = None
     body_text: str = Field(min_length=1)
-    links: list[str] = Field(default_factory=list)
-    attachments: list[AttachmentReference] = Field(default_factory=list)
+    links: tuple[str, ...] = Field(default_factory=tuple)
+    attachments: tuple[AttachmentReference, ...] = Field(default_factory=tuple)

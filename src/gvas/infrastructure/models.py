@@ -4,6 +4,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from gvas.domain.identifiers import JsonValue
+from gvas.domain.outbox import DEFAULT_MAX_ATTEMPTS
 from gvas.infrastructure.db import json_type, metadata
 
 
@@ -35,7 +37,7 @@ class OwnerChannelEndpoint(Base):
     transport: Mapped[str] = mapped_column(String(100), nullable=False)
     external_endpoint_id: Mapped[str] = mapped_column(String(255), nullable=False)
     owner_external_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    routing: Mapped[dict[str, object]] = mapped_column(json_type, nullable=False)
+    routing: Mapped[dict[str, JsonValue]] = mapped_column(json_type, nullable=False)
 
 
 class Conversation(Base):
@@ -53,7 +55,7 @@ class Conversation(Base):
         ForeignKey("owner_channel_endpoints.id", ondelete="SET NULL"), nullable=True
     )
     external_conversation_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    routing: Mapped[dict[str, object]] = mapped_column(json_type, nullable=False)
+    routing: Mapped[dict[str, JsonValue]] = mapped_column(json_type, nullable=False)
 
 
 class InboundMessage(Base):
@@ -75,9 +77,9 @@ class InboundMessage(Base):
     sender_role: Mapped[str] = mapped_column(String(50), nullable=False)
     intent: Mapped[str] = mapped_column(String(255), nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    parts: Mapped[list[object]] = mapped_column(json_type, nullable=False)
-    reply_to: Mapped[dict[str, object] | None] = mapped_column(json_type)
-    routing: Mapped[dict[str, object]] = mapped_column(json_type, nullable=False)
+    parts: Mapped[list[JsonValue]] = mapped_column(json_type, nullable=False)
+    reply_to: Mapped[dict[str, JsonValue] | None] = mapped_column(json_type)
+    routing: Mapped[dict[str, JsonValue]] = mapped_column(json_type, nullable=False)
 
 
 class OutboundMessage(Base):
@@ -94,9 +96,9 @@ class OutboundMessage(Base):
     inbound_message_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("inbound_messages.id", ondelete="SET NULL")
     )
-    parts: Mapped[list[object]] = mapped_column(json_type, nullable=False)
-    reply_to: Mapped[dict[str, object] | None] = mapped_column(json_type)
-    routing: Mapped[dict[str, object]] = mapped_column(json_type, nullable=False)
+    parts: Mapped[list[JsonValue]] = mapped_column(json_type, nullable=False)
+    reply_to: Mapped[dict[str, JsonValue] | None] = mapped_column(json_type)
+    routing: Mapped[dict[str, JsonValue]] = mapped_column(json_type, nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     provider_message_id: Mapped[str | None] = mapped_column(String(255))
     correlation_id: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -136,10 +138,10 @@ class OutboxMessage(Base):
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
     command_type: Mapped[str] = mapped_column(String(255), nullable=False)
-    payload: Mapped[dict[str, object]] = mapped_column(json_type, nullable=False)
+    payload: Mapped[dict[str, JsonValue]] = mapped_column(json_type, nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     attempts: Mapped[int] = mapped_column(nullable=False, default=0)
-    max_attempts: Mapped[int] = mapped_column(nullable=False, default=3)
+    max_attempts: Mapped[int] = mapped_column(nullable=False, default=DEFAULT_MAX_ATTEMPTS)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text)
     dedup_key: Mapped[str | None] = mapped_column(String(255))

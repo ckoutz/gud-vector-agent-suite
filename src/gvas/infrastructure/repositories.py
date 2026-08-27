@@ -1,33 +1,81 @@
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from gvas.domain.enums import OutboxStatus, WorkflowRunStatus
+from gvas.domain.enums import DeliveryStatus, OutboxStatus, WorkflowRunStatus
 from gvas.domain.identifiers import (
     BusinessId,
     ConversationId,
     MessageId,
+    RoutingData,
     WorkflowIntent,
     WorkflowRunId,
 )
 from gvas.domain.messages import ConversationRef, InboundOwnerMessage, OutboundOwnerMessage
-from gvas.domain.outbox import OutboxCommand, OutboxRecord
+from gvas.domain.outbox import DEFAULT_MAX_ATTEMPTS, OutboxCommand, OutboxRecord
+from gvas.domain.repositories import BusinessRecord, OwnerChannelEndpointRecord
 from gvas.infrastructure.models import (
+    Business,
     Conversation,
     InboundMessage,
     OutboundMessage,
     OutboxMessage,
+    OwnerChannelEndpoint,
     WorkflowRun,
 )
+
+
+class SqlBusinessRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get(self, business_id: BusinessId) -> BusinessRecord | None:
+        row = await self.session.scalar(select(Business).where(Business.id == business_id))
+        if row is None:
+            return None
+        return BusinessRecord(
+            business_id=BusinessId(row.id),
+            slug=row.slug,
+            name=row.name,
+        )
+
+
+class SqlOwnerChannelEndpointRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def get_for_conversation(
+        self, business_id: BusinessId, external_id: str
+    ) -> OwnerChannelEndpointRecord | None:
+        row = await self.session.scalar(
+            select(OwnerChannelEndpoint).where(
+                OwnerChannelEndpoint.business_id == business_id,
+                OwnerChannelEndpoint.external_endpoint_id == external_id,
+            )
+        )
+        if row is None:
+            return None
+        return OwnerChannelEndpointRecord(
+            endpoint_id=row.id,
+            business_id=BusinessId(row.business_id),
+            owner_external_id=row.owner_external_id,
+            routing=row.routing,
+        )
 
 
 class SqlConversationRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get_or_create(self, reference: ConversationRef) -> ConversationId:
+    async def get_or_create(
+        self,
+        reference: ConversationRef,
+        routing: RoutingData,
+        endpoint_id: UUID | None = None,
+    ) -> ConversationId:
         result = await self.session.execute(
             select(Conversation).where(
                 Conversation.business_id == reference.business_id,
@@ -39,8 +87,9 @@ class SqlConversationRepository:
             return ConversationId(existing.id)
         conversation = Conversation(
             business_id=reference.business_id,
+            endpoint_id=endpoint_id,
             external_conversation_id=reference.external_conversation_id,
-            routing={},
+            routing=routing,
         )
         self.session.add(conversation)
         await self.session.flush()
@@ -74,9 +123,10 @@ class SqlInboundMessageRepository:
             reply_to=message.reply_to.model_dump(mode="json") if message.reply_to else None,
             routing=message.routing,
         )
-        self.session.add(row)
         try:
-            await self.session.flush()
+            async with self.session.begin_nested():
+                self.session.add(row)
+                await self.session.flush()
         except IntegrityError:
             return None
         return MessageId(row.id)
@@ -100,7 +150,7 @@ class SqlOutboundMessageRepository:
                 parts=[part.model_dump(mode="json") for part in message.parts],
                 reply_to=message.reply_to.model_dump(mode="json") if message.reply_to else None,
                 routing=message.routing,
-                status="accepted",
+                status=DeliveryStatus.ACCEPTED.value,
                 correlation_id=message.correlation_id,
             )
         )
@@ -118,7 +168,7 @@ class SqlWorkflowRunRepository:
             business_id=business_id,
             inbound_message_id=inbound_message_id,
             intent=intent,
-            status=WorkflowRunStatus.PENDING.value,
+            status=WorkflowRunStatus.RUNNING.value,
             attempts=1,
             started_at=datetime.now(UTC),
         )
@@ -150,22 +200,25 @@ class SqlOutboxRepository:
         )
         if existing is not None:
             return
-        self.session.add(
-            OutboxMessage(
-                id=command.command_id,
-                business_id=command.business_id,
-                command_type=command.command_type,
-                payload=command.payload,
-                status=OutboxStatus.PENDING.value,
-                attempts=0,
-                max_attempts=3,
-                available_at=datetime.now(UTC),
-                dedup_key=command.dedup_key,
-            )
+        row = OutboxMessage(
+            id=command.command_id,
+            business_id=command.business_id,
+            command_type=command.command_type,
+            payload=command.payload,
+            status=OutboxStatus.PENDING.value,
+            attempts=0,
+            max_attempts=DEFAULT_MAX_ATTEMPTS,
+            available_at=datetime.now(UTC),
+            dedup_key=command.dedup_key,
         )
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                self.session.add(row)
+                await self.session.flush()
+        except IntegrityError:
+            return
 
-    async def claim_batch(self, limit: int, now: datetime) -> list[OutboxRecord]:
+    async def claim_batch(self, limit: int, now: datetime, claimed_by: str) -> list[OutboxRecord]:
         rows = list(
             (
                 await self.session.scalars(
@@ -178,6 +231,7 @@ class SqlOutboxRepository:
                     )
                     .order_by(OutboxMessage.available_at)
                     .limit(limit)
+                    .with_for_update(skip_locked=True)
                 )
             ).all()
         )
@@ -185,6 +239,8 @@ class SqlOutboxRepository:
         for row in rows:
             row.status = OutboxStatus.IN_PROGRESS.value
             row.attempts += 1
+            row.locked_at = now
+            row.locked_by = claimed_by
             result.append(
                 OutboxRecord(
                     command=OutboxCommand(
@@ -214,5 +270,7 @@ class SqlOutboxRepository:
                 max_attempts=record.max_attempts,
                 available_at=record.available_at,
                 last_error=record.last_error,
+                locked_at=None,
+                locked_by=None,
             )
         )

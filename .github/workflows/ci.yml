@@ -2,6 +2,8 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
 
 jobs:
@@ -60,5 +62,8 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --frozen
       - run: uv run alembic upgrade head
+        env:
+          GVAS_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/gvas
+      - run: uv run alembic downgrade base
         env:
           GVAS_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/gvas

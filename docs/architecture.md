@@ -50,7 +50,6 @@ labeled Slack or Twilio (`tests/test_workflow_routing.py`).
 `enums.py`
 - `SenderRole` = `owner | teammate | system`
 - `MediaKind` = `audio | image | document | video | other`
-- `MessageDirection` = `inbound | outbound`
 - `DeliveryStatus` = `accepted | delivered | failed`
 - `RecipientAddressKind` = `email | phone | link`
 - `WorkflowRunStatus` = `pending | running | succeeded | failed`
@@ -64,8 +63,8 @@ labeled Slack or Twilio (`tests/test_workflow_routing.py`).
 - `ConversationRef(business_id, external_conversation_id)`
 - `ReplyRef(correlation_id, external_message_id?)`
 - `InboundOwnerMessage(message_key, business_id, conversation_ref, sender, received_at,
-   parts (non-empty, ordered), intent, reply_to?, routing)`
-- `OutboundOwnerMessage(business_id, conversation_ref, parts (non-empty), correlation_id,
+   parts (non-empty, ordered tuple), intent, reply_to?, routing)`
+- `OutboundOwnerMessage(business_id, conversation_ref, parts (non-empty tuple), correlation_id,
    reply_to?, routing)`
 - `DeliveryReceipt(status, provider_message_id?, occurred_at, detail?)`
 - `received_at`/timestamps must be timezone-aware.
@@ -83,7 +82,8 @@ labeled Slack or Twilio (`tests/test_workflow_routing.py`).
 
 `workflows.py` / `routing.py`
 - `WorkflowContext(run_id, message)`
-- `WorkflowResult(status, replies, commands, detail?)`
+- `WorkflowResult(status: WorkflowRunStatus, replies, commands, detail?)`; collection fields
+  are immutable tuples.
 - `WorkflowHandler` protocol: `intent: WorkflowIntent`, `async handle(context) -> WorkflowResult`
 - `WorkflowRouter(handlers)`: `route(intent) -> WorkflowHandler`, raises `UnknownWorkflowIntentError`
 
@@ -97,6 +97,10 @@ labeled Slack or Twilio (`tests/test_workflow_routing.py`).
   `InboundMessageRepository`, `OutboundMessageRepository`, `WorkflowRunRepository`,
   `OutboxRepository`, and `UnitOfWork` (async context manager exposing the repositories,
   `commit()`, `rollback()`; rollback on exception, no implicit commit).
+- `BusinessRecord(business_id, slug, name)` and
+  `OwnerChannelEndpointRecord(endpoint_id, business_id, owner_external_id, routing)` are
+  the typed read models returned by the corresponding repositories.
+  `ConversationRepository.get_or_create` accepts `(reference, routing, endpoint_id=None)`.
 
 ## Application services
 
@@ -105,7 +109,8 @@ labeled Slack or Twilio (`tests/test_workflow_routing.py`).
 2. Insert inbound message keyed by `(business_id, message_key)`. If it already exists →
    return `IngestionOutcome(status=DUPLICATE, ...)` with no workflow run, no outbox rows,
    no replies.
-3. Upsert conversation, create `workflow_runs` row (unique on `(inbound_message_id, intent)`),
+3. Upsert conversation, create a `running` `workflow_runs` row (unique on
+   `(inbound_message_id, intent)`),
    run the routed handler, persist replies to `outbound_messages`, persist
    `WorkflowResult.commands` to the outbox, commit once.
 4. Unknown intent → run recorded as `failed`, no replies/commands, no exception escape.
@@ -113,9 +118,11 @@ labeled Slack or Twilio (`tests/test_workflow_routing.py`).
 Replies are persisted as outbound message rows plus outbox commands; actual sending through
 `OwnerReplyPort` is a Round 2 dispatcher concern.
 
-`OutboxService`: `enqueue`, `claim_batch(limit, now)`, `mark_succeeded`, `mark_failed(retry_in)`,
-`mark_dead`. Retry metadata (`attempts`, `max_attempts`, `available_at`, `last_error`) lives on
-the row; no external queue or provider call exists in this round.
+`OutboxService`: `enqueue`, `claim_batch(limit, now, claimed_by)`, `mark_succeeded`,
+`mark_failed(retry_in, error, now)`, `mark_dead`. Retry metadata (`attempts`, `max_attempts`,
+`available_at`, `last_error`) lives on the row; attempts increment at claim time, and retry
+availability is computed from the supplied current time. No external queue or provider call
+exists in this round.
 
 ## Persistence (migration `0001_initial_shared_records`)
 

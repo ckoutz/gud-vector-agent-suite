@@ -1,23 +1,34 @@
-from typing import cast
-
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from gvas.domain.repositories import UnitOfWork
+from gvas.domain.repositories import (
+    BusinessRepository,
+    ConversationRepository,
+    InboundMessageRepository,
+    OutboundMessageRepository,
+    OutboxRepository,
+    OwnerChannelEndpointRepository,
+    UnitOfWork,
+    WorkflowRunRepository,
+)
 from gvas.infrastructure.repositories import (
+    SqlBusinessRepository,
     SqlConversationRepository,
     SqlInboundMessageRepository,
     SqlOutboundMessageRepository,
     SqlOutboxRepository,
+    SqlOwnerChannelEndpointRepository,
     SqlWorkflowRunRepository,
 )
 
 
 class SqlUnitOfWork:
-    conversations: SqlConversationRepository
-    inbound_messages: SqlInboundMessageRepository
-    outbound_messages: SqlOutboundMessageRepository
-    workflow_runs: SqlWorkflowRunRepository
-    outbox: SqlOutboxRepository
+    businesses: BusinessRepository
+    owner_channel_endpoints: OwnerChannelEndpointRepository
+    conversations: ConversationRepository
+    inbound_messages: InboundMessageRepository
+    outbound_messages: OutboundMessageRepository
+    workflow_runs: WorkflowRunRepository
+    outbox: OutboxRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -25,6 +36,8 @@ class SqlUnitOfWork:
 
     async def __aenter__(self) -> "SqlUnitOfWork":
         self._session = self._session_factory()
+        self.businesses = SqlBusinessRepository(self._session)
+        self.owner_channel_endpoints = SqlOwnerChannelEndpointRepository(self._session)
         self.conversations = SqlConversationRepository(self._session)
         self.inbound_messages = SqlInboundMessageRepository(self._session)
         self.outbound_messages = SqlOutboundMessageRepository(self._session)
@@ -60,4 +73,4 @@ class SqlUnitOfWorkFactory:
         self._session_factory = session_factory
 
     def __call__(self) -> UnitOfWork:
-        return cast(UnitOfWork, SqlUnitOfWork(self._session_factory))
+        return SqlUnitOfWork(self._session_factory)

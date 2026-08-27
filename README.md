@@ -34,3 +34,6 @@ docker compose up --build
 ```
 
 The health endpoint is available at `http://localhost:8000/healthz`.
+
+Outbox workers claim with an explicit worker identity. Attempts increment at claim time, and
+failed retries calculate availability from the supplied current time.

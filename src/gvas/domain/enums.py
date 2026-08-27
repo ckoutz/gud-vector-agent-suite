@@ -15,11 +15,6 @@ class MediaKind(StrEnum):
     OTHER = "other"
 
 
-class MessageDirection(StrEnum):
-    INBOUND = "inbound"
-    OUTBOUND = "outbound"
-
-
 class DeliveryStatus(StrEnum):
     ACCEPTED = "accepted"
     DELIVERED = "delivered"

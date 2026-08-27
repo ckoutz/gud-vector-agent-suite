@@ -1,8 +1,16 @@
 from fastapi import FastAPI
 
-app = FastAPI(title="Güd Vector Agent Suite")
+from gvas.config import Settings
 
 
-@app.get("/healthz")
-async def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+def create_app(settings: Settings | None = None) -> FastAPI:
+    app = FastAPI(title="Güd Vector Agent Suite")
+
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:
+        return {"status": "ok"}
+
+    return app
+
+
+app = create_app()

@@ -15,9 +15,9 @@ class OutboxService:
             await unit_of_work.outbox.enqueue(command)
             await unit_of_work.commit()
 
-    async def claim_batch(self, limit: int, now: datetime) -> list[OutboxRecord]:
+    async def claim_batch(self, limit: int, now: datetime, claimed_by: str) -> list[OutboxRecord]:
         async with self._unit_of_work_factory() as unit_of_work:
-            records = await unit_of_work.outbox.claim_batch(limit, now)
+            records = await unit_of_work.outbox.claim_batch(limit, now, claimed_by)
             await unit_of_work.commit()
             return records
 
@@ -25,14 +25,16 @@ class OutboxService:
         return await self._update(record.transition(OutboxStatus.SUCCEEDED))
 
     async def mark_failed(
-        self, record: OutboxRecord, retry_in: timedelta, error: str
+        self, record: OutboxRecord, retry_in: timedelta, error: str, now: datetime
     ) -> OutboxRecord:
-        attempts = record.attempts + 1
-        status = OutboxStatus.DEAD if attempts >= record.max_attempts else OutboxStatus.FAILED
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("now must be timezone-aware")
+        status = (
+            OutboxStatus.DEAD if record.attempts >= record.max_attempts else OutboxStatus.FAILED
+        )
         updated = record.model_copy(
             update={
-                "attempts": attempts,
-                "available_at": record.available_at + retry_in,
+                "available_at": now + retry_in,
             }
         ).transition(status, error=error)
         return await self._update(updated)

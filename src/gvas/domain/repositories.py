@@ -1,11 +1,15 @@
 from datetime import datetime
 from typing import Protocol
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
 
 from gvas.domain.enums import WorkflowRunStatus
 from gvas.domain.identifiers import (
     BusinessId,
     ConversationId,
     MessageId,
+    RoutingData,
     WorkflowIntent,
     WorkflowRunId,
 )
@@ -13,18 +17,37 @@ from gvas.domain.messages import ConversationRef, InboundOwnerMessage, OutboundO
 from gvas.domain.outbox import OutboxCommand, OutboxRecord
 
 
+class BusinessRecord(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    business_id: BusinessId
+    slug: str
+    name: str
+
+
+class OwnerChannelEndpointRecord(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    endpoint_id: UUID
+    business_id: BusinessId
+    owner_external_id: str
+    routing: RoutingData
+
+
 class BusinessRepository(Protocol):
-    async def get(self, business_id: BusinessId) -> object | None: ...
+    async def get(self, business_id: BusinessId) -> BusinessRecord | None: ...
 
 
 class OwnerChannelEndpointRepository(Protocol):
     async def get_for_conversation(
         self, business_id: BusinessId, external_id: str
-    ) -> object | None: ...
+    ) -> OwnerChannelEndpointRecord | None: ...
 
 
 class ConversationRepository(Protocol):
-    async def get_or_create(self, reference: ConversationRef) -> ConversationId: ...
+    async def get_or_create(
+        self, reference: ConversationRef, routing: RoutingData, endpoint_id: UUID | None = None
+    ) -> ConversationId: ...
 
 
 class InboundMessageRepository(Protocol):
@@ -54,11 +77,15 @@ class WorkflowRunRepository(Protocol):
 
 class OutboxRepository(Protocol):
     async def enqueue(self, command: OutboxCommand) -> None: ...
-    async def claim_batch(self, limit: int, now: datetime) -> list[OutboxRecord]: ...
+    async def claim_batch(
+        self, limit: int, now: datetime, claimed_by: str
+    ) -> list[OutboxRecord]: ...
     async def update(self, record: OutboxRecord) -> None: ...
 
 
 class UnitOfWork(Protocol):
+    businesses: BusinessRepository
+    owner_channel_endpoints: OwnerChannelEndpointRepository
     conversations: ConversationRepository
     inbound_messages: InboundMessageRepository
     outbound_messages: OutboundMessageRepository

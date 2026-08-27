@@ -5,6 +5,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from gvas.domain.enums import OutboxStatus
 from gvas.domain.identifiers import BusinessId, JsonValue, OutboxCommandId
 
+DEFAULT_MAX_ATTEMPTS = 3
+
 
 class OutboxCommand(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -26,7 +28,7 @@ class OutboxRecord(BaseModel):
     command: OutboxCommand
     status: OutboxStatus = OutboxStatus.PENDING
     attempts: int = Field(default=0, ge=0)
-    max_attempts: int = Field(default=3, ge=1)
+    max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, ge=1)
     available_at: datetime
     last_error: str | None = None
 

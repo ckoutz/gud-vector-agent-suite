@@ -2,6 +2,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from gvas.domain.enums import WorkflowRunStatus
 from gvas.domain.identifiers import WorkflowIntent, WorkflowRunId
 from gvas.domain.messages import InboundOwnerMessage, OutboundOwnerMessage
 from gvas.domain.outbox import OutboxCommand
@@ -17,9 +18,9 @@ class WorkflowContext(BaseModel):
 class WorkflowResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    status: str
-    replies: list[OutboundOwnerMessage] = Field(default_factory=list)
-    commands: list[OutboxCommand] = Field(default_factory=list)
+    status: WorkflowRunStatus
+    replies: tuple[OutboundOwnerMessage, ...] = Field(default_factory=tuple)
+    commands: tuple[OutboxCommand, ...] = Field(default_factory=tuple)
     detail: str | None = None
 
 
