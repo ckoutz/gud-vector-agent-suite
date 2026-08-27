@@ -44,6 +44,28 @@ docker compose up --build
 
 The health endpoint is available at `http://localhost:8000/healthz`.
 
+## Slack Request URL adapter
+
+`gvas.infrastructure.slack` and `gvas.interfaces.http.slack` hold every
+Slack-specific type; domain and application code stay channel-neutral. The
+router verifies the signing secret over the raw body, rejects stale timestamps,
+answers the `url_verification` challenge, normalizes message events into
+`InboundOwnerMessage`, and returns as soon as ingestion has persisted the
+inbound message and its outbox command. Slack retries of an already-ingested
+event are reported as duplicates without new work. Owner replies go out through
+`OwnerReplyPort` using persisted routing plus a deterministic delivery key, so
+posting is skipped only after a recorded success.
+
+Mount it explicitly (it is not part of the default app):
+
+```python
+create_app(routers=(create_slack_router(ingress, path=settings.events_path),))
+```
+
+Settings use the `GVAS_SLACK_` prefix; see [`.env.example`](.env.example).
+`GVAS_SLACK_INSTALLATIONS` maps Slack team IDs to business IDs
+(`T0000000000=<business-uuid>,...`); unmapped workspaces are rejected.
+
 The default composition uses `UnconfiguredIntentResolver`. Ingress persists the
 inbound message and one `owner_message.process` command; processing remains
 resumable until an intent resolver is configured. Outbox workers claim with an
