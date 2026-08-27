@@ -131,6 +131,16 @@ resolution failures leave the run `RUNNING` with its error for later retry;
 unknown intents and handler failures are durable failed outcomes. Provider or
 AI calls never happen while a UoW is open.
 
+The lease makes resolver and handler execution exclusive, but it does not fence
+the second persistence transaction against the lease that was granted. If a
+lease becomes stale and another worker reclaims it, both workers can write
+final run state, so terminal status and error are last-writer-wins. Replies and
+their delivery commands remain safe because their `(inbound_message_id,
+correlation_id)` and outbox-link uniqueness make durable output idempotent; only
+the run's final status can be overwritten. A fencing token based on
+`leased_at` would address this if the limitation becomes material, but Round 1
+does not implement fencing.
+
 `OutboxService` enqueues commands, claims available rows with worker identity,
 increments attempts at claim time, and computes retry availability from an
 explicit timezone-aware current time. Its caller-supplied `stale_before` allows

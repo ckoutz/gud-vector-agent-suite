@@ -39,7 +39,7 @@ class OwnerChannelEndpoint(Base):
             "business_id",
             "source_namespace",
             "external_endpoint_id",
-            name="uq_owner_channel_endpoints_business_id",
+            name="uq_owner_channel_endpoints_source_endpoint",
         ),
         Index("ix_owner_channel_endpoints_business_id", "business_id"),
     )

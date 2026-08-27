@@ -42,7 +42,7 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_owner_channel_endpoints")),
         sa.UniqueConstraint("business_id", "id", name=op.f("uq_owner_channel_endpoints_business_id_id")),
-        sa.UniqueConstraint("business_id", "source_namespace", "external_endpoint_id", name=op.f("uq_owner_channel_endpoints_business_id")),
+        sa.UniqueConstraint("business_id", "source_namespace", "external_endpoint_id", name=op.f("uq_owner_channel_endpoints_source_endpoint")),
     )
     op.create_index(op.f("ix_owner_channel_endpoints_business_id"), "owner_channel_endpoints", ["business_id"])
     op.create_table(
