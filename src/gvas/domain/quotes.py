@@ -180,8 +180,8 @@ class Quote(QuoteModel):
             }
         )
 
-    def approve(self, correlation_id: str, message_key: MessageKey, now: datetime) -> "Quote":
-        self._require_correlated_approval(correlation_id)
+    def approve(self, message_key: MessageKey, now: datetime) -> "Quote":
+        self._require_awaiting_approval()
         return self.model_copy(
             update={
                 "status": QuoteStatus.APPROVED,
@@ -191,8 +191,8 @@ class Quote(QuoteModel):
             }
         )
 
-    def reject(self, correlation_id: str, message_key: MessageKey, now: datetime) -> "Quote":
-        self._require_correlated_approval(correlation_id)
+    def reject(self, message_key: MessageKey, now: datetime) -> "Quote":
+        self._require_awaiting_approval()
         return self.model_copy(
             update={
                 "status": QuoteStatus.REJECTED,
@@ -204,12 +204,11 @@ class Quote(QuoteModel):
 
     def begin_correction(
         self,
-        correlation_id: str,
         message_key: MessageKey,
         request_text: str,
         now: datetime,
     ) -> "Quote":
-        self._require_correlated_approval(correlation_id)
+        self._require_awaiting_approval()
         return self.model_copy(
             update={
                 "status": QuoteStatus.DRAFTING,
@@ -242,11 +241,9 @@ class Quote(QuoteModel):
             }
         )
 
-    def _require_correlated_approval(self, correlation_id: str) -> None:
+    def _require_awaiting_approval(self) -> None:
         if self.status is not QuoteStatus.AWAITING_APPROVAL:
             raise InvalidQuoteTransitionError(f"quote is not awaiting approval: {self.status}")
-        if correlation_id != self.approval_correlation_id:
-            raise QuoteCorrelationError("owner reply does not match the active approval request")
 
 
 class QuoteSendPolicy(Protocol):
@@ -281,10 +278,6 @@ class OwnerApprovalRequiredPolicy:
 
 
 class InvalidQuoteTransitionError(ValueError):
-    pass
-
-
-class QuoteCorrelationError(ValueError):
     pass
 
 

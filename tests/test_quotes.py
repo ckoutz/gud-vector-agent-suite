@@ -326,7 +326,7 @@ def test_intent_selection_is_explicit_and_conversation_scoped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_workflow_retries_approval_and_delivery_are_idempotent(
+async def test_workflow_retries_thread_scoped_approval_and_delivery_are_idempotent(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     business_id, conversation_id = await seed_conversation(session_factory)
@@ -346,29 +346,34 @@ async def test_workflow_retries_approval_and_delivery_are_idempotent(
     assert first == retry
     assert len(drafting.requests) == 1
     assert drafting.requests[0].idempotency_key.endswith(":1")
-    approval_correlation = first.replies[0].correlation_id
 
-    wrong_approval = owner_message(
-        business_id,
-        conversation_id,
-        "wrong-approval",
-        "approve",
-        reply_to="unrelated",
-    )
-    await handler.handle(workflow_context(wrong_approval, conversation_id))
-    async with session_factory() as session:
-        assert await session.scalar(select(func.count()).select_from(OutboxMessage)) == 0
-
+    slack_thread_correlation = "slack-thread:1712345678.000100"
+    assert slack_thread_correlation != first.replies[0].correlation_id
     approval = owner_message(
         business_id,
         conversation_id,
         "approval-message",
         "approve",
-        reply_to=approval_correlation,
+        reply_to=slack_thread_correlation,
     )
     approved = await handler.handle(workflow_context(approval, conversation_id))
     approval_retry = await handler.handle(workflow_context(approval, conversation_id))
     assert approved == approval_retry
+    async with session_factory() as session:
+        command_count = await session.scalar(select(func.count()).select_from(OutboxMessage))
+    assert command_count == 1
+
+    late_rejection = owner_message(
+        business_id,
+        conversation_id,
+        "late-rejection",
+        "reject",
+        reply_to=slack_thread_correlation,
+    )
+    late_result = await handler.handle(workflow_context(late_rejection, conversation_id))
+    late_part = late_result.replies[0].parts[0]
+    assert isinstance(late_part, TextPart)
+    assert late_part.text == "No quote is awaiting approval in this conversation."
     async with session_factory() as session:
         command_count = await session.scalar(select(func.count()).select_from(OutboxMessage))
     assert command_count == 1
@@ -394,7 +399,7 @@ async def test_workflow_retries_approval_and_delivery_are_idempotent(
 
 
 @pytest.mark.asyncio
-async def test_correction_redrafts_once_and_requires_current_correlation(
+async def test_thread_scoped_correction_and_rejection_use_current_active_revision(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     business_id, conversation_id = await seed_conversation(session_factory)
@@ -405,12 +410,14 @@ async def test_correction_redrafts_once_and_requires_current_correlation(
     initial = owner_message(business_id, conversation_id, "initial", "quote: service")
     first = await handler.handle(workflow_context(initial, conversation_id))
 
+    slack_thread_correlation = "slack-thread:1712345678.000100"
+    assert slack_thread_correlation != first.replies[0].correlation_id
     correction = owner_message(
         business_id,
         conversation_id,
         "correction",
         "correct: use three visits",
-        reply_to=first.replies[0].correlation_id,
+        reply_to=slack_thread_correlation,
     )
     corrected = await handler.handle(workflow_context(correction, conversation_id))
     correction_retry = await handler.handle(workflow_context(correction, conversation_id))
@@ -418,27 +425,31 @@ async def test_correction_redrafts_once_and_requires_current_correlation(
     assert [request.revision for request in drafting.requests] == [1, 2]
     assert corrected.replies[0].correlation_id != first.replies[0].correlation_id
 
-    stale_rejection = owner_message(
-        business_id,
-        conversation_id,
-        "stale-rejection",
-        "reject",
-        reply_to=first.replies[0].correlation_id,
-    )
-    await handler.handle(workflow_context(stale_rejection, conversation_id))
-    quote = await active_quote(session_factory, business_id, conversation_id)
-    assert quote is not None
-    assert quote.status is QuoteStatus.AWAITING_APPROVAL
-
     rejection = owner_message(
         business_id,
         conversation_id,
         "rejection",
         "reject",
-        reply_to=corrected.replies[0].correlation_id,
+        reply_to=slack_thread_correlation,
     )
-    await handler.handle(workflow_context(rejection, conversation_id))
+    rejected = await handler.handle(workflow_context(rejection, conversation_id))
+    rejection_retry = await handler.handle(workflow_context(rejection, conversation_id))
+    assert rejected == rejection_retry
     assert await active_quote(session_factory, business_id, conversation_id) is None
+
+    no_pending_quote = owner_message(
+        business_id,
+        conversation_id,
+        "no-pending-quote",
+        "approve",
+        reply_to=slack_thread_correlation,
+    )
+    result = await handler.handle(workflow_context(no_pending_quote, conversation_id))
+    part = result.replies[0].parts[0]
+    assert isinstance(part, TextPart)
+    assert part.text == "No quote is awaiting approval in this conversation."
+    quote = await active_quote(session_factory, business_id, conversation_id)
+    assert quote is None
 
 
 @pytest.mark.asyncio

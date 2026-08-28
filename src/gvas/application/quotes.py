@@ -18,7 +18,6 @@ from gvas.domain.quotes import (
     OwnerApprovalRequiredPolicy,
     Quote,
     QuoteConcurrencyError,
-    QuoteCorrelationError,
     QuoteDraftProposal,
     QuoteDraftRequest,
     QuoteSendAssessment,
@@ -96,6 +95,8 @@ class QuoteWorkflowHandler:
 
         quote = await self._get_active(message.business_id, conversation_id)
         if quote is None:
+            if owner_command(message) is not None:
+                return _no_awaiting_approval_reply(message)
             request_text = quote_request_text(message)
             quote = new_quote(
                 business_id=message.business_id,
@@ -126,44 +127,32 @@ class QuoteWorkflowHandler:
     async def _handle_owner_reply(
         self, quote: Quote, message: NormalizedOwnerMessage
     ) -> WorkflowResult:
-        correlation_id = message.reply_to.correlation_id if message.reply_to is not None else ""
         text = normalized_text(message).strip()
-        try:
-            if text.casefold() == "approve":
-                approved = quote.approve(correlation_id, message.message_key, message.received_at)
-                async with self._unit_of_work_factory() as unit_of_work:
-                    await unit_of_work.quotes.save(approved, expected_version=quote.version)
-                    await unit_of_work.outbox.enqueue(quote_delivery_command(approved))
-                    await unit_of_work.commit()
-                return _workflow_reply(approved, message.message_key)
-            if text.casefold() == "reject":
-                rejected = quote.reject(correlation_id, message.message_key, message.received_at)
-                await self._save(rejected, expected_version=quote.version)
-                return _workflow_reply(rejected, message.message_key)
-            if text.casefold().startswith("correct:"):
-                correction = text.split(":", 1)[1].strip()
-                if not correction:
-                    raise QuoteIntakeError("correction text must not be empty")
-                drafting = quote.begin_correction(
-                    correlation_id,
-                    message.message_key,
-                    correction,
-                    message.received_at,
-                )
-                await self._save(drafting, expected_version=quote.version)
-                return await self._complete_draft(drafting, message)
-        except QuoteCorrelationError:
-            return WorkflowResult(
-                status=WorkflowRunStatus.SUCCEEDED,
-                replies=(
-                    _owner_reply(
-                        quote,
-                        message.message_key,
-                        "Reply to the active approval request with approve, reject, "
-                        "or correct: <changes>.",
-                    ),
-                ),
+        command = owner_command(message)
+        if command is not None and quote.status is not QuoteStatus.AWAITING_APPROVAL:
+            return _no_awaiting_approval_reply(message)
+        if command == "approve":
+            approved = quote.approve(message.message_key, message.received_at)
+            async with self._unit_of_work_factory() as unit_of_work:
+                await unit_of_work.quotes.save(approved, expected_version=quote.version)
+                await unit_of_work.outbox.enqueue(quote_delivery_command(approved))
+                await unit_of_work.commit()
+            return _workflow_reply(approved, message.message_key)
+        if command == "reject":
+            rejected = quote.reject(message.message_key, message.received_at)
+            await self._save(rejected, expected_version=quote.version)
+            return _workflow_reply(rejected, message.message_key)
+        if command == "correct":
+            correction = text.split(":", 1)[1].strip()
+            if not correction:
+                raise QuoteIntakeError("correction text must not be empty")
+            drafting = quote.begin_correction(
+                message.message_key,
+                correction,
+                message.received_at,
             )
+            await self._save(drafting, expected_version=quote.version)
+            return await self._complete_draft(drafting, message)
         return WorkflowResult(
             status=WorkflowRunStatus.SUCCEEDED,
             replies=(
@@ -302,6 +291,15 @@ def normalized_text(message: NormalizedOwnerMessage) -> str:
     return "\n".join(part.text for part in message.parts if isinstance(part, TextPart))
 
 
+def owner_command(message: NormalizedOwnerMessage) -> str | None:
+    text = normalized_text(message).strip().casefold()
+    if text in {"approve", "reject"}:
+        return text
+    if text.startswith("correct:"):
+        return "correct"
+    return None
+
+
 def quote_request_text(message: NormalizedOwnerMessage) -> str:
     text = normalized_text(message).lstrip()
     if not text.lower().startswith("quote:"):
@@ -310,6 +308,19 @@ def quote_request_text(message: NormalizedOwnerMessage) -> str:
     if not request_text:
         raise QuoteIntakeError("quote request text must not be empty")
     return request_text
+
+
+def _no_awaiting_approval_reply(message: NormalizedOwnerMessage) -> WorkflowResult:
+    reply = OutboundOwnerMessage(
+        business_id=message.business_id,
+        conversation_ref=message.conversation_ref,
+        parts=(TextPart(text="No quote is awaiting approval in this conversation."),),
+        correlation_id=f"quote:message:{message.message_key}",
+    )
+    return WorkflowResult(
+        status=WorkflowRunStatus.SUCCEEDED,
+        replies=(reply,),
+    )
 
 
 def _workflow_reply(
