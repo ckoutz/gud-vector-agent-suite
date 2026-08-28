@@ -1,5 +1,11 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.domain.completeness_repositories import (
+    ChecklistDefinitionRepository,
+    CompletenessUnitOfWork,
+    FieldNoteReviewRepository,
+    FollowUpQuestionRepository,
+)
 from gvas.domain.repositories import (
     BusinessRepository,
     ConversationRepository,
@@ -9,6 +15,11 @@ from gvas.domain.repositories import (
     OwnerChannelEndpointRepository,
     UnitOfWork,
     WorkflowRunRepository,
+)
+from gvas.infrastructure.completeness_repositories import (
+    SqlChecklistDefinitionRepository,
+    SqlFieldNoteReviewRepository,
+    SqlFollowUpQuestionRepository,
 )
 from gvas.infrastructure.repositories import (
     SqlBusinessRepository,
@@ -29,6 +40,9 @@ class SqlUnitOfWork:
     outbound_messages: OutboundMessageRepository
     workflow_runs: WorkflowRunRepository
     outbox: OutboxRepository
+    checklists: ChecklistDefinitionRepository
+    field_note_reviews: FieldNoteReviewRepository
+    follow_up_questions: FollowUpQuestionRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -43,6 +57,9 @@ class SqlUnitOfWork:
         self.outbound_messages = SqlOutboundMessageRepository(self._session)
         self.workflow_runs = SqlWorkflowRunRepository(self._session)
         self.outbox = SqlOutboxRepository(self._session)
+        self.checklists = SqlChecklistDefinitionRepository(self._session)
+        self.field_note_reviews = SqlFieldNoteReviewRepository(self._session)
+        self.follow_up_questions = SqlFollowUpQuestionRepository(self._session)
         return self
 
     async def __aexit__(
@@ -73,4 +90,12 @@ class SqlUnitOfWorkFactory:
         self._session_factory = session_factory
 
     def __call__(self) -> UnitOfWork:
+        return SqlUnitOfWork(self._session_factory)
+
+
+class SqlCompletenessUnitOfWorkFactory:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    def __call__(self) -> CompletenessUnitOfWork:
         return SqlUnitOfWork(self._session_factory)

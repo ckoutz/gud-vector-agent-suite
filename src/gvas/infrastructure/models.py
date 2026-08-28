@@ -204,3 +204,7 @@ class OutboxMessage(Base):
     dedup_key: Mapped[str | None] = mapped_column(String(255))
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     locked_by: Mapped[str | None] = mapped_column(String(255))
+
+
+# Completeness models are imported after Base is defined to register metadata.
+from gvas.infrastructure import completeness_models as completeness_models  # noqa: E402, F401
