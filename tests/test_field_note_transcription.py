@@ -17,7 +17,9 @@ from gvas.application.ingestion import IngestOwnerMessageService
 from gvas.domain.enums import MediaKind
 from gvas.domain.field_note_repositories import (
     FieldNoteUnitOfWork,
+    LostTranscriptionLeaseError,
     TranscriptionClaim,
+    TranscriptionClaimResult,
 )
 from gvas.domain.field_notes import (
     FIELD_NOTE_INTENT,
@@ -62,6 +64,47 @@ async def seed_business(
             )
         )
         await session.commit()
+
+
+async def create_audio_part(
+    session_factory: async_sessionmaker[AsyncSession],
+    business_id: BusinessId,
+    *,
+    message_key: str,
+) -> FieldNotePartId:
+    attachment = AttachmentReference(
+        attachment_id=uuid4(), media_kind=MediaKind.AUDIO, locator=f"opaque-{message_key}"
+    )
+    message = NormalizedOwnerMessage(
+        message_key=MessageKey(message_key),
+        business_id=business_id,
+        conversation_ref=ConversationRef(
+            business_id=business_id, external_conversation_id=f"conversation-{message_key}"
+        ),
+        sender={"external_id": "owner", "role": "owner"},
+        received_at=datetime.now(UTC),
+        parts=(TextPart(text="field notes:"), AttachmentPart(attachment=attachment)),
+    )
+    await IngestOwnerMessageService(SqlUnitOfWorkFactory(session_factory)).ingest(
+        InboundOwnerMessage(
+            message=message,
+            endpoint=ChannelEndpointRef(
+                business_id=business_id,
+                source_namespace="test",
+                external_endpoint_id=f"endpoint-{message_key}",
+            ),
+            routing={},
+        )
+    )
+    await FieldNoteIntakeHandler(
+        SqlFieldNoteUnitOfWorkFactory(session_factory), now=lambda: datetime.now(UTC)
+    ).handle(WorkflowContext(run_id=uuid4(), intent=FIELD_NOTE_INTENT, message=message))
+    async with session_factory() as session:
+        row = await session.scalar(
+            select(FieldNotePartRow).where(FieldNotePartRow.kind == FieldNotePartKind.AUDIO.value)
+        )
+        assert row is not None
+        return FieldNotePartId(row.id)
 
 
 @pytest.mark.asyncio
@@ -113,7 +156,10 @@ async def test_transcription_lifecycle_and_retry(
         SqlFieldNoteUnitOfWorkFactory(session_factory), FailingPort()
     )
     failed = await service.transcribe(
-        part_id, now=datetime.now(UTC), stale_before=datetime.now(UTC) - timedelta(hours=1)
+        business_id,
+        part_id,
+        now=datetime.now(UTC),
+        stale_before=datetime.now(UTC) - timedelta(hours=1),
     )
     assert failed.outcome is TranscriptionOutcome.FAILED
     async with session_factory() as session:
@@ -134,11 +180,17 @@ async def test_transcription_lifecycle_and_retry(
     port = SuccessfulPort()
     service = TranscribeFieldNoteAudioService(SqlFieldNoteUnitOfWorkFactory(session_factory), port)
     succeeded = await service.transcribe(
-        part_id, now=datetime.now(UTC), stale_before=datetime.now(UTC) - timedelta(hours=1)
+        business_id,
+        part_id,
+        now=datetime.now(UTC),
+        stale_before=datetime.now(UTC) - timedelta(hours=1),
     )
     assert succeeded.outcome is TranscriptionOutcome.TRANSCRIBED
     duplicate = await service.transcribe(
-        part_id, now=datetime.now(UTC), stale_before=datetime.now(UTC) - timedelta(hours=1)
+        business_id,
+        part_id,
+        now=datetime.now(UTC),
+        stale_before=datetime.now(UTC) - timedelta(hours=1),
     )
     assert duplicate.outcome is TranscriptionOutcome.ALREADY_TRANSCRIBED
     assert port.calls == 1
@@ -242,18 +294,24 @@ async def test_transcription_lease_states_and_missing_parts(
     factory = SqlFieldNoteUnitOfWorkFactory(session_factory)
     async with factory() as unit_of_work:
         first = await unit_of_work.field_note_transcriptions.claim(
-            part_id, now=initial, stale_before=initial - timedelta(hours=1)
+            business_id, part_id, now=initial, stale_before=initial - timedelta(hours=1)
         )
         await unit_of_work.commit()
     async with factory() as unit_of_work:
         busy = await unit_of_work.field_note_transcriptions.claim(
-            part_id, now=initial + timedelta(minutes=1), stale_before=initial - timedelta(hours=1)
+            business_id,
+            part_id,
+            now=initial + timedelta(minutes=1),
+            stale_before=initial - timedelta(hours=1),
         )
         await unit_of_work.commit()
     assert busy.result.value == "busy"
     async with factory() as unit_of_work:
         stale = await unit_of_work.field_note_transcriptions.claim(
-            part_id, now=initial + timedelta(hours=2), stale_before=initial + timedelta(hours=1)
+            business_id,
+            part_id,
+            now=initial + timedelta(hours=2),
+            stale_before=initial + timedelta(hours=1),
         )
         await unit_of_work.commit()
     assert stale.result.value == "acquired"
@@ -277,7 +335,10 @@ async def test_transcription_lease_states_and_missing_parts(
 
     async with factory() as unit_of_work:
         missing = await unit_of_work.field_note_transcriptions.claim(
-            FieldNotePartId(uuid4()), now=initial, stale_before=initial - timedelta(hours=1)
+            business_id,
+            FieldNotePartId(uuid4()),
+            now=initial,
+            stale_before=initial - timedelta(hours=1),
         )
         await unit_of_work.commit()
     assert missing.result.value == "missing"
@@ -289,7 +350,7 @@ async def test_transcription_lease_states_and_missing_parts(
         text_id = FieldNotePartId(text_row.id)
     async with factory() as unit_of_work:
         non_audio = await unit_of_work.field_note_transcriptions.claim(
-            text_id, now=initial, stale_before=initial - timedelta(hours=1)
+            business_id, text_id, now=initial, stale_before=initial - timedelta(hours=1)
         )
         await unit_of_work.commit()
     assert non_audio.result.value == "missing"
@@ -371,6 +432,7 @@ async def test_transcription_port_runs_without_an_open_uow(
             return TranscriptResult(text="discipline transcript")
 
     report = await TranscribeFieldNoteAudioService(TrackingFactory(), Port()).transcribe(
+        business_id,
         part_id,
         now=datetime.now(UTC),
         stale_before=datetime.now(UTC) - timedelta(hours=1),
@@ -430,6 +492,7 @@ async def test_superseded_provider_results_report_lease_lost(
         async def transcribe(self, audio: AudioReference) -> TranscriptResult:
             async with factory() as unit_of_work:
                 replacement = await unit_of_work.field_note_transcriptions.claim(
+                    business_id,
                     part_id,
                     now=self.replacement_time,
                     stale_before=self.replacement_time - timedelta(days=1) + timedelta(minutes=1),
@@ -443,6 +506,7 @@ async def test_superseded_provider_results_report_lease_lost(
     port = SupersedingPort()
     service = TranscribeFieldNoteAudioService(factory, port)
     success_result = await service.transcribe(
+        business_id,
         part_id,
         now=datetime(2025, 1, 1, tzinfo=UTC),
         stale_before=datetime(2024, 12, 1, tzinfo=UTC),
@@ -451,11 +515,104 @@ async def test_superseded_provider_results_report_lease_lost(
     port.should_fail = True
     port.replacement_time = datetime(2025, 1, 5, tzinfo=UTC)
     failure_result = await service.transcribe(
+        business_id,
         part_id,
         now=datetime(2025, 1, 4, tzinfo=UTC),
         stale_before=datetime(2025, 1, 3, 0, 1, tzinfo=UTC),
     )
     assert failure_result.outcome is TranscriptionOutcome.LEASE_LOST
+
+
+@pytest.mark.asyncio
+async def test_cross_business_transcribe_is_missing_and_does_not_call_port(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_a = BusinessId(uuid4())
+    business_b = BusinessId(uuid4())
+    await seed_business(session_factory, business_a)
+    await seed_business(session_factory, business_b)
+    part_id = await create_audio_part(session_factory, business_a, message_key="cross-service")
+
+    class Port:
+        calls = 0
+
+        async def transcribe(self, audio: AudioReference) -> TranscriptResult:
+            self.calls += 1
+            return TranscriptResult(text="must not run")
+
+    port = Port()
+    result = await TranscribeFieldNoteAudioService(
+        SqlFieldNoteUnitOfWorkFactory(session_factory), port
+    ).transcribe(
+        business_b,
+        part_id,
+        now=datetime(2025, 1, 1, tzinfo=UTC),
+        stale_before=datetime(2024, 12, 1, tzinfo=UTC),
+    )
+    assert result.outcome is TranscriptionOutcome.MISSING
+    assert port.calls == 0
+    async with session_factory() as session:
+        row = await session.scalar(select(FieldNotePartRow).where(FieldNotePartRow.id == part_id))
+        assert row is not None
+        assert row.transcription_status == TranscriptionStatus.PENDING.value
+        assert row.attempts == 0
+        assert row.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_repository_claim_requires_business_match(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_a = BusinessId(uuid4())
+    business_b = BusinessId(uuid4())
+    await seed_business(session_factory, business_a)
+    await seed_business(session_factory, business_b)
+    part_id = await create_audio_part(session_factory, business_a, message_key="cross-repository")
+    factory = SqlFieldNoteUnitOfWorkFactory(session_factory)
+    now = datetime(2025, 1, 1, tzinfo=UTC)
+    async with factory() as unit_of_work:
+        wrong = await unit_of_work.field_note_transcriptions.claim(
+            business_b, part_id, now=now, stale_before=now - timedelta(hours=1)
+        )
+        await unit_of_work.commit()
+    assert wrong.result is TranscriptionClaimResult.MISSING
+    async with factory() as unit_of_work:
+        right = await unit_of_work.field_note_transcriptions.claim(
+            business_a, part_id, now=now, stale_before=now - timedelta(hours=1)
+        )
+        await unit_of_work.commit()
+    assert right.result is TranscriptionClaimResult.ACQUIRED
+
+
+@pytest.mark.asyncio
+async def test_fenced_write_rejects_claim_with_wrong_business(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_a = BusinessId(uuid4())
+    business_b = BusinessId(uuid4())
+    await seed_business(session_factory, business_a)
+    await seed_business(session_factory, business_b)
+    part_id = await create_audio_part(session_factory, business_a, message_key="cross-fence")
+    factory = SqlFieldNoteUnitOfWorkFactory(session_factory)
+    now = datetime(2025, 1, 1, tzinfo=UTC)
+    async with factory() as unit_of_work:
+        claim = await unit_of_work.field_note_transcriptions.claim(
+            business_a, part_id, now=now, stale_before=now - timedelta(hours=1)
+        )
+        await unit_of_work.commit()
+    forged = claim.model_copy(update={"business_id": business_b})
+    async with factory() as unit_of_work:
+        with pytest.raises(LostTranscriptionLeaseError):
+            await unit_of_work.field_note_transcriptions.record_success(
+                forged, TranscriptResult(text="must not persist")
+            )
+        await unit_of_work.rollback()
+    async with session_factory() as session:
+        row = await session.scalar(select(FieldNotePartRow).where(FieldNotePartRow.id == part_id))
+        assert row is not None
+        assert row.transcription_status == TranscriptionStatus.IN_PROGRESS.value
+        assert row.attempts == 1
+        assert row.transcript_text is None
 
 
 @pytest.mark.postgres
@@ -504,7 +661,7 @@ async def test_postgres_field_note_claim_is_exclusive(
     async def claim() -> TranscriptionClaim:
         async with SqlFieldNoteUnitOfWorkFactory(postgres_session_factory)() as unit_of_work:
             result = await unit_of_work.field_note_transcriptions.claim(
-                part_id, now=now, stale_before=now - timedelta(hours=1)
+                business_id, part_id, now=now, stale_before=now - timedelta(hours=1)
             )
             await unit_of_work.commit()
             return result

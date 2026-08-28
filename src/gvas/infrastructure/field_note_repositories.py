@@ -507,12 +507,22 @@ class SqlFieldNoteTranscriptionRepository:
         self.session = session
 
     async def claim(
-        self, part_id: FieldNotePartId, *, now: datetime, stale_before: datetime
+        self,
+        business_id: BusinessId,
+        part_id: FieldNotePartId,
+        *,
+        now: datetime,
+        stale_before: datetime,
     ) -> TranscriptionClaim:
         _aware(now, "now")
         _aware(stale_before, "stale_before")
         row = await self.session.scalar(
-            select(FieldNotePartRow).where(FieldNotePartRow.id == part_id).with_for_update()
+            select(FieldNotePartRow)
+            .where(
+                FieldNotePartRow.business_id == business_id,
+                FieldNotePartRow.id == part_id,
+            )
+            .with_for_update()
         )
         if row is None or row.kind != FieldNotePartKind.AUDIO.value:
             return TranscriptionClaim(result=TranscriptionClaimResult.MISSING)
@@ -555,10 +565,12 @@ class SqlFieldNoteTranscriptionRepository:
         if (
             claim.result is not TranscriptionClaimResult.ACQUIRED
             or claim.part_id is None
+            or claim.business_id is None
             or claim.lease_token is None
         ):
             raise LostTranscriptionLeaseError("transcription claim does not hold an active lease")
         return (
+            FieldNotePartRow.business_id == claim.business_id,
             FieldNotePartRow.id == claim.part_id,
             FieldNotePartRow.lease_token == claim.lease_token,
             FieldNotePartRow.transcription_status == TranscriptionStatus.IN_PROGRESS.value,

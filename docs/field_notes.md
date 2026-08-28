@@ -10,9 +10,10 @@ then records the case, parts, active-case state, acknowledgement, and
 transcription commands in one short transaction. Text and unsupported media
 are terminal at intake; audio starts in `pending`.
 
-Transcription claims use a fenced lease. The claim transaction commits before
-the transcription port is called. A separate transaction records success or
-failure only when the lease token is still current. Failed work is retryable
+Transcription claims use the business ID and part ID together with a fenced
+lease. The claim transaction commits before the transcription port is called.
+A separate transaction records success or failure only when the lease token is
+still current. Failed work is retryable
 and a succeeded part is terminal, preventing duplicate transcription calls.
 
 Canonical transcripts preserve part sequence. Text and successful, non-blank

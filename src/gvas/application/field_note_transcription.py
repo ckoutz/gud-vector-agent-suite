@@ -78,11 +78,16 @@ class TranscribeFieldNoteAudioService:
         self._transcription = transcription
 
     async def transcribe(
-        self, part_id: FieldNotePartId, *, now: datetime, stale_before: datetime
+        self,
+        business_id: BusinessId,
+        part_id: FieldNotePartId,
+        *,
+        now: datetime,
+        stale_before: datetime,
     ) -> TranscriptionResultReport:
         async with self._unit_of_work_factory() as unit_of_work:
             claim = await unit_of_work.field_note_transcriptions.claim(
-                part_id, now=now, stale_before=stale_before
+                business_id, part_id, now=now, stale_before=stale_before
             )
             await unit_of_work.commit()
         if claim.result is TranscriptionClaimResult.TERMINAL:

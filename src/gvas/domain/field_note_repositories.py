@@ -158,7 +158,12 @@ class FieldNoteConversationStateRepository(Protocol):
 
 class FieldNoteTranscriptionRepository(Protocol):
     async def claim(
-        self, part_id: FieldNotePartId, *, now: datetime, stale_before: datetime
+        self,
+        business_id: BusinessId,
+        part_id: FieldNotePartId,
+        *,
+        now: datetime,
+        stale_before: datetime,
     ) -> TranscriptionClaim: ...
 
     async def record_success(

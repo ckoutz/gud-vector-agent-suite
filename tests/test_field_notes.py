@@ -483,6 +483,7 @@ async def test_mixed_parts_keep_order_through_partial_and_full_transcription(
             raise RuntimeError("mixed failure")
 
     failed = await TranscribeFieldNoteAudioService(factory, FailingPort()).transcribe(
+        business_id,
         first_audio_id,
         now=datetime(2025, 1, 1, tzinfo=UTC),
         stale_before=datetime(2024, 12, 1, tzinfo=UTC),
@@ -506,6 +507,7 @@ async def test_mixed_parts_keep_order_through_partial_and_full_transcription(
     service = TranscribeFieldNoteAudioService(factory, SuccessfulPort())
     assert (
         await service.transcribe(
+            business_id,
             first_audio_id,
             now=datetime(2025, 1, 2, tzinfo=UTC),
             stale_before=datetime(2025, 1, 1, tzinfo=UTC),
@@ -513,6 +515,7 @@ async def test_mixed_parts_keep_order_through_partial_and_full_transcription(
     ).outcome is TranscriptionOutcome.TRANSCRIBED
     assert (
         await service.transcribe(
+            business_id,
             second_audio_id,
             now=datetime(2025, 1, 2, tzinfo=UTC),
             stale_before=datetime(2025, 1, 1, tzinfo=UTC),
