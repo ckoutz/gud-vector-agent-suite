@@ -29,6 +29,8 @@ from gvas.interfaces.http.slack import create_slack_router
 from slack_fixtures import (
     APP_ID,
     CHANNEL,
+    NON_OWNER_USER,
+    OWNER_USER,
     REQUEST_NOW,
     REQUEST_TIMESTAMP,
     ROOT_TS,
@@ -180,17 +182,26 @@ def test_unsupported_envelopes_and_events_are_not_parsed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_installation_directory_parses_configured_workspaces() -> None:
+async def test_installation_directory_parses_configured_workspaces_and_owner_users() -> None:
     business_id = uuid4()
-    directory = StaticSlackInstallationDirectory.from_setting(f" {TEAM_ID}={business_id} ")
+    directory = StaticSlackInstallationDirectory.from_setting(
+        f" {TEAM_ID}={business_id}:{OWNER_USER}|{OWNER_USER} "
+    )
     found = await directory.find(TEAM_ID, APP_ID)
     assert found is not None
     assert found.business_id == business_id
+    assert found.owner_user_ids == frozenset({OWNER_USER})
+    assert found.is_authorized_owner(OWNER_USER)
+    assert not found.is_authorized_owner(NON_OWNER_USER)
     assert await directory.find("T00000OTHER", APP_ID) is None
     with pytest.raises(SlackInstallationError):
-        StaticSlackInstallationDirectory.from_setting("T1=not-a-uuid")
+        StaticSlackInstallationDirectory.from_setting(f"T1=not-a-uuid:{OWNER_USER}")
     with pytest.raises(SlackInstallationError):
         StaticSlackInstallationDirectory.from_setting("T1")
+    with pytest.raises(SlackInstallationError):
+        StaticSlackInstallationDirectory.from_setting(f"T1={business_id}")
+    with pytest.raises(SlackInstallationError):
+        StaticSlackInstallationDirectory.from_setting(f"T1={business_id}: ")
 
 
 @pytest.mark.asyncio
@@ -266,6 +277,32 @@ async def test_unknown_workspace_is_acknowledged_without_persistence(
     assert outcome.result is SlackIngressResult.UNKNOWN_INSTALLATION
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(InboundMessage)) == 0
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_workspace_member_is_not_ingested(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    ingress = build_ingress(session_factory, business_id)
+    body, headers = signed_request(message_payload(user=NON_OWNER_USER))
+
+    outcome = await ingress.handle(
+        body=body,
+        signature=headers["X-Slack-Signature"],
+        timestamp=headers["X-Slack-Request-Timestamp"],
+    )
+
+    assert outcome.result is SlackIngressResult.UNAUTHORIZED_SENDER
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(InboundMessage)) == 0
+        assert await session.scalar(select(func.count()).select_from(OutboxMessage)) == 0
+
+
+def test_normalization_rejects_a_sender_outside_the_configured_owners() -> None:
+    with pytest.raises(SlackNormalizationError):
+        normalize(message_payload(user=NON_OWNER_USER), BusinessId(uuid4()))
 
 
 @pytest.mark.asyncio

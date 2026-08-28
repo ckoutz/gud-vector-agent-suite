@@ -63,8 +63,16 @@ create_app(routers=(create_slack_router(ingress, path=settings.events_path),))
 ```
 
 Settings use the `GVAS_SLACK_` prefix; see [`.env.example`](.env.example).
-`GVAS_SLACK_INSTALLATIONS` maps Slack team IDs to business IDs
-(`T0000000000=<business-uuid>,...`); unmapped workspaces are rejected.
+`GVAS_SLACK_INSTALLATIONS` maps Slack team IDs to a business and its authorized
+owner users (`T0000000000=<business-uuid>:U0000000000|U0000000001,...`).
+Unmapped workspaces are rejected, and workspace membership alone grants nothing:
+a message from a human who is not a configured owner of that business is
+acknowledged but never ingested. Each entry must list at least one owner user,
+so a misconfiguration cannot silently authorize a whole workspace.
+
+Reply correlation follows persisted conversation/thread state — the adapter
+resolves the Slack channel and thread from stored routing and never expects
+Slack to echo internal outbound correlation IDs back to us.
 
 The default composition uses `UnconfiguredIntentResolver`. Ingress persists the
 inbound message and one `owner_message.process` command; processing remains

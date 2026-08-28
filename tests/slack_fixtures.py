@@ -22,6 +22,8 @@ SIGNING_SECRET = "fake-signing-secret"  # noqa: S105 - fake value for tests
 TEAM_ID = "T00000FAKE"
 APP_ID = "A00000FAKE"
 CHANNEL = "C00000FAKE"
+OWNER_USER = "U00000FAKE"
+NON_OWNER_USER = "U00001FAKE"
 ROOT_TS = "1735689600.000100"
 REQUEST_NOW = datetime(2025, 1, 1, tzinfo=UTC)
 REQUEST_TIMESTAMP = str(int(REQUEST_NOW.timestamp()))
@@ -32,7 +34,7 @@ def message_payload(**overrides: Any) -> dict[str, Any]:
         "type": "message",
         "channel": CHANNEL,
         "channel_type": "im",
-        "user": "U00000FAKE",
+        "user": OWNER_USER,
         "text": "replace the water heater",
         "ts": ROOT_TS,
         "event_ts": ROOT_TS,
@@ -58,7 +60,12 @@ def signed_request(payload: dict[str, Any]) -> tuple[bytes, dict[str, str]]:
 
 
 def installation(business_id: BusinessId) -> SlackInstallation:
-    return SlackInstallation(business_id=business_id, team_id=TEAM_ID, api_app_id=APP_ID)
+    return SlackInstallation(
+        business_id=business_id,
+        team_id=TEAM_ID,
+        api_app_id=APP_ID,
+        owner_user_ids=frozenset({OWNER_USER}),
+    )
 
 
 def build_ingress(

@@ -33,6 +33,8 @@ def normalize_event(
     event = callback.event
     if event.user is None:
         raise SlackNormalizationError("slack message event has no sender")
+    if not installation.is_authorized_owner(event.user):
+        raise SlackNormalizationError("slack sender is not an authorized owner")
     endpoint = ChannelEndpointRef(
         business_id=installation.business_id,
         source_namespace=SLACK_SOURCE_NAMESPACE,

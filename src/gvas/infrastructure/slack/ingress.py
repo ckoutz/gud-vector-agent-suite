@@ -24,6 +24,7 @@ class SlackIngressResult(StrEnum):
     DUPLICATE = "duplicate"
     IGNORED = "ignored"
     UNKNOWN_INSTALLATION = "unknown_installation"
+    UNAUTHORIZED_SENDER = "unauthorized_sender"
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,11 @@ class SlackEventIngress:
         if installation is None:
             return SlackIngressOutcome(
                 SlackIngressResult.UNKNOWN_INSTALLATION, detail=callback.team_id
+            )
+        sender = callback.event.user
+        if sender is None or not installation.is_authorized_owner(sender):
+            return SlackIngressOutcome(
+                SlackIngressResult.UNAUTHORIZED_SENDER, detail="sender is not an authorized owner"
             )
         try:
             inbound = normalize_event(callback, installation)
