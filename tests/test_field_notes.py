@@ -5,14 +5,24 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.application.field_note_transcription import (
+    FieldNoteTranscriptService,
+    TranscribeFieldNoteAudioService,
+    TranscriptionOutcome,
+)
 from gvas.application.field_notes import FieldNoteIntakeHandler, FieldNoteIntentContribution
 from gvas.application.ingestion import IngestOwnerMessageService
 from gvas.domain.enums import MediaKind, WorkflowRunStatus
-from gvas.domain.field_note_repositories import AmbiguousFieldNoteMessageError
+from gvas.domain.field_note_repositories import (
+    AmbiguousFieldNoteMessageError,
+    CrossBusinessFieldNoteError,
+    FieldNotePartDraft,
+)
 from gvas.domain.field_notes import (
     FIELD_NOTE_INTENT,
     FieldNoteCase,
     FieldNoteCaseId,
+    FieldNoteCaseNotFoundError,
     FieldNoteCaseStatus,
     FieldNotePart,
     FieldNotePartId,
@@ -26,11 +36,13 @@ from gvas.domain.identifiers import BusinessId, ConversationId, MessageId, Messa
 from gvas.domain.messages import (
     AttachmentPart,
     AttachmentReference,
+    AudioReference,
     ChannelEndpointRef,
     ConversationRef,
     InboundOwnerMessage,
     NormalizedOwnerMessage,
     TextPart,
+    TranscriptResult,
 )
 from gvas.domain.outbox import RESERVED_COMMAND_TYPES
 from gvas.domain.workflows import WorkflowContext
@@ -281,3 +293,235 @@ async def test_missing_message_and_ambiguous_endpoint_identity(
     assert ambiguous_result.status is WorkflowRunStatus.FAILED
     async with session_factory() as session:
         assert await session.scalar(select(func.count()).select_from(FieldNoteCaseRow)) == 0
+
+
+@pytest.mark.asyncio
+async def test_unsupported_media_is_recorded_and_counted(
+    session_factory: "async_sessionmaker[AsyncSession]",
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    message = make_message(
+        business_id,
+        message_key="unsupported",
+        parts=(
+            TextPart(text="field notes:"),
+            AttachmentPart(
+                attachment=AttachmentReference(
+                    attachment_id=uuid4(), media_kind=MediaKind.IMAGE, locator="opaque-image"
+                )
+            ),
+            AttachmentPart(
+                attachment=AttachmentReference(
+                    attachment_id=uuid4(), media_kind=MediaKind.DOCUMENT, locator="opaque-document"
+                )
+            ),
+        ),
+    )
+    ingest = IngestOwnerMessageService(SqlUnitOfWorkFactory(session_factory))
+    await ingest.ingest(message)
+    result = await FieldNoteIntakeHandler(
+        SqlFieldNoteUnitOfWorkFactory(session_factory),
+        now=lambda: datetime(2025, 1, 1, tzinfo=UTC),
+    ).handle(WorkflowContext(run_id=uuid4(), intent=FIELD_NOTE_INTENT, message=message.message))
+    assert result.commands == ()
+    assert result.replies
+    assert isinstance(result.replies[0].parts[0], TextPart)
+    assert "Skipped 2 unsupported attachment(s)." in result.replies[0].parts[0].text
+    async with session_factory() as session:
+        case_row = await session.scalar(select(FieldNoteCaseRow))
+        assert case_row is not None
+        parts = list((await session.scalars(select(FieldNotePartRow))).all())
+        assert [part.kind for part in parts] == ["unsupported", "unsupported"]
+        case_id = FieldNoteCaseId(case_row.id)
+    transcript = await FieldNoteTranscriptService(
+        SqlFieldNoteUnitOfWorkFactory(session_factory)
+    ).canonical_transcript(business_id, case_id)
+    assert transcript.segments == ()
+    assert transcript.unsupported_parts == 2
+
+
+@pytest.mark.asyncio
+async def test_duplicate_audio_delivery_returns_pending_ids_and_same_commands(
+    session_factory: "async_sessionmaker[AsyncSession]",
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    audio = AttachmentReference(
+        attachment_id=uuid4(), media_kind=MediaKind.AUDIO, locator="opaque-audio"
+    )
+    message = make_message(
+        business_id,
+        message_key="duplicate-audio",
+        parts=(TextPart(text="field notes:"), AttachmentPart(attachment=audio)),
+    )
+    ingest = IngestOwnerMessageService(SqlUnitOfWorkFactory(session_factory))
+    await ingest.ingest(message)
+    factory = SqlFieldNoteUnitOfWorkFactory(session_factory)
+    handler = FieldNoteIntakeHandler(factory, now=lambda: datetime(2025, 1, 1, tzinfo=UTC))
+    first = await handler.handle(
+        WorkflowContext(run_id=uuid4(), intent=FIELD_NOTE_INTENT, message=message.message)
+    )
+    async with session_factory() as session:
+        before = await session.scalar(select(func.count()).select_from(FieldNotePartRow))
+    async with factory() as unit_of_work:
+        location = await unit_of_work.field_note_messages.locate(
+            business_id, message.message.conversation_ref, message.message.message_key
+        )
+        assert location is not None
+        case_id = await unit_of_work.field_note_conversation_states.get_active_case_id(
+            business_id, location.conversation_id
+        )
+        assert case_id is not None
+        replay = await unit_of_work.field_note_cases.record_intake(
+            location=location,
+            parts=(FieldNotePartDraft(kind=FieldNotePartKind.AUDIO, attachment=audio),),
+            case_id=case_id,
+        )
+        await unit_of_work.commit()
+    assert replay.created_part_ids == ()
+    assert len(replay.audio_part_ids) == 1
+    second = await handler.handle(
+        WorkflowContext(run_id=uuid4(), intent=FIELD_NOTE_INTENT, message=message.message)
+    )
+    async with session_factory() as session:
+        after = await session.scalar(select(func.count()).select_from(FieldNotePartRow))
+    assert before == after == 1
+    assert first.commands == second.commands
+    assert str(replay.audio_part_ids[0]) == first.commands[0].payload["field_note_part_id"]
+
+
+@pytest.mark.asyncio
+async def test_tenant_isolation_applies_to_cases_state_and_locator(
+    session_factory: "async_sessionmaker[AsyncSession]",
+) -> None:
+    first_business = BusinessId(uuid4())
+    second_business = BusinessId(uuid4())
+    await seed_business(session_factory, first_business)
+    await seed_business(session_factory, second_business)
+    first = make_message(first_business, message_key="same", conversation="same-conversation")
+    second = make_message(second_business, message_key="same", conversation="same-conversation")
+    ingest = IngestOwnerMessageService(SqlUnitOfWorkFactory(session_factory))
+    await ingest.ingest(first)
+    await ingest.ingest(second)
+    handler = FieldNoteIntakeHandler(
+        SqlFieldNoteUnitOfWorkFactory(session_factory),
+        now=lambda: datetime(2025, 1, 1, tzinfo=UTC),
+    )
+    await handler.handle(
+        WorkflowContext(run_id=uuid4(), intent=FIELD_NOTE_INTENT, message=first.message)
+    )
+    await handler.handle(
+        WorkflowContext(run_id=uuid4(), intent=FIELD_NOTE_INTENT, message=second.message)
+    )
+    async with session_factory() as session:
+        cases = list((await session.scalars(select(FieldNoteCaseRow))).all())
+        states = list((await session.scalars(select(FieldNoteConversationState))).all())
+        assert len(cases) == len(states) == 2
+        case_id = FieldNoteCaseId(
+            next(case.id for case in cases if case.business_id == first_business)
+        )
+    with pytest.raises(FieldNoteCaseNotFoundError):
+        await FieldNoteTranscriptService(
+            SqlFieldNoteUnitOfWorkFactory(session_factory)
+        ).canonical_transcript(second_business, case_id)
+    async with SqlFieldNoteUnitOfWorkFactory(session_factory)() as unit_of_work:
+        with pytest.raises(CrossBusinessFieldNoteError):
+            await unit_of_work.field_note_messages.locate(
+                first_business,
+                ConversationRef(
+                    business_id=second_business, external_conversation_id="same-conversation"
+                ),
+                first.message.message_key,
+            )
+        await unit_of_work.rollback()
+
+
+@pytest.mark.asyncio
+async def test_mixed_parts_keep_order_through_partial_and_full_transcription(
+    session_factory: "async_sessionmaker[AsyncSession]",
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    first_audio = AttachmentReference(
+        attachment_id=uuid4(), media_kind=MediaKind.AUDIO, locator="opaque-first-audio"
+    )
+    second_audio = AttachmentReference(
+        attachment_id=uuid4(), media_kind=MediaKind.AUDIO, locator="opaque-second-audio"
+    )
+    message = make_message(
+        business_id,
+        message_key="mixed",
+        parts=(
+            TextPart(text="field notes: first text"),
+            AttachmentPart(attachment=first_audio),
+            TextPart(text="second text"),
+            AttachmentPart(attachment=second_audio),
+        ),
+    )
+    ingest = IngestOwnerMessageService(SqlUnitOfWorkFactory(session_factory))
+    await ingest.ingest(message)
+    factory = SqlFieldNoteUnitOfWorkFactory(session_factory)
+    await FieldNoteIntakeHandler(factory, now=lambda: datetime(2025, 1, 1, tzinfo=UTC)).handle(
+        WorkflowContext(run_id=uuid4(), intent=FIELD_NOTE_INTENT, message=message.message)
+    )
+    async with session_factory() as session:
+        case_row = await session.scalar(select(FieldNoteCaseRow))
+        assert case_row is not None
+        rows = list(
+            (
+                await session.scalars(select(FieldNotePartRow).order_by(FieldNotePartRow.sequence))
+            ).all()
+        )
+        assert [row.sequence for row in rows] == [1, 2, 3, 4]
+        case_id = FieldNoteCaseId(case_row.id)
+        first_audio_id = FieldNotePartId(rows[1].id)
+        second_audio_id = FieldNotePartId(rows[3].id)
+
+    class FailingPort:
+        async def transcribe(self, audio: AudioReference) -> TranscriptResult:
+            raise RuntimeError("mixed failure")
+
+    failed = await TranscribeFieldNoteAudioService(factory, FailingPort()).transcribe(
+        first_audio_id,
+        now=datetime(2025, 1, 1, tzinfo=UTC),
+        stale_before=datetime(2024, 12, 1, tzinfo=UTC),
+    )
+    assert failed.outcome is TranscriptionOutcome.FAILED
+    partial = await FieldNoteTranscriptService(factory).canonical_transcript(business_id, case_id)
+    assert partial.pending_parts == 1
+    assert partial.failed_parts == 1
+    assert partial.is_complete is False
+    assert partial.text == "first text\n\nsecond text"
+
+    class SuccessfulPort:
+        async def transcribe(self, audio: AudioReference) -> TranscriptResult:
+            text = (
+                "first audio"
+                if audio.attachment.attachment_id == first_audio.attachment_id
+                else "second audio"
+            )
+            return TranscriptResult(text=text)
+
+    service = TranscribeFieldNoteAudioService(factory, SuccessfulPort())
+    assert (
+        await service.transcribe(
+            first_audio_id,
+            now=datetime(2025, 1, 2, tzinfo=UTC),
+            stale_before=datetime(2025, 1, 1, tzinfo=UTC),
+        )
+    ).outcome is TranscriptionOutcome.TRANSCRIBED
+    assert (
+        await service.transcribe(
+            second_audio_id,
+            now=datetime(2025, 1, 2, tzinfo=UTC),
+            stale_before=datetime(2025, 1, 1, tzinfo=UTC),
+        )
+    ).outcome is TranscriptionOutcome.TRANSCRIBED
+    complete = await FieldNoteTranscriptService(factory).canonical_transcript(business_id, case_id)
+    assert complete.is_complete is True
+    assert complete.pending_parts == complete.failed_parts == 0
+    assert complete.text == "first text\n\nfirst audio\n\nsecond text\n\nsecond audio"
+    assert complete == await FieldNoteTranscriptService(factory).canonical_transcript(
+        business_id, case_id
+    )

@@ -13,7 +13,7 @@ from gvas.domain.field_notes import (
     FieldNotePartId,
     FieldNotePartKind,
     TranscriptionStatus,
-    _validate_part_values,
+    validate_field_note_part_values,
 )
 from gvas.domain.identifiers import (
     BusinessId,
@@ -46,7 +46,7 @@ class FieldNotePartDraft(FieldNoteRepositoryModel):
             if self.kind is FieldNotePartKind.AUDIO
             else TranscriptionStatus.NOT_REQUIRED
         )
-        _validate_part_values(self.kind, self.text, self.attachment, status, None)
+        validate_field_note_part_values(self.kind, self.text, self.attachment, status, None)
         return self
 
 

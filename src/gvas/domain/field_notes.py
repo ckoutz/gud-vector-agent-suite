@@ -7,11 +7,7 @@ from uuid import UUID, uuid5
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gvas.domain.enums import MediaKind
-from gvas.domain.identifiers import (
-    BusinessId,
-    MessageId,
-    WorkflowIntent,
-)
+from gvas.domain.identifiers import BusinessId, MessageId, OutboxCommandId, WorkflowIntent
 from gvas.domain.messages import (
     AttachmentReference,
     AudioReference,
@@ -78,7 +74,7 @@ def has_field_note_trigger(message: NormalizedOwnerMessage) -> bool:
     return match_field_note_trigger(message) is not None
 
 
-def _validate_part_values(
+def validate_field_note_part_values(
     kind: FieldNotePartKind,
     text: str | None,
     attachment: AttachmentReference | None,
@@ -125,7 +121,7 @@ class FieldNotePart(FieldNoteModel):
 
     @model_validator(mode="after")
     def validate_fields(self) -> FieldNotePart:
-        _validate_part_values(
+        validate_field_note_part_values(
             self.kind,
             self.text,
             self.attachment,
@@ -234,7 +230,7 @@ def field_note_transcribe_command(
     business_id: BusinessId, part_id: FieldNotePartId
 ) -> OutboxCommand:
     return OutboxCommand(
-        command_id=uuid5(FIELD_NOTE_TRANSCRIBE_COMMAND_NAMESPACE, str(part_id)),
+        command_id=OutboxCommandId(uuid5(FIELD_NOTE_TRANSCRIBE_COMMAND_NAMESPACE, str(part_id))),
         business_id=business_id,
         command_type=FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE,
         payload={"field_note_part_id": str(part_id)},

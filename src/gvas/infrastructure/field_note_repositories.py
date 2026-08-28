@@ -6,7 +6,7 @@ from uuid import uuid4
 from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult, Result
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.sql.elements import ColumnElement
 
 from gvas.domain.enums import MediaKind
@@ -18,6 +18,7 @@ from gvas.domain.field_note_repositories import (
     FieldNoteConversationStateRepository,
     FieldNoteIntakeResult,
     FieldNoteMessageLocation,
+    FieldNoteMessageLocator,
     FieldNotePartDraft,
     FieldNoteTranscriptionRepository,
     FieldNoteUnitOfWork,
@@ -43,6 +44,7 @@ from gvas.domain.identifiers import (
 )
 from gvas.domain.messages import (
     AttachmentReference,
+    AudioReference,
     ConversationRef,
     TranscriptResult,
 )
@@ -83,6 +85,11 @@ def _attachment(row: FieldNotePartRow) -> AttachmentReference | None:
 
 
 def _part(row: FieldNotePartRow) -> FieldNotePart:
+    if (
+        row.transcription_status == TranscriptionStatus.SUCCEEDED.value
+        and row.transcript_text is None
+    ):
+        raise ValueError("stored transcript is incomplete")
     transcript = (
         TranscriptResult(
             text=row.transcript_text or "",
@@ -200,8 +207,6 @@ class SqlFieldNoteCaseRepository:
         parts: Sequence[FieldNotePartDraft],
         case_id: FieldNoteCaseId | None,
     ) -> FieldNoteIntakeResult:
-        if location.business_id is None:
-            raise CrossBusinessFieldNoteError("field-note location has no business")
         conversation = await self.session.scalar(
             select(Conversation).where(Conversation.id == location.conversation_id)
         )
@@ -220,7 +225,6 @@ class SqlFieldNoteCaseRepository:
             raise CrossBusinessFieldNoteError(
                 "field-note message location references another business"
             )
-        existing_delivery = None
         if case_id is not None:
             case = await self.session.scalar(
                 select(FieldNoteCaseRow)
@@ -285,51 +289,6 @@ class SqlFieldNoteCaseRepository:
                         .order_by(FieldNotePartRow.sequence)
                     )
                 )
-                return FieldNoteIntakeResult(
-                    case=await self._record(case),
-                    created_case=False,
-                    created_part_ids=(),
-                    audio_part_ids=tuple(
-                        FieldNotePartId(item.id)
-                        for item in delivery_parts
-                        if item.kind == FieldNotePartKind.AUDIO.value
-                        and item.transcription_status == TranscriptionStatus.PENDING.value
-                    ),
-                )
-            try:
-                async with self.session.begin_nested():
-                    case = FieldNoteCaseRow(
-                        id=uuid4(),
-                        business_id=location.business_id,
-                        conversation_id=location.conversation_id,
-                        origin_inbound_message_id=location.inbound_message_id,
-                        status=FieldNoteCaseStatus.OPEN.value,
-                        created_at=datetime.now(UTC),
-                        updated_at=datetime.now(UTC),
-                    )
-                    self.session.add(case)
-                    await self.session.flush()
-            except IntegrityError:
-                case = await self.session.scalar(
-                    select(FieldNoteCaseRow).where(
-                        FieldNoteCaseRow.business_id == location.business_id,
-                        FieldNoteCaseRow.origin_inbound_message_id == location.inbound_message_id,
-                    )
-                )
-                if case is None:
-                    raise
-                delivery_parts = tuple(
-                    await self.session.scalars(
-                        select(FieldNotePartRow)
-                        .where(
-                            FieldNotePartRow.business_id == location.business_id,
-                            FieldNotePartRow.case_id == case.id,
-                            FieldNotePartRow.source_inbound_message_id
-                            == location.inbound_message_id,
-                        )
-                        .order_by(FieldNotePartRow.sequence)
-                    )
-                )
                 if delivery_parts:
                     return FieldNoteIntakeResult(
                         case=await self._record(case),
@@ -342,6 +301,54 @@ class SqlFieldNoteCaseRepository:
                             and item.transcription_status == TranscriptionStatus.PENDING.value
                         ),
                     )
+            if case is None:
+                try:
+                    async with self.session.begin_nested():
+                        case = FieldNoteCaseRow(
+                            id=uuid4(),
+                            business_id=location.business_id,
+                            conversation_id=location.conversation_id,
+                            origin_inbound_message_id=location.inbound_message_id,
+                            status=FieldNoteCaseStatus.OPEN.value,
+                            created_at=datetime.now(UTC),
+                            updated_at=datetime.now(UTC),
+                        )
+                        self.session.add(case)
+                        await self.session.flush()
+                except IntegrityError:
+                    case = await self.session.scalar(
+                        select(FieldNoteCaseRow).where(
+                            FieldNoteCaseRow.business_id == location.business_id,
+                            FieldNoteCaseRow.origin_inbound_message_id
+                            == location.inbound_message_id,
+                        )
+                    )
+                    if case is None:
+                        raise
+                    delivery_parts = tuple(
+                        await self.session.scalars(
+                            select(FieldNotePartRow)
+                            .where(
+                                FieldNotePartRow.business_id == location.business_id,
+                                FieldNotePartRow.case_id == case.id,
+                                FieldNotePartRow.source_inbound_message_id
+                                == location.inbound_message_id,
+                            )
+                            .order_by(FieldNotePartRow.sequence)
+                        )
+                    )
+                    if delivery_parts:
+                        return FieldNoteIntakeResult(
+                            case=await self._record(case),
+                            created_case=False,
+                            created_part_ids=(),
+                            audio_part_ids=tuple(
+                                FieldNotePartId(item.id)
+                                for item in delivery_parts
+                                if item.kind == FieldNotePartKind.AUDIO.value
+                                and item.transcription_status == TranscriptionStatus.PENDING.value
+                            ),
+                        )
         max_sequence = await self.session.scalar(
             select(func.max(FieldNotePartRow.sequence)).where(
                 FieldNotePartRow.business_id == location.business_id,
@@ -534,8 +541,6 @@ class SqlFieldNoteTranscriptionRepository:
         row.leased_at = now
         row.lease_token = uuid4()
         row.last_error = None
-        from gvas.domain.messages import AudioReference
-
         return TranscriptionClaim(
             result=TranscriptionClaimResult.ACQUIRED,
             part_id=FieldNotePartId(row.id),
@@ -597,7 +602,7 @@ class SqlFieldNoteTranscriptionRepository:
 
 
 class SqlFieldNoteUnitOfWork:
-    def __init__(self, session_factory: Any) -> None:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
         self._session: AsyncSession | None = None
 
@@ -605,7 +610,7 @@ class SqlFieldNoteUnitOfWork:
         session: AsyncSession = self._session_factory()
         self._session = session
         self.field_note_cases: FieldNoteCaseRepository = SqlFieldNoteCaseRepository(session)
-        self.field_note_messages = SqlFieldNoteMessageLocator(session)
+        self.field_note_messages: FieldNoteMessageLocator = SqlFieldNoteMessageLocator(session)
         self.field_note_conversation_states: FieldNoteConversationStateRepository = (
             SqlFieldNoteConversationStateRepository(session)
         )
@@ -638,8 +643,8 @@ class SqlFieldNoteUnitOfWork:
 
 
 class SqlFieldNoteUnitOfWorkFactory:
-    def __init__(self, session_factory: Any) -> None:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
     def __call__(self) -> FieldNoteUnitOfWork:
-        return cast(FieldNoteUnitOfWork, SqlFieldNoteUnitOfWork(self._session_factory))
+        return SqlFieldNoteUnitOfWork(self._session_factory)
