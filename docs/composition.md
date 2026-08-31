@@ -165,4 +165,6 @@ These need a product or provider decision and are wired only up to the port:
    template resolver can select note/checklist/report templates per business
    without touching domain code. Tenant/site-scoped building-plan artifacts and
    evidence-linked annotations have no accepted contract yet; they would attach
-   to checklist evidence and report snapshots, and are out of scope here.
+   to checklist evidence and report snapshots, and are out of scope here. A
+   design proposal for both, with the owner decisions it still needs, is in
+   [`docs/templates_and_site_plans.md`](templates_and_site_plans.md).
