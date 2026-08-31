@@ -27,7 +27,12 @@ from typing import Final
 
 from gvas.domain.enums import HostedLinkKind, RecipientAddressKind
 from gvas.domain.messages import CustomerRecipient
-from gvas.domain.money import UnsupportedCurrencyError, minor_unit_digits, supported_currencies
+from gvas.domain.money import (
+    UnsupportedCurrencyError,
+    minor_unit_digits,
+    minor_unit_scale,
+    supported_currencies,
+)
 from gvas.domain.quotes import (
     HostedLinkReference,
     QuoteDraftProposal,
@@ -40,6 +45,7 @@ from gvas.infrastructure.hosted_links import PORTAL_LOGIN_LINK_REFERENCE
 #: Every accepted amount is written in this currency; see ``_parse_currency``.
 QUOTED_CURRENCY: Final = "USD"
 QUOTED_CURRENCY_DIGITS: Final = minor_unit_digits(QUOTED_CURRENCY)
+QUOTED_CURRENCY_SCALE: Final = minor_unit_scale(QUOTED_CURRENCY)
 AMOUNT_PATTERN: Final = re.compile(rf"^\d{{1,12}}(\.\d{{1,{QUOTED_CURRENCY_DIGITS}}})?$")
 EMAIL_PATTERN: Final = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 CURRENCY_PATTERN: Final = re.compile(r"^[A-Za-z]{3}$")
@@ -58,7 +64,7 @@ def parse_amount_minor(value: str) -> int:
             f"'{text}' is not a valid amount. Write amounts like 125 or 125.00."
         )
     whole, _, fraction = text.partition(".")
-    return int(whole) * 10**QUOTED_CURRENCY_DIGITS + int(
+    return int(whole) * QUOTED_CURRENCY_SCALE + int(
         fraction.ljust(QUOTED_CURRENCY_DIGITS, "0") or 0
     )
 

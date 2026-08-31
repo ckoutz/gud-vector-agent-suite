@@ -32,6 +32,13 @@ def minor_unit_digits(currency: str) -> int:
     return digits
 
 
+def minor_unit_scale(currency: str) -> int:
+    """How many minor units make one major unit of ``currency``."""
+
+    scale: int = 10 ** minor_unit_digits(currency)
+    return scale
+
+
 def format_money(amount_minor: int, currency: str) -> str:
     """Render minor units exactly, using integer arithmetic only."""
 
@@ -40,5 +47,5 @@ def format_money(amount_minor: int, currency: str) -> str:
     sign = "-" if amount_minor < 0 else ""
     if digits == 0:
         return f"{code} {sign}{abs(amount_minor)}"
-    major, minor = divmod(abs(amount_minor), 10**digits)
+    major, minor = divmod(abs(amount_minor), minor_unit_scale(code))
     return f"{code} {sign}{major}.{minor:0{digits}d}"
