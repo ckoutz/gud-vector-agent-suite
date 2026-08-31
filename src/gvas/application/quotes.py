@@ -19,6 +19,7 @@ from gvas.domain.quotes import (
     Quote,
     QuoteConcurrencyError,
     QuoteDraftProposal,
+    QuoteDraftRejectedError,
     QuoteDraftRequest,
     QuoteSendAssessment,
     QuoteSendPolicy,
@@ -175,7 +176,10 @@ class QuoteWorkflowHandler:
             revision=quote.revision,
             idempotency_key=f"quote-draft:{quote.quote_id}:{quote.revision}",
         )
-        proposal = await self._drafting_port.draft(request)
+        try:
+            proposal = await self._drafting_port.draft(request)
+        except QuoteDraftRejectedError as error:
+            return await self._abandon_draft(quote, message, str(error))
         drafted = quote.apply_draft(proposal, message.message_key, message.received_at)
         detail = self._send_decision_detail(proposal)
         try:
@@ -186,6 +190,22 @@ class QuoteWorkflowHandler:
                 raise
             drafted = current
         return _workflow_reply(drafted, message.message_key, detail=detail)
+
+    async def _abandon_draft(
+        self, quote: Quote, message: NormalizedOwnerMessage, reason: str
+    ) -> WorkflowResult:
+        abandoned = quote.abandon_draft(message.message_key, message.received_at)
+        await self._save(abandoned, expected_version=quote.version)
+        return WorkflowResult(
+            status=WorkflowRunStatus.SUCCEEDED,
+            replies=(
+                _owner_reply(
+                    abandoned,
+                    message.message_key,
+                    f"{reason}\nSend the corrected request as a new quote.",
+                ),
+            ),
+        )
 
     def _send_decision_detail(self, proposal: QuoteDraftProposal) -> str | None:
         decision = self._send_policy.decide(

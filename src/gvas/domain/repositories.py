@@ -11,6 +11,7 @@ from gvas.domain.identifiers import (
     ConversationId,
     EndpointId,
     MessageId,
+    MessageKey,
     RoutingData,
     WorkflowIntent,
     WorkflowRunId,
@@ -105,6 +106,10 @@ class CrossBusinessReferenceError(ValueError):
 class BusinessRepository(Protocol):
     async def get(self, business_id: BusinessId) -> BusinessRecord | None: ...
 
+    async def ensure(
+        self, business_id: BusinessId, slug: str, name: str, *, now: datetime
+    ) -> BusinessRecord: ...
+
 
 class OwnerChannelEndpointRepository(Protocol):
     async def get(self, endpoint_id: EndpointId) -> OwnerChannelEndpointRecord | None: ...
@@ -131,6 +136,13 @@ class InboundMessageRepository(Protocol):
 
     async def get_for_processing(
         self, inbound_message_id: MessageId
+    ) -> InboundProcessingRecord | None: ...
+
+    async def find_by_key(
+        self,
+        business_id: BusinessId,
+        conversation_id: ConversationId,
+        message_key: MessageKey,
     ) -> InboundProcessingRecord | None: ...
 
 

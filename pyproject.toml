@@ -8,6 +8,7 @@ dependencies = [
   "asyncpg>=0.30.0,<0.31",
   "boto3>=1.35.0,<1.36",
   "fastapi>=0.115.12,<0.116",
+  "httpx>=0.28.1,<0.29",
   "pydantic>=2.11.3,<3",
   "pydantic-settings>=2.9.1,<3",
   "sqlalchemy[asyncio]>=2.0.40,<2.1",
@@ -18,7 +19,6 @@ dependencies = [
 dev = [
   "aiosqlite>=0.21.0,<0.22",
   "boto3-stubs[s3]>=1.35.0,<1.36",
-  "httpx>=0.28.1,<0.29",
   "mypy>=1.15.0,<1.16",
   "pytest>=8.3.5,<9",
   "pytest-asyncio>=0.26.0,<0.27",
@@ -26,6 +26,12 @@ dev = [
   "ruff>=0.11.6,<0.12",
   "types-pyyaml>=6.0.12,<7",
 ]
+
+[project.scripts]
+gvas-web = "gvas.interfaces.web:main"
+gvas-worker = "gvas.interfaces.worker:main"
+gvas-migrate = "gvas.interfaces.migrate:main"
+gvas-bootstrap = "gvas.interfaces.bootstrap:main"
 
 [build-system]
 requires = ["hatchling>=1.27.0,<2"

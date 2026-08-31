@@ -1,10 +1,11 @@
 # Güd Vector Agent Suite
 
-Round 1 is a channel-agnostic foundation for receiving normalized owner message
-envelopes, durably queueing processing commands, and replay-safe workflow
-processing. Intent resolution and handler execution happen outside database
-transactions; replies and delivery commands are persisted atomically. It does
-not contain channel adapters or external delivery providers.
+GVAS receives normalized owner message envelopes, durably queues processing
+commands, and processes quote and field-note workflows replay-safely. Intent
+resolution and handler execution happen outside database transactions; replies
+and delivery commands are persisted atomically. Slack is the first channel, and
+every provider (Slack, OpenAI transcription, Resend) lives behind a port in
+infrastructure.
 
 The layering and boundary contract is documented in
 [`docs/architecture.md`](docs/architecture.md). Domain code is pure and
@@ -38,7 +39,7 @@ GVAS_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/gva
 ```bash
 uv run alembic upgrade head
 uv run alembic downgrade base
-uv run uvicorn gvas.interfaces.http.app:app --reload
+uv run gvas-web  # or: uv run uvicorn gvas.interfaces.http.app:app --reload
 docker compose up --build
 ```
 
@@ -50,8 +51,8 @@ one revision.
 ## Composition root and worker
 
 `gvas.composition` wires the accepted workflows into one application and an
-outbox worker. Every external capability is injected as a port, so the
-repository still contains no provider implementation:
+outbox worker. Every external capability is injected as a port, so this module
+names no provider:
 
 ```python
 from gvas.composition import ApplicationPorts, build_application
@@ -82,7 +83,8 @@ event are reported as duplicates without new work. Owner replies go out through
 `OwnerReplyPort` using persisted routing plus a deterministic delivery key, so
 posting is skipped only after a recorded success.
 
-Mount it explicitly (it is not part of the default app):
+The generic `create_app` stays provider-free for tests; the deployed process is
+`gvas.composition.production:create_production_app`, which mounts the router:
 
 ```python
 create_app(routers=(create_slack_router(ingress, path=settings.events_path),))
@@ -100,9 +102,48 @@ Reply correlation follows persisted conversation/thread state — the adapter
 resolves the Slack channel and thread from stored routing and never expects
 Slack to echo internal outbound correlation IDs back to us.
 
-The default composition uses `UnconfiguredIntentResolver`. Ingress persists the
-inbound message and one `owner_message.process` command; processing remains
-resumable until an intent resolver is configured. Outbox workers claim with an
+## Production runtime
+
+`gvas.composition.production` is the only module that chooses providers. It
+wires the Slack chat poster and private-file access, OpenAI transcription,
+Resend quote delivery, the deterministic quote parser, and — because no
+inference model has been selected for review or reporting — the marker reviewer,
+marker evidence attributor and deterministic report generator. It refuses to
+start when a required setting is missing. Entrypoints:
+
+```bash
+uv run gvas-migrate           # release / pre-deploy, upgrades to head
+uv run gvas-web               # web service, mounts the Slack Request URL
+uv run gvas-worker            # continuously running outbox worker
+uv run gvas-bootstrap --business-id <uuid> --slug protech --name "ProTech"
+```
+
+Railway deployment, environment variables and operational semantics are in
+[`docs/deployment.md`](docs/deployment.md).
+
+## Quote requests
+
+GVAS structures the owner's own prices and never estimates one, so a quote
+request states them explicitly:
+
+```text
+quote:
+customer: person@example.com
+currency: USD
+item: 2 | Air sampling | 125.00
+item: 1 | Report | 200.00
+note: on-site visit scheduled for Tuesday
+```
+
+`customer`, `currency` and at least one `item` are required; keys and
+surrounding whitespace are case- and space-insensitive; amounts are read as
+exact minor units. A missing or unparsable field is rejected with an
+owner-facing message rather than guessed, and corrections are sent in the same
+format. The owner still approves before anything is emailed; approved quotes go
+out through Resend and link to the customer portal.
+
+Ingress persists the inbound message and one `owner_message.process` command;
+processing remains resumable across restarts. Outbox workers claim with an
 explicit worker identity; attempts increment at claim time, and failed retries
 calculate availability from the supplied current time. Processing and outbox
 lease cutoffs are caller-supplied; there is no default lease duration.

@@ -19,9 +19,12 @@ from gvas.application.plan_custody import (
 from gvas.application.processing import ProcessingStatus, ProcessOwnerMessageService
 from gvas.application.quotes import DeliverApprovedQuoteService, QuoteDeliveryStatus
 from gvas.application.report_generation import GenerateFieldNotesReportService
+from gvas.composition.failure_notices import NotifyExhaustedCommandService
+from gvas.composition.report_delivery import DeliverFieldNotesReportService
 from gvas.composition.review import CoordinateFieldNoteReviewService
 from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.domain.completeness import FieldNoteReviewId
+from gvas.domain.enums import OutboxStatus
 from gvas.domain.field_notes import (
     FIELD_NOTE_REVIEW_COMMAND_TYPE,
     FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE,
@@ -94,6 +97,7 @@ class OutboxCommandDispatcher:
         review: CoordinateFieldNoteReviewService,
         snapshots: BuildFieldNoteCaseSnapshotService,
         reports: GenerateFieldNotesReportService,
+        report_delivery: DeliverFieldNotesReportService,
         outbox: OutboxService,
         now: Callable[[], datetime],
         plan_custody: CopyPlanSetIntoCustodyService | None = None,
@@ -106,6 +110,7 @@ class OutboxCommandDispatcher:
         self._review = review
         self._snapshots = snapshots
         self._reports = reports
+        self._report_delivery = report_delivery
         self._outbox = outbox
         self._plan_custody = plan_custody
         self._now = now
@@ -219,6 +224,7 @@ class OutboxCommandDispatcher:
         )
         now, stale_before = self._window()
         version = await self._reports.generate(snapshot, now=now, stale_before=stale_before)
+        await self._report_delivery.deliver(version)
         return DispatchOutcome(command.command_type, f"report version {version.version}")
 
     async def _copy_plan_set(self, command: OutboxCommand) -> DispatchOutcome:
@@ -261,10 +267,12 @@ class OutboxWorker:
         batch_size: int = 10,
         lease_ttl: timedelta = timedelta(minutes=5),
         retry_in: timedelta = timedelta(seconds=30),
+        failure_notices: NotifyExhaustedCommandService | None = None,
     ) -> None:
         self._outbox = outbox
         self._dispatcher = dispatcher
         self._now = now
+        self._failure_notices = failure_notices
         self._worker_id = worker_id
         self._batch_size = batch_size
         self._lease_ttl = lease_ttl
@@ -284,7 +292,11 @@ class OutboxWorker:
             except Exception as error:
                 failed += 1
                 details.append(f"{record.command.command_type}: {error!r}")
-                await self._outbox.mark_failed(record, self._retry_in, repr(error), self._now())
+                updated = await self._outbox.mark_failed(
+                    record, self._retry_in, repr(error), self._now()
+                )
+                if updated.status is OutboxStatus.DEAD:
+                    await self._notify_exhausted(updated, details)
                 continue
             succeeded += 1
             details.append(f"{outcome.command_type}: {outcome.detail}")
@@ -295,6 +307,16 @@ class OutboxWorker:
             failed=failed,
             details=tuple(details),
         )
+
+    async def _notify_exhausted(self, record: OutboxRecord, details: list[str]) -> None:
+        """A notice that cannot be enqueued must not fail the rest of the batch."""
+
+        if self._failure_notices is None:
+            return
+        try:
+            await self._failure_notices.notify(record)
+        except Exception as error:
+            details.append(f"failure notice for {record.command.command_type}: {error!r}")
 
     async def drain(self, max_batches: int = 50) -> tuple[WorkerBatchReport, ...]:
         reports: list[WorkerBatchReport] = []
