@@ -96,7 +96,10 @@ owner users (`T0000000000=<business-uuid>:U0000000000|U0000000001,...`).
 Unmapped workspaces are rejected, and workspace membership alone grants nothing:
 a message from a human who is not a configured owner of that business is
 acknowledged but never ingested. Each entry must list at least one owner user,
-so a misconfiguration cannot silently authorize a whole workspace.
+so a misconfiguration cannot silently authorize a whole workspace. The parser is
+general, but the production runtime is narrower: `load_production_settings`
+refuses to start unless exactly one installation with exactly one owner user is
+configured, which is the boundary this pilot was approved for.
 
 Reply correlation follows persisted conversation/thread state — the adapter
 resolves the Slack channel and thread from stored routing and never expects

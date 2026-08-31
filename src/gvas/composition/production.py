@@ -24,7 +24,14 @@ from gvas.application.checklist_evidence import MarkerChecklistEvidenceAttributo
 from gvas.application.completeness_review import MarkerCompletenessReviewer
 from gvas.application.deterministic_report import DeterministicReportGenerator
 from gvas.composition import Application, ApplicationPorts, build_application
-from gvas.config import OpenAISettings, ResendSettings, Settings, WorkerSettings
+from gvas.config import (
+    DatabaseUrlError,
+    OpenAISettings,
+    ResendSettings,
+    Settings,
+    WorkerSettings,
+    require_managed_postgres_url,
+)
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.delivery_ledger import SqlChannelDeliveryLedger
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
@@ -36,6 +43,10 @@ from gvas.infrastructure.slack.composition import (
     build_slack_owner_reply_adapter,
 )
 from gvas.infrastructure.slack.config import SlackSettings
+from gvas.infrastructure.slack.installations import (
+    SlackInstallationError,
+    parse_slack_installations,
+)
 from gvas.interfaces.http.app import create_app
 
 
@@ -83,7 +94,35 @@ def load_production_settings() -> ProductionSettings:
     ]
     if missing:
         raise ProductionConfigurationError(f"missing required settings: {', '.join(missing)}")
+    _require_managed_database(settings.app.database_url)
+    _require_single_owner(settings.slack.installations)
     return settings
+
+
+def _require_managed_database(url: str) -> None:
+    try:
+        require_managed_postgres_url(url)
+    except DatabaseUrlError as error:
+        raise ProductionConfigurationError(f"GVAS_DATABASE_URL or DATABASE_URL: {error}") from error
+
+
+def _require_single_owner(value: str) -> None:
+    """The accepted pilot boundary: one ProTech workspace, one owner user.
+
+    The parser stays general so later tenants need no new code, but a
+    deployment that authorized a second workspace or a second owner would go
+    past what this pilot was approved for, so it must not start.
+    """
+
+    try:
+        installations = parse_slack_installations(value)
+    except SlackInstallationError as error:
+        raise ProductionConfigurationError(f"GVAS_SLACK_INSTALLATIONS: {error}") from error
+    if len(installations) != 1 or len(installations[0].owner_user_ids) != 1:
+        raise ProductionConfigurationError(
+            "GVAS_SLACK_INSTALLATIONS must configure exactly one installation "
+            "with exactly one owner user"
+        )
 
 
 def worker_identity(prefix: str) -> str:

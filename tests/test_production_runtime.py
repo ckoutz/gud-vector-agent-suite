@@ -18,8 +18,11 @@ from gvas.infrastructure.slack.config import SlackSettings
 from gvas.interfaces.worker import build_worker, run_worker
 
 BUSINESS_ID = uuid4()
+# Engine construction does not connect, so a syntactically valid managed URL is
+# enough to build the runtime without a database.
+MANAGED_DATABASE_URL = "postgresql+asyncpg://user:pw@db.railway.internal:5432/railway"
 ENVIRONMENT = {
-    "GVAS_DATABASE_URL": "sqlite+aiosqlite:///:memory:",
+    "GVAS_DATABASE_URL": MANAGED_DATABASE_URL,
     "GVAS_SLACK_SIGNING_SECRET": "signing-secret",
     "GVAS_SLACK_BOT_TOKEN": "xoxb-not-a-real-token",
     "GVAS_SLACK_INSTALLATIONS": f"T0000000000={BUSINESS_ID}:U0000000000",
@@ -88,6 +91,51 @@ def test_startup_rejects_an_empty_database_url(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.usefixtures("production_environment")
+def test_startup_rejects_a_database_the_deployment_is_not_specified_to_run_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Railway managed PostgreSQL is the specified store; SQLite is not."""
+
+    monkeypatch.setenv("GVAS_DATABASE_URL", "sqlite+aiosqlite:///./gvas.db")
+
+    with pytest.raises(ProductionConfigurationError) as error:
+        load_production_settings()
+
+    assert "postgresql+asyncpg" in str(error.value)
+
+
+@pytest.mark.usefixtures("production_environment")
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"T0000000000={BUSINESS_ID}:U0000000000|U0000000001",
+        f"T0000000000={BUSINESS_ID}:U0000000000,T0000000001={BUSINESS_ID}:U0000000002",
+    ],
+)
+def test_startup_rejects_more_than_the_one_owner_the_pilot_authorized(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("GVAS_SLACK_INSTALLATIONS", value)
+
+    with pytest.raises(ProductionConfigurationError) as error:
+        load_production_settings()
+
+    assert "exactly one" in str(error.value)
+
+
+@pytest.mark.usefixtures("production_environment")
+def test_startup_rejects_a_malformed_installation_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GVAS_SLACK_INSTALLATIONS", "T0000000000=not-a-uuid:U0000000000")
+
+    with pytest.raises(ProductionConfigurationError) as error:
+        load_production_settings()
+
+    assert "GVAS_SLACK_INSTALLATIONS" in str(error.value)
+
+
+@pytest.mark.usefixtures("production_environment")
 def test_production_app_serves_the_slack_request_url_and_health_check() -> None:
     runtime = build_production_runtime(load_production_settings())
 
@@ -131,4 +179,4 @@ def test_production_settings_read_the_deployment_environment() -> None:
     resolved = settings()
 
     assert resolved.slack.installations
-    assert resolved.app.database_url.startswith("sqlite+aiosqlite")
+    assert resolved.app.database_url == MANAGED_DATABASE_URL

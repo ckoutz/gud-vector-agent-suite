@@ -26,19 +26,21 @@ def _quoted_evidence(markers: tuple[str, ...], segments: tuple[str, ...]) -> tup
     """Quote the transcript text around each marker, not the marker label.
 
     A report that cites ``site:`` tells the reader nothing; the segment that
-    contains it carries the value the owner dictated. Segments are quoted
-    verbatim and deduplicated, so nothing is invented and a segment matched by
-    two markers is not repeated.
+    contains it carries the value the owner dictated. Every matching segment is
+    quoted, because a note dictated across several messages repeats a marker
+    per observation and stopping at the first one would drop the rest. Segments
+    are quoted verbatim in transcript order and deduplicated, so nothing is
+    invented and a segment matched by two markers is not repeated.
     """
 
-    quoted: list[str] = []
-    for marker in markers:
-        folded = marker.casefold()
-        for segment in segments:
-            if folded in segment.casefold() and segment not in quoted:
-                quoted.append(segment)
-                break
-    return tuple(quoted)
+    folded_markers = tuple(marker.casefold() for marker in markers)
+    return tuple(
+        dict.fromkeys(
+            segment
+            for segment in segments
+            if any(marker in segment.casefold() for marker in folded_markers)
+        )
+    )
 
 
 class MarkerChecklistEvidenceAttributor:

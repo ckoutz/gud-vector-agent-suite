@@ -40,6 +40,49 @@ class SlackInstallationDirectory(Protocol):
     async def find(self, team_id: str, api_app_id: str | None) -> SlackInstallation | None: ...
 
 
+def parse_slack_installations(value: str) -> tuple[SlackInstallation, ...]:
+    """Parse ``T0001=<business-uuid>:U0001|U0002,...`` settings values.
+
+    Every entry must list at least one authorized owner user id, so a
+    misconfigured workspace cannot silently authorize its whole membership.
+    Multiple workspaces and multiple owners parse here; the deployment decides
+    how many of each it accepts.
+    """
+
+    installations: list[SlackInstallation] = []
+    for entry in value.split(","):
+        candidate = entry.strip()
+        if not candidate:
+            continue
+        team_id, separator, remainder = candidate.partition("=")
+        if not separator or not team_id.strip():
+            raise SlackInstallationError(f"invalid installation entry {candidate!r}")
+        business, owner_separator, owners = remainder.partition(":")
+        if not owner_separator:
+            raise SlackInstallationError(
+                f"installation entry {candidate!r} lists no authorized owner users"
+            )
+        try:
+            business_uuid = UUID(business.strip())
+        except ValueError as error:
+            raise SlackInstallationError(
+                f"invalid business identifier in entry {candidate!r}"
+            ) from error
+        owner_user_ids = frozenset(owner.strip() for owner in owners.split("|") if owner.strip())
+        if not owner_user_ids:
+            raise SlackInstallationError(
+                f"installation entry {candidate!r} lists no authorized owner users"
+            )
+        installations.append(
+            SlackInstallation(
+                business_id=BusinessId(business_uuid),
+                team_id=team_id.strip(),
+                owner_user_ids=owner_user_ids,
+            )
+        )
+    return tuple(installations)
+
+
 class StaticSlackInstallationDirectory:
     """Configuration-driven installation lookup keyed by Slack workspace."""
 
@@ -48,46 +91,7 @@ class StaticSlackInstallationDirectory:
 
     @classmethod
     def from_setting(cls, value: str) -> "StaticSlackInstallationDirectory":
-        """Parse ``T0001=<business-uuid>:U0001|U0002,...`` settings values.
-
-        Every entry must list at least one authorized owner user id, so a
-        misconfigured workspace cannot silently authorize its whole membership.
-        """
-
-        installations: list[SlackInstallation] = []
-        for entry in value.split(","):
-            candidate = entry.strip()
-            if not candidate:
-                continue
-            team_id, separator, remainder = candidate.partition("=")
-            if not separator or not team_id.strip():
-                raise SlackInstallationError(f"invalid installation entry {candidate!r}")
-            business, owner_separator, owners = remainder.partition(":")
-            if not owner_separator:
-                raise SlackInstallationError(
-                    f"installation entry {candidate!r} lists no authorized owner users"
-                )
-            try:
-                business_uuid = UUID(business.strip())
-            except ValueError as error:
-                raise SlackInstallationError(
-                    f"invalid business identifier in entry {candidate!r}"
-                ) from error
-            owner_user_ids = frozenset(
-                owner.strip() for owner in owners.split("|") if owner.strip()
-            )
-            if not owner_user_ids:
-                raise SlackInstallationError(
-                    f"installation entry {candidate!r} lists no authorized owner users"
-                )
-            installations.append(
-                SlackInstallation(
-                    business_id=BusinessId(business_uuid),
-                    team_id=team_id.strip(),
-                    owner_user_ids=owner_user_ids,
-                )
-            )
-        return cls(tuple(installations))
+        return cls(parse_slack_installations(value))
 
     async def find(self, team_id: str, api_app_id: str | None) -> SlackInstallation | None:
         installation = self._by_team.get(team_id)

@@ -11,17 +11,24 @@ posts, OpenAI transcription, Resend email) happens in the worker.
 
 Railway's PostgreSQL plugin publishes `DATABASE_URL` in the libpq form
 (`postgresql://…`, sometimes with `sslmode=require`). SQLAlchemy's async engine
-needs the asyncpg driver and rejects libpq-only query parameters, so
+needs the asyncpg driver, and asyncpg names some libpq options differently, so
 `gvas.config.normalize_async_database_url` rewrites the scheme to
-`postgresql+asyncpg://` and drops `sslmode`/`channel_binding` before the engine
-is created. Reference the plugin variable and let the app normalize it:
+`postgresql+asyncpg://` and translates `sslmode=<mode>` to asyncpg's `ssl=<mode>`
+keyword, keeping a required TLS mode in force. Options asyncpg 0.30 accepts,
+including `target_session_attrs`, are passed through; only options it has no
+keyword for (`channel_binding`) are dropped, and an unrecognized `sslmode`
+value is an error rather than a silent downgrade. Reference the plugin variable
+and let the app normalize it:
 
 ```
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 ```
 
 Set `GVAS_DATABASE_URL` only to point a service at a different database; it
-takes precedence over `DATABASE_URL`.
+takes precedence over `DATABASE_URL`. Either way the value must be a PostgreSQL
+URL naming a host and database: startup refuses SQLite or any other URL, and
+refuses to fall back to the local development default when neither variable is
+set.
 
 ## Commands
 
@@ -71,10 +78,12 @@ otherwise Slack events arrive for a tenant that does not exist.
   of a message, so no separate file event is needed.
 - **Bot scopes**: `chat:write` for replies, `files:read` for voice note bytes,
   plus the `*:history` scopes for the conversation types above.
-- **Authorization**: exactly one owner is authorized per installation.
-  `GVAS_SLACK_INSTALLATIONS` maps `team_id=business_uuid:user_id|user_id`;
-  messages from anyone else are ignored. There is no workspace-wide
-  authorization.
+- **Authorization**: this pilot is approved for one workspace and one owner.
+  `GVAS_SLACK_INSTALLATIONS` maps `team_id=business_uuid:owner_user_id`, and
+  startup rejects a value carrying a second installation or a second owner
+  (`user_id|user_id`), even though the parser itself accepts them for later
+  tenants. Messages from anyone else are ignored, and there is no
+  workspace-wide authorization.
 
 ## Environment variables
 
@@ -117,9 +126,12 @@ misconfigured deploy never accepts Slack traffic.
   is committed in its own transaction, but a crash between Slack accepting a
   post and that commit will repost on replay. The delivery key travels in Slack
   message metadata so duplicates can be identified afterwards.
-- **Exhausted retries**: when a command dies, one sanitized notice is posted in
-  the originating thread with retry guidance. Provider responses, exceptions and
-  tokens stay in the outbox record.
+- **Exhausted retries**: when a command dies, one notice is posted in the
+  originating thread with recovery guidance for that kind of failure — start a
+  new quote in a new thread, or `close notes` and re-upload the recording in a
+  new thread. Provider adapters sanitize their errors before raising, so the
+  outbox record keeps a provider-neutral failure message; raw provider
+  responses, private file URLs and credentials are never stored or logged.
 - **Review and reporting are deterministic**: `MarkerCompletenessReviewer`,
   `MarkerChecklistEvidenceAttributor` and `DeterministicReportGenerator` are
   wired in place of an inference provider. No model was benchmarked or selected

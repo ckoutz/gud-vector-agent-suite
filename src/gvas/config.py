@@ -6,12 +6,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ASYNC_DRIVER = "postgresql+asyncpg"
 # SQLAlchemy hands the query string to asyncpg.connect() as keyword arguments.
 # asyncpg spells libpq's sslmode as ``ssl`` and accepts the same values, so the
-# TLS requirement survives the rewrite; libpq options asyncpg has no keyword for
-# would raise TypeError at connect time and are dropped.
+# TLS requirement survives the rewrite.
 SSL_MODE_KEY = "sslmode"
 ASYNCPG_SSL_KEY = "ssl"
 SSL_MODES = frozenset({"disable", "allow", "prefer", "require", "verify-ca", "verify-full"})
-UNSUPPORTED_QUERY_KEYS = frozenset({"channel_binding", "target_session_attrs"})
+# asyncpg 0.30 has no keyword for these libpq options, so they would raise
+# TypeError at connect time. Options it does accept -- ``target_session_attrs``,
+# ``passfile``, ``krbsrvname``, ``gsslib`` -- stay in the URL for the driver.
+UNSUPPORTED_QUERY_KEYS = frozenset({"channel_binding"})
+POSTGRES_SCHEMES = frozenset({"postgres", "postgresql", ASYNC_DRIVER})
 
 
 class DatabaseUrlError(ValueError):
@@ -36,7 +39,7 @@ def normalize_async_database_url(url: str) -> str:
     """
 
     parts = urlsplit(url)
-    if parts.scheme not in {"postgres", "postgresql", ASYNC_DRIVER}:
+    if parts.scheme not in POSTGRES_SCHEMES:
         return url
     query = [
         _normalized_pair(key, value)
@@ -44,6 +47,21 @@ def normalize_async_database_url(url: str) -> str:
         if key not in UNSUPPORTED_QUERY_KEYS
     ]
     return urlunsplit((ASYNC_DRIVER, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def require_managed_postgres_url(url: str) -> None:
+    """Reject anything the deployed runtime cannot actually run on.
+
+    The deployment runs on managed PostgreSQL. A SQLite or otherwise
+    non-PostgreSQL URL only fails once the first command touches the database,
+    by which point the web service has already accepted inbound events.
+    """
+
+    parts = urlsplit(url)
+    if parts.scheme != ASYNC_DRIVER:
+        raise DatabaseUrlError(f"database URL must use {ASYNC_DRIVER}")
+    if not parts.hostname or not parts.path.strip("/"):
+        raise DatabaseUrlError("database URL must name a host and a database")
 
 
 class Settings(BaseSettings):
