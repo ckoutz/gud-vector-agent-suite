@@ -12,6 +12,10 @@ from gvas.application.owner_reply_delivery import (
     DeliverOwnerReplyService,
     OwnerReplyDeliveryStatus,
 )
+from gvas.application.plan_custody import (
+    CopyPlanSetIntoCustodyService,
+    PlanSetCustodyOutcome,
+)
 from gvas.application.processing import ProcessingStatus, ProcessOwnerMessageService
 from gvas.application.quotes import DeliverApprovedQuoteService, QuoteDeliveryStatus
 from gvas.application.report_generation import GenerateFieldNotesReportService
@@ -33,6 +37,7 @@ from gvas.domain.outbox import (
     OutboxCommand,
     OutboxRecord,
 )
+from gvas.domain.plans import PLAN_SET_COPY_COMMAND_TYPE, PlanSetUploadId
 from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE
 from gvas.domain.reporting import FIELD_NOTES_REPORT_COMMAND_TYPE
 
@@ -91,6 +96,7 @@ class OutboxCommandDispatcher:
         reports: GenerateFieldNotesReportService,
         outbox: OutboxService,
         now: Callable[[], datetime],
+        plan_custody: CopyPlanSetIntoCustodyService | None = None,
         lease_ttl: timedelta = timedelta(minutes=5),
     ) -> None:
         self._processing = processing
@@ -101,6 +107,7 @@ class OutboxCommandDispatcher:
         self._snapshots = snapshots
         self._reports = reports
         self._outbox = outbox
+        self._plan_custody = plan_custody
         self._now = now
         self._lease_ttl = lease_ttl
 
@@ -118,6 +125,8 @@ class OutboxCommandDispatcher:
             return await self._coordinate_review(command)
         if command.command_type == FIELD_NOTES_REPORT_COMMAND_TYPE:
             return await self._generate_report(command)
+        if command.command_type == PLAN_SET_COPY_COMMAND_TYPE:
+            return await self._copy_plan_set(command)
         raise UnknownCommandTypeError(f"no handler is registered for {command.command_type}")
 
     def _window(self) -> tuple[datetime, datetime]:
@@ -211,6 +220,24 @@ class OutboxCommandDispatcher:
         now, stale_before = self._window()
         version = await self._reports.generate(snapshot, now=now, stale_before=stale_before)
         return DispatchOutcome(command.command_type, f"report version {version.version}")
+
+    async def _copy_plan_set(self, command: OutboxCommand) -> DispatchOutcome:
+        if self._plan_custody is None:
+            raise UnknownCommandTypeError("no object storage adapter is wired for plan custody")
+        upload_id = PlanSetUploadId(_uuid(command, "plan_set_upload_id"))
+        now, stale_before = self._window()
+        report = await self._plan_custody.copy(
+            command.business_id, upload_id, now=now, stale_before=stale_before
+        )
+        if report.outcome in {
+            PlanSetCustodyOutcome.BUSY,
+            PlanSetCustodyOutcome.LEASE_LOST,
+            PlanSetCustodyOutcome.MISSING,
+        }:
+            raise TransientCommandError(f"plan-set custody is {report.outcome.value}")
+        if report.outcome is PlanSetCustodyOutcome.FAILED:
+            raise RuntimeError(f"plan-set custody failed: {report.detail}")
+        return DispatchOutcome(command.command_type, report.outcome.value)
 
 
 @dataclass(frozen=True)

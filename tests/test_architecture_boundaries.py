@@ -49,6 +49,40 @@ def test_domain_application_boundaries() -> None:
             assert not find_violations(layer, path, path.read_text())
 
 
+VENDOR_SDKS = {"boto3", "botocore", "slack_sdk", "twilio", "openai", "mypy_boto3_s3"}
+
+
+def vendor_imports(source: str, path: Path) -> list[str]:
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source, filename=str(path))):
+        imported: str | None = None
+        if isinstance(node, ast.Import):
+            imported = node.names[0].name
+        elif isinstance(node, ast.ImportFrom):
+            imported = node.module
+        if imported is None:
+            continue
+        if imported.split(".", 1)[0] in VENDOR_SDKS:
+            found.append(f"{path}: vendor import {imported}")
+    return found
+
+
+def test_vendor_sdk_imports_stay_inside_infrastructure() -> None:
+    for path in ROOT.rglob("*.py"):
+        if path.is_relative_to(ROOT / "infrastructure"):
+            continue
+        assert not vendor_imports(path.read_text(), path)
+
+
+def test_object_storage_sdk_is_confined_to_its_adapter() -> None:
+    importers = {
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "infrastructure").rglob("*.py")
+        if vendor_imports(path.read_text(), path)
+    }
+    assert importers == {"infrastructure/object_storage.py"}
+
+
 def test_boundary_checker_catches_violations(tmp_path: Path) -> None:
     path = tmp_path / "invalid.py"
     violations = find_violations("application", path, "import slack_sdk\nvalue = 'slack'\n")
