@@ -105,6 +105,7 @@ def upgrade() -> None:
         ["business_id", "template_set_key"],
         unique=True,
         postgresql_where=sa.text("status = 'active'"),
+        sqlite_where=sa.text("status = 'active'"),
     )
     op.create_table(
         "business_template_profiles",

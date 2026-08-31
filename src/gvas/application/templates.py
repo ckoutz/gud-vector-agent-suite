@@ -2,7 +2,12 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from gvas.domain.completeness import ChecklistItem, ChecklistKey, CompletenessChecklist
+from gvas.domain.completeness import (
+    ChecklistItem,
+    ChecklistKey,
+    CompletenessChecklist,
+    UnknownChecklistError,
+)
 from gvas.domain.completeness_repositories import CompletenessUnitOfWork
 from gvas.domain.identifiers import BusinessId, ConversationId
 from gvas.domain.templates import (
@@ -210,9 +215,8 @@ class PublishTemplateSetService:
         if checklist is not None:
             await unit_of_work.checklists.upsert(checklist)
         if report_template is not None:
-            if checklist is not None:
-                report_template.validate_against(checklist)
             await unit_of_work.report_templates.upsert(report_template)
+        await self._validate_bindings(unit_of_work, template_set)
         await unit_of_work.template_sets.upsert(
             template_set.model_copy(update={"status": TemplateSetStatus.DRAFT})
         )
@@ -228,3 +232,30 @@ class PublishTemplateSetService:
         return await unit_of_work.template_sets.set_status(
             template_set.ref, TemplateSetStatus.ACTIVE
         )
+
+    async def _validate_bindings(
+        self, unit_of_work: CompletenessUnitOfWork, template_set: TemplateSet
+    ) -> None:
+        """Check the versions this set pins, not the ones this call happened to write.
+
+        A publish may reuse an already-persisted checklist or report template, and
+        the foreign keys only prove both rows exist: they cannot prove the report
+        sections bind items of the checklist version this set pins.
+        """
+        checklist = await unit_of_work.checklists.get(
+            template_set.business_id,
+            template_set.checklist_key,
+            template_set.checklist_version,
+        )
+        if checklist is None:
+            raise UnknownChecklistError(
+                f"checklist {template_set.checklist_key} version "
+                f"{template_set.checklist_version} is not configured"
+            )
+        report_template = await unit_of_work.report_templates.get(template_set.report_template)
+        if report_template is None:
+            raise UnknownReportTemplateError(
+                f"report template {template_set.report_template_key} version "
+                f"{template_set.report_template_version} is not configured"
+            )
+        report_template.validate_against(checklist)

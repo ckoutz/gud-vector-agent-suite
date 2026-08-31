@@ -87,6 +87,7 @@ class GenerateFieldNotesReportService:
         try:
             document = FieldNotesReportDocument.model_validate(generated)
             document.validate_evidence_against(source)
+            document.validate_against_template(report_template)
         except (ValidationError, ValueError) as error:
             await self._record_failure(claim, str(error), failed_at=now)
             raise MalformedGeneratedReportError("generated report content is invalid") from error

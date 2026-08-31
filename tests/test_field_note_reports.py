@@ -49,6 +49,7 @@ from gvas.infrastructure.reporting_unit_of_work import (
 NOW = datetime(2026, 8, 27, 18, 0, tzinfo=UTC)
 STALE_BEFORE = NOW - timedelta(minutes=5)
 REPORT_TEMPLATE_KEY = "inspection_report"
+REPORT_TITLE = "Inspection Report"
 
 
 def report_template(business_id: BusinessId, version: int = 1) -> ReportTemplateDefinition:
@@ -56,12 +57,15 @@ def report_template(business_id: BusinessId, version: int = 1) -> ReportTemplate
         business_id=business_id,
         report_template_key=REPORT_TEMPLATE_KEY,
         version=version,
-        title="Inspection Report",
+        title=REPORT_TITLE,
         sections=(
             ReportTemplateSection(
                 section_key="observations",
                 heading="Observations",
-                checklist_item_keys=(ChecklistItemKey("safety.panel"),),
+                checklist_item_keys=(
+                    ChecklistItemKey("safety.panel"),
+                    ChecklistItemKey("access.condition"),
+                ),
             ),
         ),
     )
@@ -190,10 +194,12 @@ def source(
     )
 
 
-def valid_document(title: str = "Field Notes") -> dict[str, JsonValue]:
+def valid_document(
+    text: str = "The safety panel was secured and access was unrestricted.",
+) -> dict[str, JsonValue]:
     return {
         "schema_version": "field-notes-report/v1",
-        "title": title,
+        "title": REPORT_TITLE,
         "sections": [
             {
                 "section_key": "observations",
@@ -201,7 +207,7 @@ def valid_document(title: str = "Field Notes") -> dict[str, JsonValue]:
                 "blocks": [
                     {
                         "kind": "text",
-                        "text": "The safety panel was secured and access was unrestricted.",
+                        "text": text,
                         "evidence_refs": [
                             {"source": "transcript", "key": "canonical"},
                             {"source": "checklist", "key": "safety.panel"},
@@ -212,6 +218,36 @@ def valid_document(title: str = "Field Notes") -> dict[str, JsonValue]:
             }
         ],
     }
+
+
+def document_section(
+    section_key: str,
+    heading: str,
+    evidence_refs: list[JsonValue],
+) -> dict[str, JsonValue]:
+    return {
+        "section_key": section_key,
+        "heading": heading,
+        "blocks": [
+            {
+                "kind": "text",
+                "text": "The safety panel was secured and access was unrestricted.",
+                "evidence_refs": evidence_refs,
+            }
+        ],
+    }
+
+
+def document(title: str, *sections: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    return {
+        "schema_version": "field-notes-report/v1",
+        "title": title,
+        "sections": list(sections),
+    }
+
+
+PANEL_EVIDENCE: list[JsonValue] = [{"source": "checklist", "key": "safety.panel"}]
+ACCESS_EVIDENCE: list[JsonValue] = [{"source": "answer", "key": "access.condition"}]
 
 
 async def seed_business(
@@ -354,6 +390,111 @@ async def test_malformed_content_is_failed_and_retry_uses_same_version(
     assert version_count == 1
 
 
+@pytest.mark.parametrize(
+    ("case_name", "generated"),
+    [
+        (
+            "title",
+            document("Invented Title", document_section("observations", "Observations", [])),
+        ),
+        (
+            "section_key",
+            document(REPORT_TITLE, document_section("invented", "Observations", [])),
+        ),
+        (
+            "heading",
+            document(REPORT_TITLE, document_section("observations", "Invented Heading", [])),
+        ),
+        (
+            "extra_section",
+            document(
+                REPORT_TITLE,
+                document_section("observations", "Observations", []),
+                document_section("appendix", "Appendix", []),
+            ),
+        ),
+    ],
+)
+async def test_document_not_conforming_to_pinned_template_is_rejected(
+    session_factory: async_sessionmaker[AsyncSession],
+    case_name: str,
+    generated: dict[str, JsonValue],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id, f"nonconforming-{case_name}")
+    case = source(business_id)
+    service = GenerateFieldNotesReportService(
+        SqlReportUnitOfWorkFactory(session_factory),
+        DeterministicGenerator([generated]),
+        PinnedTemplates(report_template(business_id)),
+    )
+
+    with pytest.raises(MalformedGeneratedReportError):
+        await service.generate(case, now=NOW, stale_before=STALE_BEFORE)
+
+    async with session_factory() as session:
+        report = await session.get(
+            FieldNoteReport, field_notes_report_id(business_id, case.case_id)
+        )
+        version_count = await session.scalar(
+            select(func.count()).select_from(FieldNoteReportVersionRow)
+        )
+    assert report is not None
+    assert report.status == ReportStatus.FAILED.value
+    assert version_count == 0
+
+
+async def test_evidence_filed_under_a_section_that_does_not_bind_it_is_rejected(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id, "cross-section-evidence")
+    case = source(business_id)
+    split_template = report_template(business_id).model_copy(
+        update={
+            "sections": (
+                ReportTemplateSection(
+                    section_key="observations",
+                    heading="Observations",
+                    checklist_item_keys=(ChecklistItemKey("safety.panel"),),
+                ),
+                ReportTemplateSection(
+                    section_key="access",
+                    heading="Access",
+                    checklist_item_keys=(ChecklistItemKey("access.condition"),),
+                ),
+            )
+        }
+    )
+    transcript_only: list[JsonValue] = [{"source": "transcript", "key": "canonical"}]
+    service = GenerateFieldNotesReportService(
+        SqlReportUnitOfWorkFactory(session_factory),
+        DeterministicGenerator(
+            [
+                document(
+                    REPORT_TITLE,
+                    document_section("observations", "Observations", ACCESS_EVIDENCE),
+                    document_section("access", "Access", []),
+                ),
+                document(
+                    REPORT_TITLE,
+                    document_section("observations", "Observations", PANEL_EVIDENCE),
+                    document_section("access", "Access", ACCESS_EVIDENCE + transcript_only),
+                ),
+            ]
+        ),
+        PinnedTemplates(split_template),
+    )
+
+    with pytest.raises(MalformedGeneratedReportError):
+        await service.generate(case, now=NOW, stale_before=STALE_BEFORE)
+    completed = await service.generate(
+        case, now=NOW + timedelta(minutes=1), stale_before=STALE_BEFORE
+    )
+
+    assert completed.version == 1
+
+
 async def test_generation_failure_is_retryable_without_partial_version(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -398,7 +539,9 @@ async def test_changed_source_creates_next_version_and_old_source_replays(
         case_id=case_id,
         transcript="A corrected canonical field observation.",
     )
-    generator = DeterministicGenerator([valid_document("Original"), valid_document("Corrected")])
+    generator = DeterministicGenerator(
+        [valid_document("The original narrative."), valid_document("The corrected narrative.")]
+    )
     service = GenerateFieldNotesReportService(
         SqlReportUnitOfWorkFactory(session_factory),
         generator,
@@ -437,7 +580,9 @@ async def test_report_identity_and_reads_are_tenant_isolated(
     await seed_business(session_factory, first_business, "tenant-one")
     await seed_business(session_factory, second_business, "tenant-two")
     case_id = uuid4()
-    generator = DeterministicGenerator([valid_document("One"), valid_document("Two")])
+    generator = DeterministicGenerator(
+        [valid_document("Tenant one narrative."), valid_document("Tenant two narrative.")]
+    )
     service = GenerateFieldNotesReportService(
         SqlReportUnitOfWorkFactory(session_factory),
         generator,

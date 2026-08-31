@@ -146,6 +146,42 @@ class FieldNotesReportDocument(ReportDomainModel):
                             f"unknown {reference.source.value} evidence key: {reference.key}"
                         )
 
+    def validate_against_template(self, template: ReportTemplateDefinition) -> None:
+        """Reject a document whose structure is not the one the business configured.
+
+        Without this the pinned definition would be advisory: a generator could
+        invent headings or file an item's evidence under a section that does not
+        bind it, and the report would stop being reproducible from the template.
+        """
+        if self.title != template.title:
+            raise ValueError(
+                f"report title {self.title!r} does not match the configured "
+                f"title {template.title!r}"
+            )
+        expected_keys = [section.section_key for section in template.sections]
+        actual_keys = [section.section_key for section in self.sections]
+        if actual_keys != expected_keys:
+            raise ValueError(
+                f"report sections {actual_keys} do not match the configured "
+                f"sections {expected_keys}"
+            )
+        for section, configured in zip(self.sections, template.sections, strict=True):
+            if section.heading != configured.heading:
+                raise ValueError(
+                    f"section {section.section_key} heading {section.heading!r} does not "
+                    f"match the configured heading {configured.heading!r}"
+                )
+            bound = set(configured.checklist_item_keys)
+            for block in section.blocks:
+                for reference in block.evidence_refs:
+                    if reference.source is EvidenceSource.TRANSCRIPT:
+                        continue
+                    if reference.key not in bound:
+                        raise ValueError(
+                            f"section {section.section_key} cites {reference.source.value} "
+                            f"evidence {reference.key} it does not bind"
+                        )
+
 
 class ChecklistEvidenceRequest(ReportDomainModel):
     """Inputs for attributing a completed review's checklist items to evidence."""

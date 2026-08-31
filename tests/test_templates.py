@@ -551,6 +551,28 @@ async def test_report_template_definitions_are_immutable_and_tenant_scoped(
         await unit_of_work.rollback()
 
 
+@pytest.mark.asyncio
+async def test_publishing_validates_bindings_against_the_versions_it_pins(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    conversation_id, _ = await seed_business(session_factory, business_id)
+    seeded = definition(ENVIRONMENTAL)
+    await publisher(session_factory).seed_industry(business_id, seeded)
+    renamed_items = definition(ENVIRONMENTAL, version=2, item_key="water")
+
+    with pytest.raises(UnknownChecklistBindingError):
+        await publisher(session_factory).publish(
+            seeded.template_set(business_id).model_copy(
+                update={"version": 2, "checklist_version": 2}
+            ),
+            renamed_items.checklist(business_id),
+        )
+
+    active = await resolver(session_factory).resolve_for_new_case(business_id, conversation_id)
+    assert active == seeded.template_set(business_id).ref
+
+
 def test_report_sections_must_bind_known_checklist_items() -> None:
     base = definition(ENVIRONMENTAL)
     unbound = (
