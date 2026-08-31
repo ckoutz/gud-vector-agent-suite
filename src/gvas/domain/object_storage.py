@@ -32,18 +32,25 @@ class ObjectStorageModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
-class ObjectCustodyRequest(ObjectStorageModel):
-    """A request to take custody of bytes on behalf of one business.
+class ObjectCustodyTarget(ObjectStorageModel):
+    """Where, logically, one business's bytes live.
 
     ``scope`` and ``name`` are logical, tenant-relative and deterministic: the
-    same content of the same plan set always yields the same request, so a
+    same content of the same plan set always yields the same target, so a
     replay overwrites nothing and creates no second object. How they become a
-    physical location is the adapter's business.
+    physical location is the adapter's business. Every adapter entry point that
+    can reach bytes takes one of these, so no caller can name a location
+    outside its own tenant.
     """
 
     business_id: BusinessId
     scope: str = Field(min_length=1, max_length=64, pattern=CUSTODY_SCOPE_PATTERN)
     name: str = Field(min_length=1, max_length=512, pattern=CUSTODY_NAME_PATTERN)
+
+
+class ObjectCustodyRequest(ObjectCustodyTarget):
+    """A request to take custody of bytes on behalf of one business."""
+
     content: bytes = Field(min_length=1)
     media_kind: MediaKind
     media_type: str | None = None

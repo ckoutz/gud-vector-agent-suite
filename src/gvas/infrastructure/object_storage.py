@@ -15,10 +15,12 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from gvas.config import ObjectStorageSettings
+from gvas.domain.identifiers import BusinessId
 from gvas.domain.messages import AttachmentPayload, AttachmentReference
 from gvas.domain.object_storage import (
     ObjectCustodyError,
     ObjectCustodyRequest,
+    ObjectCustodyTarget,
     StoredObject,
     content_digest,
 )
@@ -30,10 +32,14 @@ OBJECT_LOCATOR_NAMESPACE = UUID("6b9c2f74-1d38-5a41-9e07-5f8c3b2a4d16")
 TENANT_KEY_PREFIX = "tenant"
 
 
-def tenant_object_key(request: ObjectCustodyRequest) -> str:
+def tenant_key_prefix(business_id: BusinessId) -> str:
+    return f"{TENANT_KEY_PREFIX}/{business_id}/"
+
+
+def tenant_object_key(target: ObjectCustodyTarget) -> str:
     """Every object lives under its tenant's prefix (accepted owner decision)."""
 
-    return f"{TENANT_KEY_PREFIX}/{request.business_id}/{request.scope}/{request.name}"
+    return f"{tenant_key_prefix(target.business_id)}{target.scope}/{target.name}"
 
 
 def encode_locator(scheme: str, key: str) -> str:
@@ -51,6 +57,19 @@ def decode_locator(scheme: str, locator: str) -> str:
         return urlsafe_b64decode(token + padding).decode()
     except (ValueError, UnicodeDecodeError) as error:
         raise ObjectCustodyError("attachment locator is malformed") from error
+
+
+def tenant_key_of(scheme: str, business_id: BusinessId, artifact: AttachmentReference) -> str:
+    """Reverse a locator, refusing any key outside the caller's tenant prefix.
+
+    Locators are opaque but not secret, so tenant isolation cannot rest on the
+    caller merely not knowing another business's reference.
+    """
+
+    key = decode_locator(scheme, artifact.locator)
+    if not key.startswith(tenant_key_prefix(business_id)):
+        raise ObjectCustodyError("object belongs to another business")
+    return key
 
 
 def _artifact(
@@ -91,8 +110,10 @@ class InMemoryObjectStorage:
             media_type=request.media_type,
         )
 
-    async def fetch(self, artifact: AttachmentReference) -> AttachmentPayload:
-        key = decode_locator(self.SCHEME, artifact.locator)
+    async def fetch(
+        self, business_id: BusinessId, artifact: AttachmentReference
+    ) -> AttachmentPayload:
+        key = tenant_key_of(self.SCHEME, business_id, artifact)
         content = self._objects.get(key)
         if content is None:
             raise ObjectCustodyError("object is not in custody")
@@ -100,9 +121,14 @@ class InMemoryObjectStorage:
             content=content, mime_type=artifact.mime_type, filename=artifact.filename
         )
 
-    def presigned_get_url(self, artifact: AttachmentReference, *, expires_in: int = 900) -> str:
-        key = decode_locator(self.SCHEME, artifact.locator)
+    def presigned_get_url(
+        self, business_id: BusinessId, artifact: AttachmentReference, *, expires_in: int = 900
+    ) -> str:
+        key = tenant_key_of(self.SCHEME, business_id, artifact)
         return f"https://in-memory.invalid/{key}?expires_in={expires_in}"
+
+    def presigned_put_url(self, target: ObjectCustodyTarget, *, expires_in: int = 900) -> str:
+        return f"https://in-memory.invalid/{tenant_object_key(target)}?expires_in={expires_in}"
 
 
 class R2ObjectStorage:
@@ -146,16 +172,20 @@ class R2ObjectStorage:
         )
 
     def _put_object(self, key: str, request: ObjectCustodyRequest) -> None:
-        extra = {"ContentType": request.media_type} if request.media_type else {}
+        if request.media_type is None:
+            self._client.put_object(Bucket=self._settings.bucket, Key=key, Body=request.content)
+            return
         self._client.put_object(
             Bucket=self._settings.bucket,
             Key=key,
             Body=request.content,
-            **extra,  # type: ignore[arg-type]
+            ContentType=request.media_type,
         )
 
-    async def fetch(self, artifact: AttachmentReference) -> AttachmentPayload:
-        key = decode_locator(self.SCHEME, artifact.locator)
+    async def fetch(
+        self, business_id: BusinessId, artifact: AttachmentReference
+    ) -> AttachmentPayload:
+        key = tenant_key_of(self.SCHEME, business_id, artifact)
         try:
             content = await asyncio.to_thread(self._get_object, key)
         except (BotoCoreError, ClientError) as error:
@@ -169,15 +199,15 @@ class R2ObjectStorage:
         body: bytes = response["Body"].read()
         return body
 
-    def presigned_get_url(self, artifact: AttachmentReference, *, expires_in: int = 900) -> str:
-        key = decode_locator(self.SCHEME, artifact.locator)
-        return self._presign("get_object", key, expires_in)
-
-    def presigned_put_url(
-        self, business_id: str, scope: str, name: str, *, expires_in: int = 900
+    def presigned_get_url(
+        self, business_id: BusinessId, artifact: AttachmentReference, *, expires_in: int = 900
     ) -> str:
-        key = f"{TENANT_KEY_PREFIX}/{business_id}/{scope}/{name}"
-        return self._presign("put_object", key, expires_in)
+        return self._presign(
+            "get_object", tenant_key_of(self.SCHEME, business_id, artifact), expires_in
+        )
+
+    def presigned_put_url(self, target: ObjectCustodyTarget, *, expires_in: int = 900) -> str:
+        return self._presign("put_object", tenant_object_key(target), expires_in)
 
     def _presign(self, operation: str, key: str, expires_in: int) -> str:
         url: str = self._client.generate_presigned_url(

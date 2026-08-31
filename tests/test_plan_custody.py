@@ -136,7 +136,7 @@ async def test_in_memory_adapter_satisfies_the_port_contract() -> None:
     assert isinstance(stored, StoredObject)
     assert stored.content_digest == content_digest(PLAN_BYTES)
     assert stored.byte_size == len(PLAN_BYTES)
-    payload = await storage.fetch(stored.artifact)
+    payload = await storage.fetch(business_id, stored.artifact)
     assert payload.content == PLAN_BYTES
 
 
@@ -253,7 +253,7 @@ async def test_copy_records_digest_byte_size_and_immutable_version(
     assert version.byte_size == len(PLAN_BYTES)
     assert version.page_count is None
     assert "://" not in version.artifact.locator
-    assert await storage.fetch(version.artifact) == AttachmentPayload(
+    assert await storage.fetch(business_id, version.artifact) == AttachmentPayload(
         content=PLAN_BYTES, mime_type="application/pdf", filename="plans.pdf"
     )
 

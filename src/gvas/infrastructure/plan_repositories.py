@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
@@ -49,8 +49,8 @@ from gvas.infrastructure.plan_models import (
 from gvas.infrastructure.repositories import SqlOutboxRepository
 
 
-def _rowcount(result: Result[Any]) -> int:
-    return cast(CursorResult[Any], result).rowcount
+def _rowcount(result: Result[tuple[()]]) -> int:
+    return cast(CursorResult[tuple[()]], result).rowcount
 
 
 def _aware(value: datetime, name: str) -> None:

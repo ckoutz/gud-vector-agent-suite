@@ -56,9 +56,10 @@ class SitePlanSet(PlanModel):
 class SitePlanSetVersion(PlanModel):
     """One immutable uploaded revision of a plan set (the whole document).
 
-    ``page_count`` is unknown while the document is only in custody: reading it
-    requires opening the file, which is the extraction phase's job (§3.3). It is
-    recorded once, by extraction, and never changed afterwards.
+    The record is immutable. ``page_count`` is ``None`` because it is simply
+    unknown at custody time — establishing it means opening the document, which
+    custody does not do; how a known page count is eventually represented is
+    left to the paused sheet-extraction work and is not promised here.
     """
 
     version_id: SitePlanSetVersionId
