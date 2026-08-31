@@ -1,10 +1,13 @@
 # Design: per-tenant template sets and site-plan artifacts
 
 Status: **design only**. Nothing here is implemented, and no contract in this
-document is accepted. Every Pydantic sketch below is a *proposal* written to be
-reviewed and revised; none of it is wired into a workflow, migration, or
-composition path. Sections marked **Owner decision** must be answered by the
-business owner before the corresponding implementation phase starts.
+document is accepted as code. Every Pydantic sketch below is a *proposal*
+written to be reviewed and revised; none of it is wired into a workflow,
+migration, or composition path.
+
+The product decisions D1–D8 below are **accepted by the owner**. They constrain
+the implementation phases in §6; the contract shapes that realize them are still
+subject to review when each phase ships.
 
 This design extends what exists today rather than introducing a parallel
 abstraction. Read [`docs/composition.md`](composition.md) first: it already
@@ -136,11 +139,11 @@ questions whose `item_key` may no longer exist.
   same document; this is what makes the existing fingerprint-based dedup in
   `FieldNotesReportRepository.claim` still correct.
 
-**Owner decision (D1).** Whether a deprecated template version may ever be
-*hard deleted* (e.g. because it contains wording the owner no longer wants
-associated with the business). Recommended MVP: no deletion, ever — historical
-reports must stay reproducible. Tradeoff: template rows accumulate; that cost is
-negligible relative to losing audit reproducibility.
+**D1 — accepted: deprecated template versions are never hard deleted.**
+Historical reports must stay reproducible, so a version that has ever been
+resolved for a case is retained for at least the lifetime of the business
+account. Tradeoff accepted: template rows accumulate; that cost is negligible
+relative to losing audit reproducibility.
 
 ### 2.4 Runtime resolution by tenant
 
@@ -186,16 +189,16 @@ Steps 1–3 need an authoring surface. There is none today, and the MVP does not
 need a UI: a checked-in seed file per industry plus a load command is enough,
 and it makes the industry definitions reviewable in git.
 
-**Owner decision (D2).** Whether industry template sets are (a) global,
-system-owned catalog rows a business *references*, or (b) copied into the
-business on onboarding. Recommended MVP: **(b) copy-on-onboard**. It keeps every
+**D2 — accepted: copy-on-onboard.** The alternative considered was global,
+system-owned catalog rows that a business *references*; the accepted option
+copies industry template rows into the business at onboarding. It keeps every
 row tenant-scoped (consistent with every existing table's business-scoped
 composite keys), lets a business diverge from the catalog without a fork
-mechanism, and avoids a cross-tenant read path in the resolver. Tradeoff: a
+mechanism, and avoids a cross-tenant read path in the resolver. Tradeoff accepted: a
 catalog fix does not propagate to existing tenants; each needs a new version
-published. Option (a) is cheaper to maintain across many identical tenants but
-introduces the system's first non-tenant-scoped readable row, which is a real
-architectural cost.
+published. The rejected catalog option is cheaper to maintain across many
+identical tenants but introduces the system's first non-tenant-scoped readable
+row, which is a real architectural cost.
 
 ### 2.6 Defaults when a business has no custom template
 
@@ -205,7 +208,7 @@ default industry set → error. The third case must be a hard, loud error
 a roofing job against a generic inspection checklist produces a plausible-looking
 but wrong report, which is worse than a failure the owner sees.
 
-Under the recommended D2 (copy-on-onboard), the middle step collapses: every
+Under D2 (copy-on-onboard), the middle step collapses: every
 business has rows because onboarding created them, and "no template" genuinely
 means misconfiguration.
 
@@ -433,16 +436,15 @@ Two consequences worth naming:
   to cap location questions per case, or the loop will interrogate an owner who
   mentioned six rooms.
 
-**Owner decision (D3).** Whether an unresolvable location blocks the report, or
-produces a report with an unplaced observation noted in text. Recommended MVP:
-**do not block** — record the observation as a normal text block with no
-annotation. A field report that arrives with one unplaced note is more useful
-than one that never arrives.
+**D3 — accepted: an unresolvable location does not block the report.** The
+observation is recorded as a normal text block with no annotation. A field
+report that arrives with one unplaced note is more useful than one that never
+arrives.
 
-## 4. Owner decisions on plans (all pending approval)
+## 4. Accepted plan decisions
 
-Each has a recommended MVP, but these are the owner's calls, not the
-implementation's.
+Each decision below was the recommended option and is accepted; the alternatives
+and their costs are kept so the reasoning survives.
 
 ### D4 — Supported plan formats
 
@@ -452,7 +454,7 @@ implementation's.
 | PDF | moderate | needs a PDF library (a new dependency); gives page count, embedded text for label matching, and page dimensions; covers what small-business owners actually receive from architects |
 | CAD / BIM (DWG, IFC, RVT) | high | proprietary or heavyweight parsing, real geometry and layer semantics, licensing questions, and a much larger processing pipeline |
 
-**Recommended MVP: PDF plus raster images.** PDF is what owners actually have,
+**Accepted: PDF plus raster images.** PDF is what owners actually have,
 and its embedded text is what makes §3.6's label matching possible at all.
 CAD/BIM is a different product surface — real coordinate systems, layers,
 element identity — and should be considered only if a specific customer needs
@@ -465,8 +467,8 @@ it, at which point it is a separate workstream, not an added format.
 | Normalized page-relative (`[0,1]`, per page) | low | resolution-independent, trivially validated, meaningless across plan versions or in the real world |
 | Real-world scaled / georeferenced | high | requires a scale factor or control points per plan, plus owner input to establish them; enables measurements and cross-plan reasoning |
 
-**Recommended MVP: normalized page-relative**, as sketched in `PlanCoordinate`.
-Tradeoff: a `MEASUREMENT` annotation can carry the owner's stated measurement as
+**Accepted: normalized page-relative**, as sketched in `PlanCoordinate`.
+Tradeoff accepted: a `MEASUREMENT` annotation can carry the owner's stated measurement as
 text but cannot be computed or verified from geometry. Adding scale later is
 additive (an optional `scale` on `SitePlanVersion` plus a derived accessor), so
 this is not a one-way door.
@@ -479,7 +481,7 @@ this is not a one-way door.
 | Model-inferred, owner-confirmed | moderate | costs conversational round trips; matches the existing follow-up loop exactly |
 | Manual only | needs a UI (D7/D5 interplay) | not available before a web UI exists |
 
-**Recommended MVP: inferred with owner confirmation**, with `INFERRED` allowed
+**Accepted: inferred with owner confirmation**, with `INFERRED` allowed
 only above a configured confidence threshold and everything else routed through
 a follow-up question. The `AnnotationConfidence` field exists so the report can
 be honest about which is which.
@@ -491,22 +493,31 @@ layouts). Options: keep the bytes out of this system entirely and store only an
 opaque `AttachmentReference` resolved through the existing
 `AttachmentAccessPort`; or take custody in object storage owned by this system.
 
-**Recommended MVP: opaque reference, no custody.** It preserves the current
-architecture (no locator is ever a URL; adapters own media access), avoids a
-storage dependency, and defers the retention question. Tradeoff: availability of
-the file is the source channel's problem, and a plan deleted upstream breaks
-re-rendering — acceptable while the report document itself does not embed the
-plan image.
+**Accepted: opaque reference, no custody.** It preserves the current
+architecture (no locator is ever a URL; adapters own media access) and avoids a
+storage dependency. Tradeoff accepted: availability of the file is the source
+channel's problem, and a plan deleted upstream breaks re-rendering — acceptable
+while the report document itself does not embed the plan image.
 
-Retention remains open regardless and joins the existing open retention question
-for transcripts and reports in [`docs/field_notes.md`](field_notes.md).
+**Retention, accepted:** plan files and their metadata are retained for at least
+as long as the business account is open. Nothing in this system may expire or
+purge a plan version while its account is open, which also means annotation
+references stay resolvable for the account's lifetime.
+
+Still unresolved, and deliberately not decided here: what happens *after* an
+account closes — whether there is a grace period, an export obligation, or a
+purge, and whether it differs for plan files, transcripts, and report documents.
+That narrower policy joins the existing open retention question for transcripts
+and reports in [`docs/field_notes.md`](field_notes.md). Under "no custody", this
+system holds only opaque references, so any purge is coordinated with whoever
+holds the bytes.
 
 ### D8 — Rendering location
 
 Server-side rendering (burn annotations into a PDF/PNG at report generation) vs.
 a future web UI that draws annotations over the plan.
 
-**Recommended MVP: neither, initially.** The report cites annotations
+**Accepted: neither, initially.** The report cites annotations
 structurally (§3.5) and a rendered artifact is added later. If a rendered
 artifact is required for the first release, server-side is the only option that
 works over Slack, and it should be a separate outbox command with its own lease
@@ -547,17 +558,18 @@ Each phase is independently shippable and leaves the system working.
 
 | phase | contents | depends on |
 | --- | --- | --- |
-| **P1 — template resolution** | `TemplateSet` rows + repository; `TemplateResolutionPort` and a composition resolver; pin `TemplateSetRef` on the review record; keep `checklist_key` as the default path | nothing; D2 |
+| **P1 — template resolution** | `TemplateSet` rows + repository; `TemplateResolutionPort` and a composition resolver; pin `TemplateSetRef` on the review record; keep `checklist_key` as the default path | nothing |
 | **P2 — report templates per tenant** | report template rows referenced by the template set; `ReportGenerationPort` receives the template; section keys become tenant data | P1 |
-| **P3 — industry seeding** | seed files per industry + load command; onboarding copies rows into the business | P1, P2, D2 |
-| **P4 — sites and plan artifacts** | `Site`, `SitePlanVersion`, upload path, immutability, digest-based dedup | D4, D7 |
-| **P5 — annotation model** | `PlanAnnotation` with evidence refs; snapshot carries annotations; `EvidenceSource.PLAN_ANNOTATION`; report schema v2 with `PlanReferenceBlock` | P4, D5, D6 |
-| **P6 — location disambiguation** | location slots as optional checklist items; extraction port; follow-up questions for ambiguous locations | P1, P5, D3 |
-| **P7 — rendering** | annotated-plan artifact as its own leased outbox command | P5, D8 |
+| **P3 — industry seeding** | seed files per industry + load command; onboarding copies rows into the business | P1, P2 |
+| **P4 — sites and plan artifacts** | `Site`, `SitePlanVersion`, upload path, immutability, digest-based dedup | nothing |
+| **P5 — annotation model** | `PlanAnnotation` with evidence refs; snapshot carries annotations; `EvidenceSource.PLAN_ANNOTATION`; report schema v2 with `PlanReferenceBlock` | P4 |
+| **P6 — location disambiguation** | location slots as optional checklist items; extraction port; follow-up questions for ambiguous locations | P1, P5 |
+| **P7 — rendering** | annotated-plan artifact as its own leased outbox command | P5 |
 
-P1 is the highest-value, lowest-risk phase and closes half of composition gap 7
-on its own. P5 is the phase that breaks a published contract and should not be
-started before D4/D5/D6 are answered.
+No phase is blocked on a product decision any more. P1 is the highest-value,
+lowest-risk phase and closes half of composition gap 7 on its own. P5 is the
+phase that breaks a published contract, so its contract shapes need review
+before it starts.
 
 ## 7. Where this touches existing contracts
 
@@ -574,20 +586,27 @@ Listed so review can weigh the blast radius, in rough order of severity:
 | `ChecklistItemRequirement` / `_validate_outcome` | unchanged — location slots are ordinary optional checklist items, which is why no new validation escape hatch is needed | P6 |
 | `AttachmentReference`, `OwnerReplyPort`, outbox | unchanged and reused as-is | P4–P7 |
 
-## 8. Open owner decisions
+## 8. Decision record
 
-- **D1** — may deprecated template versions ever be hard deleted? (rec: no)
-- **D2** — global template catalog vs. copy-on-onboard? (rec: copy-on-onboard)
-- **D3** — does an unresolvable location block the report? (rec: no)
-- **D4** — supported plan formats? (rec: PDF + raster; no CAD/BIM)
-- **D5** — normalized page-relative vs. real-world coordinates? (rec: normalized)
-- **D6** — inferred, owner-confirmed, or manual placement? (rec: inferred +
-  owner confirmation)
-- **D7** — plan file storage and retention? (rec: opaque reference, no custody;
-  retention still open)
-- **D8** — server-side rendering vs. future web UI? (rec: defer both; structural
-  citation only)
+All eight are accepted by the owner.
 
-Pre-existing open questions this design does not resolve: case closure, report
-distribution, transcript/report retention, and permanent transcription failure
-handling — all recorded in [`docs/composition.md`](composition.md).
+- **D1** — deprecated template versions are never hard deleted.
+- **D2** — industry templates are copied into the business on onboarding, not
+  referenced from a global catalog.
+- **D3** — an unresolvable location does not block the report.
+- **D4** — PDF and raster images are supported; CAD/BIM is out of scope.
+- **D5** — coordinates are normalized page-relative; real-world scale is a later
+  additive option.
+- **D6** — placement is model-inferred with owner confirmation.
+- **D7** — plan files are held as opaque references with no custody, and are
+  retained for at least the lifetime of the business account.
+- **D8** — no rendered artifact initially; reports cite annotations structurally.
+
+### Still unresolved
+
+- What happens to plan files, transcripts, and report documents *after* a
+  business account closes (grace period, export, purge). D7 fixes only the
+  lower bound.
+- Pre-existing open questions this design does not resolve: case closure, report
+  distribution, transcript/report retention, and permanent transcription failure
+  handling — all recorded in [`docs/composition.md`](composition.md).
