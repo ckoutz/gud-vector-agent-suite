@@ -123,7 +123,7 @@ class FieldNoteCompletenessService:
         if outstanding:
             sent = await self._enqueue_questions(review, outstanding)
             return CompletenessOutcome(
-                CompletenessStatus.AWAITING_ANSWERS,
+                CompletenessStatus.QUESTIONS_SENT if sent else CompletenessStatus.AWAITING_ANSWERS,
                 review_id=review.review_id,
                 round_index=review.round_index,
                 missing_item_keys=tuple(question.item_key for question in outstanding),
@@ -196,14 +196,14 @@ class FieldNoteCompletenessService:
             questions = await unit_of_work.follow_up_questions.list_for_review(
                 business_id, review.review_id
             )
-            target = await self._select_question(unit_of_work, review, message, questions)
+            target = self._select_question(questions)
             if target is None:
                 await unit_of_work.rollback()
                 return CompletenessOutcome(
                     CompletenessStatus.UNCORRELATED_REPLY,
                     review_id=review.review_id,
                     round_index=review.round_index,
-                    detail="reply does not correlate to an outstanding follow-up question",
+                    detail="no single follow-up question is currently awaiting an answer",
                 )
             recorded = await unit_of_work.follow_up_questions.record_answer(
                 target, inbound_message_id, answer_text, message.received_at
@@ -230,30 +230,21 @@ class FieldNoteCompletenessService:
             await unit_of_work.commit()
 
         if remaining:
+            sent = await self._enqueue_questions(review, remaining)
             return CompletenessOutcome(
-                CompletenessStatus.AWAITING_ANSWERS,
+                CompletenessStatus.QUESTIONS_SENT if sent else CompletenessStatus.AWAITING_ANSWERS,
                 review_id=review.review_id,
                 round_index=review.round_index,
                 missing_item_keys=tuple(question.item_key for question in remaining),
+                questions_sent=sent,
             )
         return await self._run_round(review, checklist)
 
-    async def _select_question(
-        self,
-        unit_of_work: CompletenessUnitOfWork,
-        review: FieldNoteReviewRecord,
-        message: NormalizedOwnerMessage,
-        questions: tuple[FollowUpQuestionRecord, ...],
+    def _select_question(
+        self, questions: tuple[FollowUpQuestionRecord, ...]
     ) -> FollowUpQuestionRecord | None:
-        if message.reply_to is not None:
-            matched = await unit_of_work.follow_up_questions.get_by_correlation(
-                review.business_id, review.review_id, message.reply_to.correlation_id
-            )
-            if matched is None or matched.status is not FollowUpQuestionStatus.ASKED:
-                return None
-            return matched
-        outstanding = _outstanding(questions, asked_only=True)
-        return outstanding[0] if outstanding else None
+        asked = _outstanding(questions, asked_only=True)
+        return asked[0] if len(asked) == 1 else None
 
     async def _run_round(
         self, review: FieldNoteReviewRecord, checklist: CompletenessChecklist
@@ -304,33 +295,41 @@ class FieldNoteCompletenessService:
     async def _enqueue_questions(
         self, review: FieldNoteReviewRecord, questions: tuple[FollowUpQuestionRecord, ...]
     ) -> int:
-        pending = tuple(
-            question for question in questions if question.status is FollowUpQuestionStatus.PENDING
+        if any(question.status is FollowUpQuestionStatus.ASKED for question in questions):
+            return 0
+        question = next(
+            (
+                question
+                for question in sorted(
+                    questions, key=lambda item: (item.round_index, item.item_key)
+                )
+                if question.status is FollowUpQuestionStatus.PENDING
+            ),
+            None,
         )
-        if not pending:
+        if question is None:
             return 0
         conversation_ref = ConversationRef(
             business_id=review.business_id,
             external_conversation_id=review.external_conversation_id,
         )
         async with self._unit_of_work_factory() as unit_of_work:
-            for question in pending:
-                message = OutboundOwnerMessage(
-                    business_id=review.business_id,
-                    conversation_ref=conversation_ref,
-                    parts=(TextPart(text=question.prompt),),
-                    correlation_id=question.correlation_id,
-                    reply_to=ReplyRef(correlation_id=review.thread_correlation_id),
-                )
-                outbound_message_id = await unit_of_work.outbound_messages.create(
-                    message, review.conversation_id, review.inbound_message_id
-                )
-                await unit_of_work.outbox.enqueue(
-                    owner_reply_command(review.business_id, outbound_message_id)
-                )
-                await unit_of_work.follow_up_questions.mark_asked(question)
+            message = OutboundOwnerMessage(
+                business_id=review.business_id,
+                conversation_ref=conversation_ref,
+                parts=(TextPart(text=question.prompt),),
+                correlation_id=question.correlation_id,
+                reply_to=ReplyRef(correlation_id=review.thread_correlation_id),
+            )
+            outbound_message_id = await unit_of_work.outbound_messages.create(
+                message, review.conversation_id, review.inbound_message_id
+            )
+            await unit_of_work.outbox.enqueue(
+                owner_reply_command(review.business_id, outbound_message_id)
+            )
+            await unit_of_work.follow_up_questions.mark_asked(question)
             await unit_of_work.commit()
-        return len(pending)
+        return 1
 
 
 def _outstanding(

@@ -330,26 +330,28 @@ async def test_duplicate_start_and_duplicate_reply_do_not_duplicate_questions_or
         "missing",
         definition.checklist_key,
     )
-    assert first.questions_sent == 2
+    assert first.questions_sent == 1
     assert repeated.questions_sent == 0
     messages = await outgoing_messages(session_factory)
-    assert len(messages) == 2
+    assert len(messages) == 1
 
     reply_id = await seed_reply(session_factory, business_id, conversation_id, "reply")
     first_reply = await completeness.record_owner_reply(
         business_id,
         conversation_id,
         reply_id,
-        owner_reply(business_id, messages[0].correlation_id),
+        owner_reply(business_id, f"field_note:{inbound_id}"),
     )
     duplicate = await completeness.record_owner_reply(
         business_id,
         conversation_id,
         reply_id,
-        owner_reply(business_id, messages[0].correlation_id),
+        owner_reply(business_id, f"field_note:{inbound_id}"),
     )
-    assert first_reply.status is CompletenessStatus.AWAITING_ANSWERS
+    assert first_reply.status is CompletenessStatus.QUESTIONS_SENT
+    assert first_reply.questions_sent == 1
     assert duplicate.status is CompletenessStatus.DUPLICATE_REPLY
+    assert len(await outgoing_messages(session_factory)) == 2
     async with session_factory() as session:
         assert await session.scalar(select(func.count(FieldNoteReviewAnswer.id))) == 1
         assert await session.scalar(select(func.count(FieldNoteFollowUpQuestion.id))) == 2
@@ -393,7 +395,7 @@ async def test_retry_after_review_failure_resumes_from_persisted_answer(
 
 
 @pytest.mark.asyncio
-async def test_out_of_order_reply_is_correlated_and_unrelated_reply_is_ignored(
+async def test_thread_root_reply_advances_questions_sequentially(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     business_id = BusinessId(uuid4())
@@ -409,30 +411,86 @@ async def test_out_of_order_reply_is_correlated_and_unrelated_reply_is_ignored(
         "missing",
         definition.checklist_key,
     )
-    second = (await outgoing_messages(session_factory))[1]
+    messages = await outgoing_messages(session_factory)
+    assert len(messages) == 1
+    first = messages[0]
+    thread_correlation = f"field_note:{inbound_id}"
+    assert first.correlation_id != thread_correlation
 
-    unrelated_id = await seed_reply(session_factory, business_id, conversation_id, "unrelated")
-    unrelated = await completeness.record_owner_reply(
+    first_reply_id = await seed_reply(
+        session_factory, business_id, conversation_id, "thread-root-first"
+    )
+    advanced = await completeness.record_owner_reply(
         business_id,
         conversation_id,
-        unrelated_id,
-        owner_reply(business_id, "unrelated-correlation"),
+        first_reply_id,
+        owner_reply(business_id, thread_correlation, "North depot"),
     )
-    assert unrelated.status is CompletenessStatus.UNCORRELATED_REPLY
+    assert advanced.status is CompletenessStatus.QUESTIONS_SENT
+    assert advanced.questions_sent == 1
+    first, second = await outgoing_messages(session_factory)
+    assert first.reply_to == second.reply_to
 
-    out_of_order_id = await seed_reply(
-        session_factory, business_id, conversation_id, "out-of-order"
+    second_reply_id = await seed_reply(
+        session_factory, business_id, conversation_id, "thread-root-second"
     )
-    correlated = await completeness.record_owner_reply(
+    completed = await completeness.record_owner_reply(
         business_id,
         conversation_id,
-        out_of_order_id,
-        owner_reply(business_id, second.correlation_id),
+        second_reply_id,
+        owner_reply(business_id, thread_correlation, "Inspection"),
     )
-    assert correlated.status is CompletenessStatus.AWAITING_ANSWERS
+    assert completed.status is CompletenessStatus.COMPLETE
+    assert completed.round_index == 1
     async with session_factory() as session:
-        answers = (await session.scalars(select(FieldNoteReviewAnswer.item_key))).all()
-        assert answers == ["work"]
+        answers = (
+            await session.scalars(
+                select(FieldNoteReviewAnswer.item_key).order_by(FieldNoteReviewAnswer.item_key)
+            )
+        ).all()
+        assert answers == ["site", "work"]
+
+
+@pytest.mark.asyncio
+async def test_reply_is_rejected_when_no_question_is_currently_asked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    conversation_id, inbound_id = await seed_context(session_factory, business_id)
+    definition = checklist(business_id)
+    await configure(session_factory, definition)
+    reviewer = UnitOfWorkAwareReviewer(
+        SqlCompletenessUnitOfWorkFactory(session_factory), fail_on_call=2
+    )
+    completeness = service(session_factory, reviewer)
+    await completeness.start_review(
+        business_id,
+        conversation_id,
+        f"conversation-{business_id}",
+        inbound_id,
+        "missing",
+        definition.checklist_key,
+    )
+    answered_id = await seed_reply(session_factory, business_id, conversation_id, "answered")
+    with pytest.raises(RuntimeError, match="review failed"):
+        await completeness.record_owner_reply(
+            business_id,
+            conversation_id,
+            answered_id,
+            owner_reply(business_id, f"field_note:{inbound_id}"),
+        )
+
+    extra_reply_id = await seed_reply(session_factory, business_id, conversation_id, "extra")
+    result = await completeness.record_owner_reply(
+        business_id,
+        conversation_id,
+        extra_reply_id,
+        owner_reply(business_id, f"field_note:{inbound_id}"),
+    )
+
+    assert result.status is CompletenessStatus.UNCORRELATED_REPLY
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count(FieldNoteReviewAnswer.id))) == 1
 
 
 @pytest.mark.asyncio

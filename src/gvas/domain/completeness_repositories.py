@@ -95,10 +95,6 @@ class FollowUpQuestionRepository(Protocol):
         self, business_id: BusinessId, review_id: FieldNoteReviewId
     ) -> tuple[FollowUpQuestionRecord, ...]: ...
 
-    async def get_by_correlation(
-        self, business_id: BusinessId, review_id: FieldNoteReviewId, correlation_id: str
-    ) -> FollowUpQuestionRecord | None: ...
-
     async def mark_asked(self, question: FollowUpQuestionRecord) -> None: ...
 
     async def record_answer(

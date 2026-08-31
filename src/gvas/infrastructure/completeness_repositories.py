@@ -286,18 +286,6 @@ class SqlFollowUpQuestionRepository:
         ).all()
         return tuple(_question_record(row) for row in rows)
 
-    async def get_by_correlation(
-        self, business_id: BusinessId, review_id: FieldNoteReviewId, correlation_id: str
-    ) -> FollowUpQuestionRecord | None:
-        row = await self.session.scalar(
-            select(FieldNoteFollowUpQuestion).where(
-                FieldNoteFollowUpQuestion.business_id == business_id,
-                FieldNoteFollowUpQuestion.review_id == review_id,
-                FieldNoteFollowUpQuestion.correlation_id == correlation_id,
-            )
-        )
-        return _question_record(row) if row is not None else None
-
     async def mark_asked(self, question: FollowUpQuestionRecord) -> None:
         await self.session.execute(
             update(FieldNoteFollowUpQuestion)
