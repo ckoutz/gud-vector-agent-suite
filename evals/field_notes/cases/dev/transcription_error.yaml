@@ -1,0 +1,297 @@
+# Machine-transcription artifacts around technical terms and proper nouns. Obvious
+# artifacts must be recovered from context, not stored verbatim. Where the intended
+# spelling of a name is genuinely uncertain, the field is tolerated in field scoring
+# and judged by permissible inference instead.
+cases:
+  - case_id: fn-dev-transcript-001
+    split: dev
+    category: transcription_error
+    tags: [garbled_material_terms]
+    description: "\"as best us\" and \"transient board\" must resolve to asbestos and transite."
+    turns:
+      - index: 1
+        transcript: >-
+          This is an as best us survey at 31 Woodgrange Avenue, rear extension. Technician
+          Callum Reyes, March 5 2026.
+        expect:
+          fields:
+            job_address: 31 Woodgrange Avenue, rear extension
+            date: March 5, 2026
+            technician: Callum Reyes
+            inspection_type: Asbestos
+          permissible_inferences:
+            - field: inspection_type
+              allowed_values: [Asbestos]
+              rationale: "\"as best us\" is a transcription artifact for asbestos"
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 31 Woodgrange Avenue
+            - item: date
+              state: satisfied
+              evidence_contains: March 5
+            - item: technician
+              state: satisfied
+              evidence_contains: Callum Reyes
+            - item: inspection_type
+              state: inferred
+              evidence_contains: as best us survey
+          forbidden_facts:
+            - field: inspection_type
+              reason: the artifact must not be stored verbatim
+              forbidden_values: ["as best us", "best us"]
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Transient board panel on the flank wall of the extension, hairline crack at the
+          bottom edge, suspect, condition good.
+        expect:
+          fields:
+            job_address: 31 Woodgrange Avenue, rear extension
+            date: March 5, 2026
+            technician: Callum Reyes
+            inspection_type: Asbestos
+          findings:
+            - location_area: Flank wall of the rear extension
+              material_condition: Transite board panel with a hairline crack at the bottom edge
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 31 Woodgrange Avenue
+            - item: date
+              state: satisfied
+              evidence_contains: March 5
+            - item: technician
+              state: satisfied
+              evidence_contains: Callum Reyes
+            - item: inspection_type
+              state: inferred
+              evidence_contains: as best us survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-transcript-002
+    split: dev
+    category: transcription_error
+    tags: [garbled_insulation_term]
+    description: "\"verma cool ite\" must resolve to vermiculite loose fill."
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos inspection, 9 Tarnbrook Road. Suki Ahluwalia, April 17 2026, client
+          Wrenfield Housing Co-op, job PT-1188.
+        expect:
+          fields:
+            job_address: 9 Tarnbrook Road
+            job_number: PT-1188
+            client: Wrenfield Housing Co-op
+            date: April 17, 2026
+            technician: Suki Ahluwalia
+            inspection_type: Asbestos
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 9 Tarnbrook Road
+            - item: date
+              state: satisfied
+              evidence_contains: April 17
+            - item: technician
+              state: satisfied
+              evidence_contains: Suki Ahluwalia
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Loft space has verma cool ite loose fill between the joists, undisturbed, about
+          four inches deep. Suspect, condition good. Did not walk the loft beyond the
+          hatch so as not to disturb it.
+        expect:
+          fields:
+            job_address: 9 Tarnbrook Road
+            job_number: PT-1188
+            client: Wrenfield Housing Co-op
+            date: April 17, 2026
+            technician: Suki Ahluwalia
+            inspection_type: Asbestos
+            areas_not_accessed: Loft beyond the hatch, to avoid disturbing the loose fill
+          findings:
+            - location_area: Loft space, between joists
+              material_condition: Vermiculite loose fill, undisturbed, about four inches deep
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, job_number, client, date, technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 9 Tarnbrook Road
+            - item: date
+              state: satisfied
+              evidence_contains: April 17
+            - item: technician
+              state: satisfied
+              evidence_contains: Suki Ahluwalia
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          forbidden_facts:
+            - field: findings
+              reason: the artifact spelling must not be stored
+              forbidden_values: ["verma cool ite"]
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-transcript-003
+    split: dev
+    category: transcription_error
+    tags: [proper_noun_uncertainty]
+    description: A garbled technician surname; either spelling is defensible, inventing a third is not.
+    turns:
+      - index: 1
+        transcript: >-
+          Mold assessment at 118 Cranleigh Parade, first floor. This is Eefa Dunleevy
+          speaking, May 21 2026.
+        expect:
+          fields:
+            job_address: 118 Cranleigh Parade, first floor
+            date: May 21, 2026
+            inspection_type: Mold
+          tolerated_fields: [technician]
+          permissible_inferences:
+            - field: technician
+              allowed_values: [Eefa Dunleevy, Aoife Dunleavy]
+              rationale: transcribed name may be either spelling; both are defensible
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 118 Cranleigh Parade
+            - item: date
+              state: satisfied
+              evidence_contains: May 21
+            - item: technician
+              state: satisfied
+              evidence_contains: Dunleevy
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold assessment
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Kitchen extract duct is dripping onto the ceiling board, board is soft and
+          discoloured. Confirmed, damaged.
+        expect:
+          fields:
+            job_address: 118 Cranleigh Parade, first floor
+            date: May 21, 2026
+            inspection_type: Mold
+          tolerated_fields: [technician]
+          findings:
+            - location_area: Kitchen, ceiling board below the extract duct
+              material_condition: Soft, discoloured board with active dripping
+              suspect_status: Confirmed
+              condition: Damaged
+          preserved_fields: [job_address, date, inspection_type]
+          permissible_inferences:
+            - field: technician
+              allowed_values: [Eefa Dunleevy, Aoife Dunleavy]
+              rationale: the name captured on turn one must survive in some defensible form
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 118 Cranleigh Parade
+            - item: date
+              state: satisfied
+              evidence_contains: May 21
+            - item: technician
+              state: satisfied
+              evidence_contains: Dunleevy
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold assessment
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-transcript-004
+    split: dev
+    category: transcription_error
+    tags: [garbled_lab_name, garbled_number]
+    description: A garbled lab name is recoverable from an earlier clean mention; a garbled digit is not.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey at 502 Ridgemont Avenue, unit 12. Technician Oscar Bramley,
+          June 30 2026. Samples on this job go to Cascade Analytical as usual.
+        expect:
+          fields:
+            job_address: 502 Ridgemont Avenue, unit 12
+            date: June 30, 2026
+            technician: Oscar Bramley
+            inspection_type: Asbestos
+          tolerated_fields: [flags_for_office_review, missing_info]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 502 Ridgemont Avenue
+            - item: date
+              state: satisfied
+              evidence_contains: June 30
+            - item: technician
+              state: satisfied
+              evidence_contains: Oscar Bramley
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          One bulk sample from the airing cupboard flue board, sample idea see one, going
+          to Cask Aid Analytical.
+        expect:
+          fields:
+            job_address: 502 Ridgemont Avenue, unit 12
+            date: June 30, 2026
+            technician: Oscar Bramley
+            inspection_type: Asbestos
+          tolerated_fields: [flags_for_office_review, missing_info]
+          samples:
+            - location: Airing cupboard flue board
+              material_type: Bulk
+              sent_to_lab: Y, Cascade Analytical
+          preserved_fields: [job_address, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 502 Ridgemont Avenue
+            - item: date
+              state: satisfied
+              evidence_contains: June 30
+            - item: technician
+              state: satisfied
+              evidence_contains: Oscar Bramley
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          forbidden_facts:
+            - field: samples
+              reason: >-
+                "sample idea see one" is too garbled to resolve into a sample id, and the
+                garbled lab name must not be stored verbatim
+              forbidden_values: ["idea see one", "Cask Aid"]
+          follow_up:
+            needed: false
+          status: ready_for_review

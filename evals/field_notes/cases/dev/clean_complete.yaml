@@ -1,0 +1,346 @@
+# Clean, complete dictations. Every critical item is stated outright, nothing is
+# contradictory, and no question is warranted at any turn. All content is synthetic:
+# addresses, people, clients and job numbers are invented.
+cases:
+  - case_id: fn-dev-clean-001
+    split: dev
+    category: clean_complete
+    tags: [asbestos, residential]
+    description: Two-turn dictation stating every critical item, then one finding.
+    turns:
+      - index: 1
+        transcript: >-
+          Okay, this is Marisol Vega, asbestos inspection at 1420 Kenmore Avenue,
+          building B. Job number PT-4471, client is Harborline Property Group, date is
+          March 4, 2025. Building is a two-story brick walk-up, about 1962.
+        expect:
+          fields:
+            job_address: 1420 Kenmore Avenue, building B
+            job_number: PT-4471
+            client: Harborline Property Group
+            date: March 4, 2025
+            technician: Marisol Vega
+            inspection_type: Asbestos
+            building_type_age: Two-story brick walk-up, about 1962
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 1420 Kenmore Avenue
+            - item: date
+              state: satisfied
+              evidence_contains: March 4, 2025
+            - item: technician
+              state: satisfied
+              evidence_contains: Marisol Vega
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: asbestos inspection
+          forbidden_facts:
+            - field: samples
+              reason: no samples were mentioned on this turn
+              forbidden_values: ["sample"]
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Accessed the basement mechanical room and both stairwells. Pipe insulation on
+          the boiler header looks like the original cementitious wrap, intact, no visible
+          damage. Calling it suspect, condition good. Nothing else stood out.
+        expect:
+          fields:
+            job_address: 1420 Kenmore Avenue, building B
+            job_number: PT-4471
+            client: Harborline Property Group
+            date: March 4, 2025
+            technician: Marisol Vega
+            inspection_type: Asbestos
+            building_type_age: Two-story brick walk-up, about 1962
+            areas_accessed: Basement mechanical room and both stairwells
+          tolerated_fields: [general_condition_notes, technician_summary]
+          findings:
+            - location_area: Basement mechanical room, boiler header
+              material_condition: Original cementitious pipe insulation wrap, intact
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, job_number, client, date, technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 1420 Kenmore Avenue
+            - item: date
+              state: satisfied
+              evidence_contains: March 4, 2025
+            - item: technician
+              state: satisfied
+              evidence_contains: Marisol Vega
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: asbestos inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-clean-002
+    split: dev
+    category: clean_complete
+    tags: [mold, commercial]
+    description: Mold inspection stated cleanly across three turns with a sample.
+    turns:
+      - index: 1
+        transcript: >-
+          Dev Okonkwo here, mold assessment, 88 Sailmaker Court suite 210, February 11
+          2025. Client is Ridgeway Dental Partners, job PT-5010.
+        expect:
+          fields:
+            job_address: 88 Sailmaker Court, suite 210
+            job_number: PT-5010
+            client: Ridgeway Dental Partners
+            date: February 11, 2025
+            technician: Dev Okonkwo
+            inspection_type: Mold
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 88 Sailmaker Court
+            - item: date
+              state: satisfied
+              evidence_contains: February 11
+            - item: technician
+              state: satisfied
+              evidence_contains: Dev Okonkwo
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: mold assessment
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Suite is a 1998 single-story medical fit-out. Got into the operatory, the
+          sterilization room and the mechanical closet. Ceiling tile above the
+          sterilizer is water stained with visible growth, roughly two feet by two feet,
+          calling that confirmed, condition damaged.
+        expect:
+          fields:
+            job_address: 88 Sailmaker Court, suite 210
+            job_number: PT-5010
+            client: Ridgeway Dental Partners
+            date: February 11, 2025
+            technician: Dev Okonkwo
+            inspection_type: Mold
+            building_type_age: 1998 single-story medical fit-out
+            areas_accessed: Operatory, sterilization room, mechanical closet
+          findings:
+            - location_area: Sterilization room, ceiling above sterilizer
+              material_condition: Water-stained ceiling tile with visible growth, about 2 ft by 2 ft
+              suspect_status: Confirmed
+              condition: Damaged
+          preserved_fields: [job_address, job_number, client, date, technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 88 Sailmaker Court
+            - item: date
+              state: satisfied
+              evidence_contains: February 11
+            - item: technician
+              state: satisfied
+              evidence_contains: Dev Okonkwo
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: mold assessment
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 3
+        transcript: >-
+          Took one tape lift off that tile, sample M-1, going to Cascade Analytical.
+          Recommending the tile be removed under containment.
+        expect:
+          fields:
+            job_address: 88 Sailmaker Court, suite 210
+            job_number: PT-5010
+            client: Ridgeway Dental Partners
+            date: February 11, 2025
+            technician: Dev Okonkwo
+            inspection_type: Mold
+            building_type_age: 1998 single-story medical fit-out
+            areas_accessed: Operatory, sterilization room, mechanical closet
+            recommended_next_steps: Remove the affected ceiling tile under containment
+          findings:
+            - location_area: Sterilization room, ceiling above sterilizer
+              material_condition: Water-stained ceiling tile with visible growth, about 2 ft by 2 ft
+              suspect_status: Confirmed
+              condition: Damaged
+          samples:
+            - sample_id: M-1
+              location: Sterilization room ceiling tile
+              material_type: Tape lift
+              sent_to_lab: Y, Cascade Analytical
+          preserved_fields: [job_address, date, technician, inspection_type, areas_accessed]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 88 Sailmaker Court
+            - item: date
+              state: satisfied
+              evidence_contains: February 11
+            - item: technician
+              state: satisfied
+              evidence_contains: Dev Okonkwo
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: mold assessment
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-clean-003
+    split: dev
+    category: clean_complete
+    tags: [lead, school]
+    description: Lead inspection with a photo reference and no open items.
+    turns:
+      - index: 1
+        transcript: >-
+          Lead paint inspection, 7 Corliss Lane, the old annex wing. Technician is
+          Priya Raman, date January 22 2025, client Ferngate Township Schools.
+        expect:
+          fields:
+            job_address: 7 Corliss Lane, old annex wing
+            client: Ferngate Township Schools
+            date: January 22, 2025
+            technician: Priya Raman
+            inspection_type: Lead
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 7 Corliss Lane
+            - item: date
+              state: satisfied
+              evidence_contains: January 22
+            - item: technician
+              state: satisfied
+              evidence_contains: Priya Raman
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead paint inspection
+          forbidden_facts:
+            - field: job_number
+              reason: no job number was stated at any point
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Window sills in classrooms 4 and 5 have alligatored paint, chipping at the
+          corners. Suspect, condition damaged. I have two photos, IMG_0455 and IMG_0456.
+        expect:
+          fields:
+            job_address: 7 Corliss Lane, old annex wing
+            client: Ferngate Township Schools
+            date: January 22, 2025
+            technician: Priya Raman
+            inspection_type: Lead
+          findings:
+            - location_area: Classrooms 4 and 5, window sills
+              material_condition: Alligatored paint, chipping at the corners
+              suspect_status: Suspect
+              condition: Damaged
+          photos:
+            - IMG_0455
+            - IMG_0456
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 7 Corliss Lane
+            - item: date
+              state: satisfied
+              evidence_contains: January 22
+            - item: technician
+              state: satisfied
+              evidence_contains: Priya Raman
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead paint inspection
+          forbidden_facts:
+            - field: job_number
+              reason: no job number was stated at any point
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-clean-004
+    split: dev
+    category: clean_complete
+    tags: [pre_demo, warehouse]
+    description: Pre-demolition survey with restricted access recorded, still complete.
+    turns:
+      - index: 1
+        transcript: >-
+          Pre-demo survey at 3300 Ostrander Road, the west warehouse bay. This is
+          Terrence Whitlock, April 9 2025, for Bellweather Industrial. Job PT-6122.
+        expect:
+          fields:
+            job_address: 3300 Ostrander Road, west warehouse bay
+            job_number: PT-6122
+            client: Bellweather Industrial
+            date: April 9, 2025
+            technician: Terrence Whitlock
+            inspection_type: Pre-Demo
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 3300 Ostrander Road
+            - item: date
+              state: satisfied
+              evidence_contains: April 9
+            - item: technician
+              state: satisfied
+              evidence_contains: Terrence Whitlock
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Pre-demo survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Walked the loading dock, the bay floor and the mezzanine. Could not get into
+          the electrical vault, it is padlocked and the client does not have the key on
+          site. Floor tile at the mezzanine landing is nine by nine, tan, intact, mastic
+          looks black. Suspect, condition good.
+        expect:
+          fields:
+            job_address: 3300 Ostrander Road, west warehouse bay
+            job_number: PT-6122
+            client: Bellweather Industrial
+            date: April 9, 2025
+            technician: Terrence Whitlock
+            inspection_type: Pre-Demo
+            areas_accessed: Loading dock, bay floor, mezzanine
+            areas_not_accessed: Electrical vault, padlocked and no key on site
+          findings:
+            - location_area: Mezzanine landing
+              material_condition: 9x9 tan floor tile with black mastic, intact
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, job_number, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 3300 Ostrander Road
+            - item: date
+              state: satisfied
+              evidence_contains: April 9
+            - item: technician
+              state: satisfied
+              evidence_contains: Terrence Whitlock
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Pre-demo survey
+          follow_up:
+            needed: false
+          status: ready_for_review

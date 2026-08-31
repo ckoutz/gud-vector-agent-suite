@@ -1,0 +1,339 @@
+# The technician answers the assistant's question. The answer must land in the field
+# that was asked about, close that gap, and not re-trigger the same question.
+cases:
+  - case_id: fn-dev-followup-001
+    split: dev
+    category: follow_up_reply
+    tags: [date_reply, terse_answer]
+    description: A terse date reply ("the 14th") closes the date gap using stated month context.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos inspection at 27 Bellhaven Street, ground floor shop. Technician is
+          Malik Osei. Booked in for July, client is Cranwell Retail Group.
+        expect:
+          fields:
+            job_address: 27 Bellhaven Street, ground floor shop
+            client: Cranwell Retail Group
+            technician: Malik Osei
+            inspection_type: Asbestos
+          critical_gaps: [date]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 27 Bellhaven Street
+            - item: date
+              state: missing
+            - item: technician
+              state: satisfied
+              evidence_contains: Malik Osei
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          forbidden_facts:
+            - field: date
+              reason: only the month was given, not a day
+              forbidden_values: ["July 1"]
+          follow_up:
+            needed: true
+            target: date
+            topic: exact date of the visit
+          status: need_more_info
+      - index: 2
+        transcript: The 14th. 2026 if you need the year.
+        expect:
+          fields:
+            job_address: 27 Bellhaven Street, ground floor shop
+            client: Cranwell Retail Group
+            date: July 14, 2026
+            technician: Malik Osei
+            inspection_type: Asbestos
+          preserved_fields: [job_address, client, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 27 Bellhaven Street
+            - item: date
+              state: satisfied
+              evidence_contains: 14th
+            - item: technician
+              state: satisfied
+              evidence_contains: Malik Osei
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 3
+        transcript: >-
+          Shop ceiling has sprayed coating, patchy, suspect, condition damaged near the
+          light fittings.
+        expect:
+          fields:
+            job_address: 27 Bellhaven Street, ground floor shop
+            client: Cranwell Retail Group
+            date: July 14, 2026
+            technician: Malik Osei
+            inspection_type: Asbestos
+          findings:
+            - location_area: Shop ceiling, near the light fittings
+              material_condition: Patchy sprayed coating
+              suspect_status: Suspect
+              condition: Damaged
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 27 Bellhaven Street
+            - item: date
+              state: satisfied
+              evidence_contains: 14th
+            - item: technician
+              state: satisfied
+              evidence_contains: Malik Osei
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-followup-002
+    split: dev
+    category: follow_up_reply
+    tags: [address_reply]
+    description: The address reply arrives with unrelated chatter attached.
+    turns:
+      - index: 1
+        transcript: >-
+          Lead inspection today, August 4 2026, this is Rowena Tasker. Client is
+          Millbrook Council, job PT-2205.
+        expect:
+          fields:
+            job_number: PT-2205
+            client: Millbrook Council
+            date: August 4, 2026
+            technician: Rowena Tasker
+            inspection_type: Lead
+          critical_gaps: [job_address]
+          checklist:
+            - item: job_address
+              state: missing
+            - item: date
+              state: satisfied
+              evidence_contains: August 4
+            - item: technician
+              state: satisfied
+              evidence_contains: Rowena Tasker
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead inspection
+          follow_up:
+            needed: true
+            target: job_address
+            topic: address of the property
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          It is 46 Sparrowfield Lane, the semi with the blue door. Traffic was awful
+          getting here, by the way, so I am running about an hour behind.
+        expect:
+          fields:
+            job_address: 46 Sparrowfield Lane
+            job_number: PT-2205
+            client: Millbrook Council
+            date: August 4, 2026
+            technician: Rowena Tasker
+            inspection_type: Lead
+          tolerated_fields: [general_condition_notes, technician_summary]
+          preserved_fields: [job_number, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 46 Sparrowfield Lane
+            - item: date
+              state: satisfied
+              evidence_contains: August 4
+            - item: technician
+              state: satisfied
+              evidence_contains: Rowena Tasker
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead inspection
+          forbidden_facts:
+            - field: findings
+              reason: traffic chatter is not a finding
+              forbidden_values: ["traffic"]
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-followup-003
+    split: dev
+    category: follow_up_reply
+    tags: [non_answer, repeat_question]
+    description: The technician does not actually answer, so the same single question stands.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey at 3 Fennimore Close, the bungalow. September 12 2026, client
+          Oakhurst Care.
+        expect:
+          fields:
+            job_address: 3 Fennimore Close, bungalow
+            client: Oakhurst Care
+            date: September 12, 2026
+            inspection_type: Asbestos
+          critical_gaps: [technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 3 Fennimore Close
+            - item: date
+              state: satisfied
+              evidence_contains: September 12
+            - item: technician
+              state: missing
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: true
+            target: technician
+            topic: technician on site
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          Hang on, someone is at the door. Same crew as last time on this one anyway.
+        expect:
+          fields:
+            job_address: 3 Fennimore Close, bungalow
+            client: Oakhurst Care
+            date: September 12, 2026
+            inspection_type: Asbestos
+          critical_gaps: [technician]
+          preserved_fields: [job_address, client, date, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 3 Fennimore Close
+            - item: date
+              state: satisfied
+              evidence_contains: September 12
+            - item: technician
+              state: missing
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          forbidden_facts:
+            - field: technician
+              reason: "\"same crew as last time\" does not name anybody"
+              forbidden_values: ["same crew"]
+          follow_up:
+            needed: true
+            target: technician
+            topic: technician on site
+          status: need_more_info
+      - index: 3
+        transcript: Back. It is me, Junius Ferrell, on my own today.
+        expect:
+          fields:
+            job_address: 3 Fennimore Close, bungalow
+            client: Oakhurst Care
+            date: September 12, 2026
+            technician: Junius Ferrell
+            inspection_type: Asbestos
+          preserved_fields: [job_address, client, date, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 3 Fennimore Close
+            - item: date
+              state: satisfied
+              evidence_contains: September 12
+            - item: technician
+              state: satisfied
+              evidence_contains: Junius Ferrell
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-followup-004
+    split: dev
+    category: follow_up_reply
+    tags: [contradiction_reply]
+    description: A reply resolves a flagged contradiction and the note becomes ready.
+    turns:
+      - index: 1
+        transcript: >-
+          Mold inspection at 55 Winterbourne Row, basement flat. Technician Elke Sandoval,
+          October 8 2026. Pipe lagging in the cupboard is friable and I would call it
+          suspect ACM, and there is no damp anywhere in the flat.
+        expect:
+          fields:
+            job_address: 55 Winterbourne Row, basement flat
+            date: October 8, 2026
+            technician: Elke Sandoval
+            inspection_type: Mold
+          findings:
+            - location_area: Cupboard pipe lagging
+              material_condition: Friable lagging, suspect asbestos containing material
+              suspect_status: Suspect
+              condition: Friable
+          contradiction: >-
+            inspection_type is Mold but the only finding is suspect asbestos and no damp
+            was found
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 55 Winterbourne Row
+            - item: date
+              state: satisfied
+              evidence_contains: October 8
+            - item: technician
+              state: satisfied
+              evidence_contains: Elke Sandoval
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold inspection
+          follow_up:
+            needed: true
+            target: inspection_type
+            topic: whether this is a mold or asbestos scope
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          Good catch, it is an asbestos job. The mold call-out was cancelled last week and
+          I read the wrong line on the schedule.
+        expect:
+          fields:
+            job_address: 55 Winterbourne Row, basement flat
+            date: October 8, 2026
+            technician: Elke Sandoval
+            inspection_type: Asbestos
+          findings:
+            - location_area: Cupboard pipe lagging
+              material_condition: Friable lagging, suspect asbestos containing material
+              suspect_status: Suspect
+              condition: Friable
+          preserved_fields: [job_address, date, technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 55 Winterbourne Row
+            - item: date
+              state: satisfied
+              evidence_contains: October 8
+            - item: technician
+              state: satisfied
+              evidence_contains: Elke Sandoval
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: it is an asbestos job
+          follow_up:
+            needed: false
+          status: ready_for_review

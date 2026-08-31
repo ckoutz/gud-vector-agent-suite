@@ -1,0 +1,228 @@
+# Held out for final selection only. Do not use these while iterating on prompts.
+cases:
+  - case_id: fn-hold-clean-001
+    split: holdout
+    category: clean_complete
+    tags: [asbestos, complete]
+    description: Complete asbestos note with restricted access and one sample.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey at 165 Grimsdale Avenue, the coach house. Technician Aurelio
+          Banks, February 17 2027, client Halewood Estates, job PT-4520. Building is a
+          1930s brick outbuilding.
+        expect:
+          fields:
+            job_address: 165 Grimsdale Avenue, coach house
+            job_number: PT-4520
+            client: Halewood Estates
+            date: February 17, 2027
+            technician: Aurelio Banks
+            inspection_type: Asbestos
+            building_type_age: 1930s brick outbuilding
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 165 Grimsdale Avenue
+            - item: date
+              state: satisfied
+              evidence_contains: February 17
+            - item: technician
+              state: satisfied
+              evidence_contains: Aurelio Banks
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Got the ground floor and the loft hatch, could not get up into the loft itself,
+          no ladder. Flue board behind the old stove is cracked, suspect, damaged. Took one
+          bulk sample, C-2, from that flue board, going to Ridgeline Labs.
+        expect:
+          fields:
+            job_address: 165 Grimsdale Avenue, coach house
+            job_number: PT-4520
+            client: Halewood Estates
+            date: February 17, 2027
+            technician: Aurelio Banks
+            inspection_type: Asbestos
+            building_type_age: 1930s brick outbuilding
+            areas_accessed: Ground floor and loft hatch
+            areas_not_accessed: Loft interior, no ladder available
+          findings:
+            - location_area: Behind the old stove
+              material_condition: Cracked flue board
+              suspect_status: Suspect
+              condition: Damaged
+          samples:
+            - sample_id: C-2
+              location: Flue board behind the old stove
+              material_type: Bulk
+              sent_to_lab: Y, Ridgeline Labs
+          preserved_fields: [job_address, job_number, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 165 Grimsdale Avenue
+            - item: date
+              state: satisfied
+              evidence_contains: February 17
+            - item: technician
+              state: satisfied
+              evidence_contains: Aurelio Banks
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-hold-clean-002
+    split: holdout
+    category: clean_complete
+    tags: [iaq, complete]
+    description: Complete IAQ note with readings summarized and no open items.
+    turns:
+      - index: 1
+        transcript: >-
+          IAQ survey, 3 Meridian Court, second floor open plan. Technician Sabine Otieno,
+          March 24 2027, client Foxglove Analytics.
+        expect:
+          fields:
+            job_address: 3 Meridian Court, second floor open plan
+            client: Foxglove Analytics
+            date: March 24, 2027
+            technician: Sabine Otieno
+            inspection_type: IAQ
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 3 Meridian Court
+            - item: date
+              state: satisfied
+              evidence_contains: March 24
+            - item: technician
+              state: satisfied
+              evidence_contains: Sabine Otieno
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: IAQ survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Carbon dioxide sits high near the east windows in the afternoon, the rest of the
+          floor is fine. Recommending the office review the ventilation balance on that
+          side.
+        expect:
+          fields:
+            job_address: 3 Meridian Court, second floor open plan
+            client: Foxglove Analytics
+            date: March 24, 2027
+            technician: Sabine Otieno
+            inspection_type: IAQ
+            recommended_next_steps: Review the ventilation balance on the east side
+          tolerated_fields: [general_condition_notes, flags_for_office_review, technician_summary]
+          findings:
+            - location_area: East windows, second floor
+              material_condition: Elevated carbon dioxide in the afternoon
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 3 Meridian Court
+            - item: date
+              state: satisfied
+              evidence_contains: March 24
+            - item: technician
+              state: satisfied
+              evidence_contains: Sabine Otieno
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: IAQ survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-hold-optional-001
+    split: holdout
+    category: optional_absent
+    tags: [no_client, no_samples]
+    description: No client, no job number, no samples; none of that warrants a question.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos inspection at 41 Croydale Street, side annexe. Technician Petra Hollis,
+          April 30 2027. Work came in through the duty line so I have no client name.
+        expect:
+          fields:
+            job_address: 41 Croydale Street, side annexe
+            date: April 30, 2027
+            technician: Petra Hollis
+            inspection_type: Asbestos
+          tolerated_fields: [missing_info, flags_for_office_review]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 41 Croydale Street
+            - item: date
+              state: satisfied
+              evidence_contains: April 30
+            - item: technician
+              state: satisfied
+              evidence_contains: Petra Hollis
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          forbidden_facts:
+            - field: client
+              reason: no client name is available
+            - field: job_number
+              reason: no job number was stated
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Textured coating on the annexe ceiling, sound, no damage. Suspect, condition
+          good. No samples, no photos, that is the lot.
+        expect:
+          fields:
+            job_address: 41 Croydale Street, side annexe
+            date: April 30, 2027
+            technician: Petra Hollis
+            inspection_type: Asbestos
+          tolerated_fields: [missing_info, flags_for_office_review, technician_summary]
+          findings:
+            - location_area: Annexe ceiling
+              material_condition: Textured coating, sound, no damage
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 41 Croydale Street
+            - item: date
+              state: satisfied
+              evidence_contains: April 30
+            - item: technician
+              state: satisfied
+              evidence_contains: Petra Hollis
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          forbidden_facts:
+            - field: samples
+              reason: technician explicitly took no samples
+              forbidden_values: ["ceiling"]
+            - field: photos
+              reason: technician explicitly took no photos
+              forbidden_values: ["img"]
+          follow_up:
+            needed: false
+          status: ready_for_review

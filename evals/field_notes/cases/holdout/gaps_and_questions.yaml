@@ -1,0 +1,369 @@
+# Held out for final selection only. Critical gaps, single-question selection, and
+# follow-up replies.
+cases:
+  - case_id: fn-hold-missing-001
+    split: holdout
+    category: missing_critical
+    tags: [no_date, inferable_type]
+    description: Date missing; inspection type must be inferred from mold-specific findings.
+    turns:
+      - index: 1
+        transcript: >-
+          This is Xiomara Beltran at 77 Pikesley Road, the basement unit. Client is
+          Stonegate Residential.
+        expect:
+          fields:
+            job_address: 77 Pikesley Road, basement unit
+            client: Stonegate Residential
+            technician: Xiomara Beltran
+          critical_gaps: [date, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 77 Pikesley Road
+            - item: date
+              state: missing
+            - item: technician
+              state: satisfied
+              evidence_contains: Xiomara Beltran
+            - item: inspection_type
+              state: missing
+          follow_up:
+            needed: true
+            target: date
+            topic: date of the inspection
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          Visible black growth across the bedroom external wall, moisture meter is soaking
+          wet at skirting level, strong musty odour. Confirmed, damaged.
+        expect:
+          fields:
+            job_address: 77 Pikesley Road, basement unit
+            client: Stonegate Residential
+            technician: Xiomara Beltran
+            inspection_type: Mold
+          critical_gaps: [date]
+          findings:
+            - location_area: Bedroom external wall
+              material_condition: Visible black growth, saturated at skirting level, musty odour
+              suspect_status: Confirmed
+              condition: Damaged
+          preserved_fields: [job_address, client, technician]
+          permissible_inferences:
+            - field: inspection_type
+              allowed_values: [Mold]
+              rationale: visible growth, moisture readings and musty odour are mold-specific
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 77 Pikesley Road
+            - item: date
+              state: missing
+            - item: technician
+              state: satisfied
+              evidence_contains: Xiomara Beltran
+            - item: inspection_type
+              state: inferred
+              evidence_contains: visible black growth
+          forbidden_facts:
+            - field: date
+              reason: still unstated
+          follow_up:
+            needed: true
+            target: date
+            topic: date of the inspection
+          status: need_more_info
+
+  - case_id: fn-hold-missing-002
+    split: holdout
+    category: missing_critical
+    tags: [no_address, landmark_only]
+    description: A landmark description is not an address.
+    turns:
+      - index: 1
+        transcript: >-
+          Pre-demolition survey, May 12 2027, technician Gustaf Lindmark, client Brightspar
+          Contracting. I am at the old dairy building behind the retail park.
+        expect:
+          fields:
+            client: Brightspar Contracting
+            date: May 12, 2027
+            technician: Gustaf Lindmark
+            inspection_type: Pre-Demo
+          tolerated_fields: [missing_info, general_condition_notes]
+          critical_gaps: [job_address]
+          checklist:
+            - item: job_address
+              state: missing
+            - item: date
+              state: satisfied
+              evidence_contains: May 12
+            - item: technician
+              state: satisfied
+              evidence_contains: Gustaf Lindmark
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Pre-demolition survey
+          forbidden_facts:
+            - field: job_address
+              reason: a landmark description is not a street address
+              forbidden_values: ["retail park"]
+          follow_up:
+            needed: true
+            target: job_address
+            topic: street address of the dairy building
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          Roof sheets are corrugated cement, weathered but whole. Suspect, condition good.
+        expect:
+          fields:
+            client: Brightspar Contracting
+            date: May 12, 2027
+            technician: Gustaf Lindmark
+            inspection_type: Pre-Demo
+          tolerated_fields: [missing_info, general_condition_notes]
+          critical_gaps: [job_address]
+          findings:
+            - location_area: Roof
+              material_condition: Corrugated cement sheets, weathered but whole
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: missing
+            - item: date
+              state: satisfied
+              evidence_contains: May 12
+            - item: technician
+              state: satisfied
+              evidence_contains: Gustaf Lindmark
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Pre-demolition survey
+          follow_up:
+            needed: true
+            target: job_address
+            topic: street address of the dairy building
+          status: need_more_info
+
+  - case_id: fn-hold-followup-001
+    split: holdout
+    category: follow_up_reply
+    tags: [type_reply]
+    description: The reply names the inspection type and nothing else changes.
+    turns:
+      - index: 1
+        transcript: >-
+          On site at 214 Fernlow Street, top floor flat. Technician Hattie Marsden,
+          June 6 2027, client Dovewell Property. Walked the whole flat, everything is
+          sound, nothing damaged, I am not flagging any material yet.
+        expect:
+          fields:
+            job_address: 214 Fernlow Street, top floor flat
+            client: Dovewell Property
+            date: June 6, 2027
+            technician: Hattie Marsden
+          tolerated_fields: [areas_accessed, general_condition_notes]
+          critical_gaps: [inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 214 Fernlow Street
+            - item: date
+              state: satisfied
+              evidence_contains: June 6
+            - item: technician
+              state: satisfied
+              evidence_contains: Hattie Marsden
+            - item: inspection_type
+              state: missing
+          forbidden_facts:
+            - field: inspection_type
+              reason: nothing stated indicates a discipline
+              forbidden_values: [Asbestos, Mold, Lead, PCB, IAQ, Pre-Demo]
+          follow_up:
+            needed: true
+            target: inspection_type
+            topic: type of inspection this is
+          status: need_more_info
+      - index: 2
+        transcript: It is a lead job, sorry, refurb clearance for the council.
+        expect:
+          fields:
+            job_address: 214 Fernlow Street, top floor flat
+            client: Dovewell Property
+            date: June 6, 2027
+            technician: Hattie Marsden
+            inspection_type: Lead
+          tolerated_fields: [areas_accessed, general_condition_notes, technician_summary]
+          preserved_fields: [job_address, client, date, technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 214 Fernlow Street
+            - item: date
+              state: satisfied
+              evidence_contains: June 6
+            - item: technician
+              state: satisfied
+              evidence_contains: Hattie Marsden
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: It is a lead job
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-hold-premature-001
+    split: holdout
+    category: premature_finalization
+    tags: [looks_good, gap_remains]
+    description: "\"Looks good\" arrives while the technician is still unnamed."
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos inspection at 5 Kelvinside Terrace, the top two floors. July 19 2027,
+          client Ashlow Trust, job PT-5577. Ceiling coating in the stairwell is patchy,
+          suspect, damaged.
+        expect:
+          fields:
+            job_address: 5 Kelvinside Terrace, top two floors
+            job_number: PT-5577
+            client: Ashlow Trust
+            date: July 19, 2027
+            inspection_type: Asbestos
+          critical_gaps: [technician]
+          findings:
+            - location_area: Stairwell ceiling
+              material_condition: Patchy ceiling coating
+              suspect_status: Suspect
+              condition: Damaged
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 5 Kelvinside Terrace
+            - item: date
+              state: satisfied
+              evidence_contains: July 19
+            - item: technician
+              state: missing
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          follow_up:
+            needed: true
+            target: technician
+            topic: technician on site
+          status: need_more_info
+      - index: 2
+        transcript: Looks good to me, that is the report done, push it through.
+        expect:
+          fields:
+            job_address: 5 Kelvinside Terrace, top two floors
+            job_number: PT-5577
+            client: Ashlow Trust
+            date: July 19, 2027
+            inspection_type: Asbestos
+          critical_gaps: [technician]
+          findings:
+            - location_area: Stairwell ceiling
+              material_condition: Patchy ceiling coating
+              suspect_status: Suspect
+              condition: Damaged
+          preserved_fields: [job_address, job_number, client, date, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 5 Kelvinside Terrace
+            - item: date
+              state: satisfied
+              evidence_contains: July 19
+            - item: technician
+              state: missing
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          forbidden_facts:
+            - field: technician
+              reason: nobody has been named on either turn
+          follow_up:
+            needed: true
+            target: technician
+            topic: technician on site
+          status: need_more_info
+          premature_finalization: true
+
+  - case_id: fn-hold-premature-002
+    split: holdout
+    category: premature_finalization
+    tags: [complete_note, finalization_allowed]
+    description: Complete note closed out cleanly; no question may appear.
+    turns:
+      - index: 1
+        transcript: >-
+          Mold assessment at 62 Aldergate Lane, rear kitchen. Technician Nils Bergqvist,
+          August 25 2027, client Coppice Court Management. Ceiling above the range is
+          stained and soft, confirmed, damaged.
+        expect:
+          fields:
+            job_address: 62 Aldergate Lane, rear kitchen
+            client: Coppice Court Management
+            date: August 25, 2027
+            technician: Nils Bergqvist
+            inspection_type: Mold
+          findings:
+            - location_area: Kitchen ceiling above the range
+              material_condition: Stained and soft
+              suspect_status: Confirmed
+              condition: Damaged
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 62 Aldergate Lane
+            - item: date
+              state: satisfied
+              evidence_contains: August 25
+            - item: technician
+              state: satisfied
+              evidence_contains: Nils Bergqvist
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold assessment
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: That is all correct, we are finished here.
+        expect:
+          fields:
+            job_address: 62 Aldergate Lane, rear kitchen
+            client: Coppice Court Management
+            date: August 25, 2027
+            technician: Nils Bergqvist
+            inspection_type: Mold
+          findings:
+            - location_area: Kitchen ceiling above the range
+              material_condition: Stained and soft
+              suspect_status: Confirmed
+              condition: Damaged
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 62 Aldergate Lane
+            - item: date
+              state: satisfied
+              evidence_contains: August 25
+            - item: technician
+              state: satisfied
+              evidence_contains: Nils Bergqvist
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold assessment
+          follow_up:
+            needed: false
+          status: ready_for_review
+          premature_finalization: true

@@ -1,0 +1,330 @@
+# The technician corrects something already captured. The corrected field must be
+# overwritten and everything else must survive untouched.
+cases:
+  - case_id: fn-dev-correction-001
+    split: dev
+    category: correction
+    tags: [address_correction]
+    description: Street number corrected on turn two; all other fields preserved.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos inspection at 220 Fallowfield Road. Technician Greta Nyholm,
+          July 8 2025, client Amberline Trust, job PT-9004.
+        expect:
+          fields:
+            job_address: 220 Fallowfield Road
+            job_number: PT-9004
+            client: Amberline Trust
+            date: July 8, 2025
+            technician: Greta Nyholm
+            inspection_type: Asbestos
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 220 Fallowfield Road
+            - item: date
+              state: satisfied
+              evidence_contains: July 8
+            - item: technician
+              state: satisfied
+              evidence_contains: Greta Nyholm
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Correction on the address, it is 202 Fallowfield Road, not 220. I read the sign
+          wrong on the way in. Everything else stands.
+        expect:
+          fields:
+            job_address: 202 Fallowfield Road
+            job_number: PT-9004
+            client: Amberline Trust
+            date: July 8, 2025
+            technician: Greta Nyholm
+            inspection_type: Asbestos
+          preserved_fields: [job_number, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 202 Fallowfield Road
+            - item: date
+              state: satisfied
+              evidence_contains: July 8
+            - item: technician
+              state: satisfied
+              evidence_contains: Greta Nyholm
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          forbidden_facts:
+            - field: job_address
+              reason: the superseded street number must not remain
+              forbidden_values: ["220 Fallowfield"]
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-correction-002
+    split: dev
+    category: correction
+    tags: [finding_correction, condition]
+    description: A finding's condition is corrected without losing the other findings.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey, 47 Coldharbour Lane, unit A. Idris Vale, August 2 2025.
+          Duct wrap in the ceiling plenum is intact, suspect, condition good. Floor tile
+          in the entry is cracked in a few spots, suspect, damaged.
+        expect:
+          fields:
+            job_address: 47 Coldharbour Lane, unit A
+            date: August 2, 2025
+            technician: Idris Vale
+            inspection_type: Asbestos
+          findings:
+            - location_area: Ceiling plenum
+              material_condition: Duct wrap, intact
+              suspect_status: Suspect
+              condition: Good
+            - location_area: Entry
+              material_condition: Floor tile cracked in a few spots
+              suspect_status: Suspect
+              condition: Damaged
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 47 Coldharbour Lane
+            - item: date
+              state: satisfied
+              evidence_contains: August 2
+            - item: technician
+              state: satisfied
+              evidence_contains: Idris Vale
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Go back on the duct wrap, I looked again with a light and it is torn open along
+          the top seam. That one is friable, not good.
+        expect:
+          fields:
+            job_address: 47 Coldharbour Lane, unit A
+            date: August 2, 2025
+            technician: Idris Vale
+            inspection_type: Asbestos
+          findings:
+            - location_area: Ceiling plenum
+              material_condition: Duct wrap torn open along the top seam
+              suspect_status: Suspect
+              condition: Friable
+            - location_area: Entry
+              material_condition: Floor tile cracked in a few spots
+              suspect_status: Suspect
+              condition: Damaged
+          preserved_fields: [job_address, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 47 Coldharbour Lane
+            - item: date
+              state: satisfied
+              evidence_contains: August 2
+            - item: technician
+              state: satisfied
+              evidence_contains: Idris Vale
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-correction-003
+    split: dev
+    category: correction
+    tags: [inspection_type_correction]
+    description: Scope corrected from mold to asbestos; the corrected value must win.
+    turns:
+      - index: 1
+        transcript: >-
+          Mold inspection at 3 Kettleby Close, the garden level flat. Tamsin Ojo,
+          September 15 2025, client Larkhill Residential.
+        expect:
+          fields:
+            job_address: 3 Kettleby Close, garden level flat
+            client: Larkhill Residential
+            date: September 15, 2025
+            technician: Tamsin Ojo
+            inspection_type: Mold
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 3 Kettleby Close
+            - item: date
+              state: satisfied
+              evidence_contains: September 15
+            - item: technician
+              state: satisfied
+              evidence_contains: Tamsin Ojo
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Actually scratch the mold scope, dispatch had it wrong, the work order is an
+          asbestos survey ahead of the bathroom refit. Same address, same day.
+        expect:
+          fields:
+            job_address: 3 Kettleby Close, garden level flat
+            client: Larkhill Residential
+            date: September 15, 2025
+            technician: Tamsin Ojo
+            inspection_type: Asbestos
+          preserved_fields: [job_address, client, date, technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 3 Kettleby Close
+            - item: date
+              state: satisfied
+              evidence_contains: September 15
+            - item: technician
+              state: satisfied
+              evidence_contains: Tamsin Ojo
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 3
+        transcript: >-
+          Bathroom floor has two layers, top is newer vinyl, underneath is nine by nine
+          tile with black mastic. Suspect, condition good.
+        expect:
+          fields:
+            job_address: 3 Kettleby Close, garden level flat
+            client: Larkhill Residential
+            date: September 15, 2025
+            technician: Tamsin Ojo
+            inspection_type: Asbestos
+          findings:
+            - location_area: Bathroom floor
+              material_condition: Newer vinyl over 9x9 tile with black mastic
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 3 Kettleby Close
+            - item: date
+              state: satisfied
+              evidence_contains: September 15
+            - item: technician
+              state: satisfied
+              evidence_contains: Tamsin Ojo
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: asbestos survey
+          forbidden_facts:
+            - field: inspection_type
+              reason: the mold scope was explicitly retracted
+              forbidden_values: [Mold]
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-correction-004
+    split: dev
+    category: correction
+    tags: [sample_correction, retraction]
+    description: A sample id is corrected and a second sample is retracted entirely.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey at 92 Pentland Rise. Nkechi Abara, October 6 2025, job PT-9310.
+          Pulled two bulk samples, B-1 from the laundry ceiling texture and B-2 from the
+          garage wallboard joint compound. Both to Cascade Analytical.
+        expect:
+          fields:
+            job_address: 92 Pentland Rise
+            job_number: PT-9310
+            date: October 6, 2025
+            technician: Nkechi Abara
+            inspection_type: Asbestos
+          samples:
+            - sample_id: B-1
+              location: Laundry ceiling texture
+              material_type: Bulk
+              sent_to_lab: Y, Cascade Analytical
+            - sample_id: B-2
+              location: Garage wallboard joint compound
+              material_type: Bulk
+              sent_to_lab: Y, Cascade Analytical
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 92 Pentland Rise
+            - item: date
+              state: satisfied
+              evidence_contains: October 6
+            - item: technician
+              state: satisfied
+              evidence_contains: Nkechi Abara
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Two things. The laundry sample is labelled B-4 on the bag, not B-1. And drop the
+          garage sample, I bagged it but the homeowner asked me not to take it, so it went
+          back on the shelf.
+        expect:
+          fields:
+            job_address: 92 Pentland Rise
+            job_number: PT-9310
+            date: October 6, 2025
+            technician: Nkechi Abara
+            inspection_type: Asbestos
+          samples:
+            - sample_id: B-4
+              location: Laundry ceiling texture
+              material_type: Bulk
+              sent_to_lab: Y, Cascade Analytical
+          preserved_fields: [job_address, job_number, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 92 Pentland Rise
+            - item: date
+              state: satisfied
+              evidence_contains: October 6
+            - item: technician
+              state: satisfied
+              evidence_contains: Nkechi Abara
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          forbidden_facts:
+            - field: samples
+              reason: the garage sample was retracted and the old laundry id superseded
+              forbidden_values: ["garage", "B-1"]
+          follow_up:
+            needed: false
+          status: ready_for_review

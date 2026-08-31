@@ -24,7 +24,7 @@ cp .env.example .env
 ```bash
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy src tests
+uv run mypy src tests evals
 uv run pytest
 ```
 
@@ -43,6 +43,10 @@ docker compose up --build
 ```
 
 The health endpoint is available at `http://localhost:8000/healthz`.
+
+Model-selection evaluation tooling for field-note extraction lives in
+[`evals/field_notes`](evals/field_notes/README.md). It is isolated from the product:
+it imports no `gvas` module, reaches no network, and selects no provider.
 
 ## Slack Request URL adapter
 

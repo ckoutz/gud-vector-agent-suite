@@ -1,0 +1,302 @@
+# Optional fields are absent and must never trigger a follow-up. These cases fail a
+# candidate that chases samples, photos, site-overview detail or summary text.
+cases:
+  - case_id: fn-dev-optional-001
+    split: dev
+    category: optional_absent
+    tags: [asbestos, no_samples]
+    description: Complete critical items, no samples, no photos, no summary. No question allowed.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos inspection, 55 Denbigh Street rear unit. Anneke Post, date is
+          May 6 2025.
+        expect:
+          fields:
+            job_address: 55 Denbigh Street, rear unit
+            date: May 6, 2025
+            technician: Anneke Post
+            inspection_type: Asbestos
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 55 Denbigh Street
+            - item: date
+              state: satisfied
+              evidence_contains: May 6
+            - item: technician
+              state: satisfied
+              evidence_contains: Anneke Post
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          forbidden_facts:
+            - field: job_number
+              reason: never stated
+            - field: client
+              reason: never stated
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Vinyl sheet flooring in the kitchen, seams lifting near the sink. Suspect,
+          damaged. No samples today, I did not have the kit with me, and I did not take
+          photos.
+        expect:
+          fields:
+            job_address: 55 Denbigh Street, rear unit
+            date: May 6, 2025
+            technician: Anneke Post
+            inspection_type: Asbestos
+          tolerated_fields: [missing_info, flags_for_office_review, recommended_next_steps]
+          findings:
+            - location_area: Kitchen
+              material_condition: Vinyl sheet flooring, seams lifting near the sink
+              suspect_status: Suspect
+              condition: Damaged
+          preserved_fields: [job_address, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 55 Denbigh Street
+            - item: date
+              state: satisfied
+              evidence_contains: May 6
+            - item: technician
+              state: satisfied
+              evidence_contains: Anneke Post
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          forbidden_facts:
+            - field: samples
+              reason: technician explicitly collected no samples
+              forbidden_values: ["kitchen"]
+            - field: photos
+              reason: technician explicitly took no photos
+              forbidden_values: ["img"]
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-optional-002
+    split: dev
+    category: optional_absent
+    tags: [iaq, office]
+    description: IAQ check with no site-overview detail and no findings; still ready.
+    turns:
+      - index: 1
+        transcript: >-
+          Indoor air quality check at 2 Halloway Plaza, twelfth floor. Ruben Castellanos,
+          June 18 2025, client Northsound Media.
+        expect:
+          fields:
+            job_address: 2 Halloway Plaza, twelfth floor
+            client: Northsound Media
+            date: June 18, 2025
+            technician: Ruben Castellanos
+            inspection_type: IAQ
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 2 Halloway Plaza
+            - item: date
+              state: satisfied
+              evidence_contains: June 18
+            - item: technician
+              state: satisfied
+              evidence_contains: Ruben Castellanos
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Indoor air quality check
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Ran the meter at four stations on the open floor. Everything reads normal,
+          nothing to report, no visible issues anywhere. That is the whole visit.
+        expect:
+          fields:
+            job_address: 2 Halloway Plaza, twelfth floor
+            client: Northsound Media
+            date: June 18, 2025
+            technician: Ruben Castellanos
+            inspection_type: IAQ
+          tolerated_fields:
+            [general_condition_notes, areas_accessed, technician_summary, recommended_next_steps]
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 2 Halloway Plaza
+            - item: date
+              state: satisfied
+              evidence_contains: June 18
+            - item: technician
+              state: satisfied
+              evidence_contains: Ruben Castellanos
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Indoor air quality check
+          forbidden_facts:
+            - field: findings
+              reason: technician reported nothing of note
+              forbidden_values: ["suspect", "damaged"]
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-optional-003
+    split: dev
+    category: optional_absent
+    tags: [pcb, utility]
+    description: PCB inspection where the client contact is unknown; optional, so no question.
+    turns:
+      - index: 1
+        transcript: >-
+          PCB inspection, Substation 14 access yard, 900 Ferrier Road. Tech is
+          Yusuf Adeyemi, July 2 2025. I do not know who the client of record is on this
+          one, the work order came through dispatch.
+        expect:
+          fields:
+            job_address: 900 Ferrier Road, Substation 14 access yard
+            date: July 2, 2025
+            technician: Yusuf Adeyemi
+            inspection_type: PCB
+          tolerated_fields: [missing_info, flags_for_office_review]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 900 Ferrier Road
+            - item: date
+              state: satisfied
+              evidence_contains: July 2
+            - item: technician
+              state: satisfied
+              evidence_contains: Yusuf Adeyemi
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: PCB inspection
+          forbidden_facts:
+            - field: client
+              reason: technician explicitly does not know the client of record
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Two pad-mounted transformers, both with legible nameplates, no staining on the
+          pads. Not suspect, condition good. That is all I have.
+        expect:
+          fields:
+            job_address: 900 Ferrier Road, Substation 14 access yard
+            date: July 2, 2025
+            technician: Yusuf Adeyemi
+            inspection_type: PCB
+          tolerated_fields: [missing_info, flags_for_office_review, technician_summary]
+          findings:
+            - location_area: Access yard, two pad-mounted transformers
+              material_condition: Legible nameplates, no staining on the pads
+              suspect_status: Not Suspect
+              condition: Good
+          preserved_fields: [job_address, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 900 Ferrier Road
+            - item: date
+              state: satisfied
+              evidence_contains: July 2
+            - item: technician
+              state: satisfied
+              evidence_contains: Yusuf Adeyemi
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: PCB inspection
+          forbidden_facts:
+            - field: client
+              reason: technician explicitly does not know the client of record
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-optional-004
+    split: dev
+    category: optional_absent
+    tags: [asbestos, samples_pending]
+    description: Samples collected but lab not chosen; the missing lab is optional detail.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey at 61 Windemere Court, unit 3. Technician Lorna Pike,
+          August 14 2025, client is Cobbleside Management, job PT-7314.
+        expect:
+          fields:
+            job_address: 61 Windemere Court, unit 3
+            job_number: PT-7314
+            client: Cobbleside Management
+            date: August 14, 2025
+            technician: Lorna Pike
+            inspection_type: Asbestos
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 61 Windemere Court
+            - item: date
+              state: satisfied
+              evidence_contains: August 14
+            - item: technician
+              state: satisfied
+              evidence_contains: Lorna Pike
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Textured ceiling in the living room, hairline cracks, suspect, condition good.
+          Pulled one bulk sample, A-1, from the living room ceiling. Office has not told
+          me which lab this job goes to yet.
+        expect:
+          fields:
+            job_address: 61 Windemere Court, unit 3
+            job_number: PT-7314
+            client: Cobbleside Management
+            date: August 14, 2025
+            technician: Lorna Pike
+            inspection_type: Asbestos
+          tolerated_fields: [missing_info, flags_for_office_review]
+          findings:
+            - location_area: Living room ceiling
+              material_condition: Textured ceiling with hairline cracks
+              suspect_status: Suspect
+              condition: Good
+          samples:
+            - sample_id: A-1
+              location: Living room ceiling
+              material_type: Bulk
+          preserved_fields: [job_address, job_number, client, date, technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 61 Windemere Court
+            - item: date
+              state: satisfied
+              evidence_contains: August 14
+            - item: technician
+              state: satisfied
+              evidence_contains: Lorna Pike
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          forbidden_facts:
+            - field: samples
+              reason: no laboratory has been assigned to this job
+              forbidden_values: ["cascade", "abc labs"]
+          follow_up:
+            needed: false
+          status: ready_for_review
