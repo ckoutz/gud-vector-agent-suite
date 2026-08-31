@@ -163,6 +163,7 @@ class CustomerRecipient(DomainModel):
 class CustomerDeliveryRequest(DomainModel):
     business_id: BusinessId
     recipient: CustomerRecipient
+    idempotency_key: str = Field(min_length=1)
     subject: str | None = None
     body_text: str = Field(min_length=1)
     links: tuple[str, ...] = Field(default_factory=tuple)

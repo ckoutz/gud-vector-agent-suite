@@ -12,6 +12,7 @@ from gvas.domain.messages import (
     OutboundOwnerMessage,
     TranscriptResult,
 )
+from gvas.domain.quotes import QuoteDraftProposal, QuoteDraftRequest
 
 
 class IntentResolutionPort(Protocol):
@@ -34,3 +35,7 @@ class TranscriptionPort(Protocol):
 
 class CustomerQuoteDeliveryPort(Protocol):
     async def deliver(self, request: CustomerDeliveryRequest) -> DeliveryReceipt: ...
+
+
+class QuoteDraftingPort(Protocol):
+    async def draft(self, request: QuoteDraftRequest) -> QuoteDraftProposal: ...

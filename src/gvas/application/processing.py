@@ -125,7 +125,12 @@ class ProcessOwnerMessageService:
 
         try:
             result = await handler.handle(
-                WorkflowContext(run_id=claim.run_id, intent=intent, message=record.message)
+                WorkflowContext(
+                    run_id=claim.run_id,
+                    intent=intent,
+                    message=record.message,
+                    conversation_id=record.conversation_id,
+                )
             )
         except Exception as error:
             detail = repr(error)

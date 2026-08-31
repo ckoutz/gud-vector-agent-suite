@@ -8,6 +8,7 @@ MessageId = NewType("MessageId", UUID)
 WorkflowRunId = NewType("WorkflowRunId", UUID)
 OutboxCommandId = NewType("OutboxCommandId", UUID)
 EndpointId = NewType("EndpointId", UUID)
+QuoteId = NewType("QuoteId", UUID)
 MessageKey = NewType("MessageKey", str)
 WorkflowIntent = NewType("WorkflowIntent", str)
 
