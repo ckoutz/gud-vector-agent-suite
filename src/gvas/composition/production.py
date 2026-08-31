@@ -66,6 +66,12 @@ def load_production_settings() -> ProductionSettings:
     missing = [
         name
         for name, present in (
+            # The localhost default exists for development; a deployed process
+            # that inherited it would quietly run against nothing.
+            (
+                "GVAS_DATABASE_URL or DATABASE_URL",
+                "database_url" in settings.app.model_fields_set and bool(settings.app.database_url),
+            ),
             ("GVAS_SLACK_SIGNING_SECRET", bool(settings.slack.signing_secret)),
             ("GVAS_SLACK_BOT_TOKEN", bool(settings.slack.bot_token)),
             ("GVAS_SLACK_INSTALLATIONS", bool(settings.slack.installations)),

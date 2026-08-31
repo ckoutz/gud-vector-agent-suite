@@ -4,23 +4,44 @@ from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ASYNC_DRIVER = "postgresql+asyncpg"
-# asyncpg configures TLS through connect arguments, not the libpq query string.
-LIBPQ_ONLY_QUERY_KEYS = frozenset({"sslmode", "channel_binding"})
+# SQLAlchemy hands the query string to asyncpg.connect() as keyword arguments.
+# asyncpg spells libpq's sslmode as ``ssl`` and accepts the same values, so the
+# TLS requirement survives the rewrite; libpq options asyncpg has no keyword for
+# would raise TypeError at connect time and are dropped.
+SSL_MODE_KEY = "sslmode"
+ASYNCPG_SSL_KEY = "ssl"
+SSL_MODES = frozenset({"disable", "allow", "prefer", "require", "verify-ca", "verify-full"})
+UNSUPPORTED_QUERY_KEYS = frozenset({"channel_binding", "target_session_attrs"})
+
+
+class DatabaseUrlError(ValueError):
+    """Raised when a configured database URL cannot be used safely."""
+
+
+def _normalized_pair(key: str, value: str) -> tuple[str, str]:
+    if key != SSL_MODE_KEY:
+        return key, value
+    if value not in SSL_MODES:
+        raise DatabaseUrlError(f"unsupported sslmode '{value}' in database URL")
+    return ASYNCPG_SSL_KEY, value
 
 
 def normalize_async_database_url(url: str) -> str:
     """Accept a managed-provider libpq URL and return a SQLAlchemy asyncpg URL.
 
-    Railway hands out ``postgresql://`` URLs that may carry libpq-only query
+    Railway hands out ``postgresql://`` URLs that may carry libpq query
     parameters. Rewriting them here keeps the deployment from having to
-    maintain a second, hand-edited copy of the same credential.
+    maintain a second, hand-edited copy of the same credential, and keeps a
+    requested TLS mode in force instead of silently downgrading it.
     """
 
     parts = urlsplit(url)
     if parts.scheme not in {"postgres", "postgresql", ASYNC_DRIVER}:
         return url
     query = [
-        (key, value) for key, value in parse_qsl(parts.query) if key not in LIBPQ_ONLY_QUERY_KEYS
+        _normalized_pair(key, value)
+        for key, value in parse_qsl(parts.query)
+        if key not in UNSUPPORTED_QUERY_KEYS
     ]
     return urlunsplit((ASYNC_DRIVER, parts.netloc, parts.path, urlencode(query), parts.fragment))
 

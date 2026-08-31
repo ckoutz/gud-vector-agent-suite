@@ -63,6 +63,31 @@ def test_startup_rejects_a_partially_configured_deployment(
 
 
 @pytest.mark.usefixtures("production_environment")
+def test_startup_rejects_a_deployment_that_inherited_the_development_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The localhost default is a development convenience, not a deployment."""
+
+    monkeypatch.delenv("GVAS_DATABASE_URL")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    with pytest.raises(ProductionConfigurationError) as error:
+        load_production_settings()
+
+    assert "DATABASE_URL" in str(error.value)
+
+
+@pytest.mark.usefixtures("production_environment")
+def test_startup_rejects_an_empty_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GVAS_DATABASE_URL", "")
+
+    with pytest.raises(ProductionConfigurationError) as error:
+        load_production_settings()
+
+    assert "DATABASE_URL" in str(error.value)
+
+
+@pytest.mark.usefixtures("production_environment")
 def test_production_app_serves_the_slack_request_url_and_health_check() -> None:
     runtime = build_production_runtime(load_production_settings())
 

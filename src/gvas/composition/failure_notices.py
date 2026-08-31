@@ -34,14 +34,48 @@ from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE
 from gvas.domain.reporting import FIELD_NOTES_REPORT_COMMAND_TYPE
 from gvas.domain.repositories import UnitOfWork
 
-RETRY_GUIDANCE: Final = "Send the request again in this thread. Reply here if it keeps failing."
+# Guidance is per command type because the recoverable path differs, and a
+# notice that advertises an unrecoverable one is worse than no notice. An
+# approved quote does not re-enqueue its delivery, and a case whose audio never
+# transcribed keeps an incomplete canonical transcript, so neither is retryable
+# by repeating the message; both need a fresh case in a new thread. Intake,
+# review and report work, by contrast, is re-enqueued by the next note in the
+# same thread.
+RESEND_IN_THREAD: Final = "Send the message again in this thread."
+NEW_NOTE_IN_THREAD: Final = (
+    "Add the note again in this thread; that starts the review over. "
+    "Send 'close notes' first if you would rather start the case fresh."
+)
+NEW_QUOTE_IN_NEW_THREAD: Final = (
+    "This quote will not send itself again. Start a new quote in a new thread."
+)
+RESTART_NOTES_IN_NEW_THREAD: Final = (
+    "That recording is not part of these notes and the case cannot complete "
+    "without it. Send 'close notes' here, then start the notes again in a new "
+    "thread and re-upload the recording."
+)
 
-FAILURE_SUMMARIES: Final[dict[str, str]] = {
-    OWNER_MESSAGE_PROCESS_COMMAND_TYPE: "That message could not be processed.",
-    QUOTE_DELIVERY_COMMAND_TYPE: "The approved quote could not be emailed to the customer.",
-    FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE: "A voice note could not be transcribed.",
-    FIELD_NOTE_REVIEW_COMMAND_TYPE: "These field notes could not be reviewed.",
-    FIELD_NOTES_REPORT_COMMAND_TYPE: "The field-notes report could not be generated.",
+FAILURE_GUIDANCE: Final[dict[str, tuple[str, str]]] = {
+    OWNER_MESSAGE_PROCESS_COMMAND_TYPE: (
+        "That message could not be processed.",
+        RESEND_IN_THREAD,
+    ),
+    QUOTE_DELIVERY_COMMAND_TYPE: (
+        "The approved quote could not be emailed to the customer.",
+        NEW_QUOTE_IN_NEW_THREAD,
+    ),
+    FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE: (
+        "A voice note could not be transcribed.",
+        RESTART_NOTES_IN_NEW_THREAD,
+    ),
+    FIELD_NOTE_REVIEW_COMMAND_TYPE: (
+        "These field notes could not be reviewed.",
+        NEW_NOTE_IN_THREAD,
+    ),
+    FIELD_NOTES_REPORT_COMMAND_TYPE: (
+        "The field-notes report could not be generated.",
+        NEW_NOTE_IN_THREAD,
+    ),
 }
 
 
@@ -74,16 +108,17 @@ class NotifyExhaustedCommandService:
 
     async def notify(self, record: OutboxRecord) -> MessageId | None:
         command = record.command
-        summary = FAILURE_SUMMARIES.get(command.command_type)
-        if summary is None or command.command_type == OWNER_REPLY_COMMAND_TYPE:
+        guidance = FAILURE_GUIDANCE.get(command.command_type)
+        if guidance is None or command.command_type == OWNER_REPLY_COMMAND_TYPE:
             return None
+        summary, recovery = guidance
         anchor = await self._anchor(command)
         if anchor is None:
             return None
         message = OutboundOwnerMessage(
             business_id=anchor.business_id,
             conversation_ref=anchor.conversation_ref,
-            parts=(TextPart(text=f"{summary}\n{RETRY_GUIDANCE}"),),
+            parts=(TextPart(text=f"{summary}\n{recovery}"),),
             correlation_id=f"failure_notice:{command.command_id}",
         )
         async with self._messages() as unit_of_work:
