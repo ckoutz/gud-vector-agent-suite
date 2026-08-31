@@ -52,7 +52,7 @@ from gvas.domain.messages import (
 )
 from gvas.domain.outbox import OutboxCommand, OutboxRecord
 from gvas.domain.repositories import UnitOfWork
-from gvas.domain.templates import IndustryKey, TemplateSetKey
+from gvas.domain.templates import IndustryKey, ReportTemplateSection, TemplateSetKey
 from gvas.infrastructure.completeness_models import FieldNoteFollowUpQuestion
 from gvas.infrastructure.field_note_models import FieldNoteCase as FieldNoteCaseRow
 from gvas.infrastructure.field_note_models import FieldNotePartRow
@@ -163,6 +163,14 @@ async def configure_checklist(application: Application, business_id: BusinessId)
             version=definition.version,
             items=definition.items,
             report_template_key="field_notes_report",
+            report_title="Field Notes Report",
+            report_sections=(
+                ReportTemplateSection(
+                    section_key="site_and_work",
+                    heading="Site and Work",
+                    checklist_item_keys=tuple(item.key for item in definition.items),
+                ),
+            ),
         ),
     )
 

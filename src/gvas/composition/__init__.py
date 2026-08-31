@@ -168,7 +168,9 @@ def build_application(
     snapshots = BuildFieldNoteCaseSnapshotService(
         completeness_unit_of_work_factory, ports.checklist_evidence, template_resolver
     )
-    reports = GenerateFieldNotesReportService(report_unit_of_work_factory, ports.report_generation)
+    reports = GenerateFieldNotesReportService(
+        report_unit_of_work_factory, ports.report_generation, template_resolver
+    )
     processing = ProcessOwnerMessageService(unit_of_work_factory, router, resolver)
     owner_replies = DeliverOwnerReplyService(unit_of_work_factory, ports.owner_replies)
     quote_delivery = DeliverApprovedQuoteService(unit_of_work_factory, ports.quote_delivery)

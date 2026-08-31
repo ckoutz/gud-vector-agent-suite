@@ -36,7 +36,7 @@ from gvas.domain.messages import (
     SenderRef,
     TextPart,
 )
-from gvas.domain.templates import IndustryKey, TemplateSetKey
+from gvas.domain.templates import IndustryKey, ReportTemplateSection, TemplateSetKey
 from gvas.infrastructure.completeness_models import (
     FieldNoteFollowUpQuestion,
     FieldNoteReview,
@@ -204,6 +204,14 @@ def industry(definition: CompletenessChecklist) -> IndustryTemplateDefinition:
         version=definition.version,
         items=definition.items,
         report_template_key="configured-report",
+        report_title="Configured report",
+        report_sections=(
+            ReportTemplateSection(
+                section_key="findings",
+                heading="Findings",
+                checklist_item_keys=tuple(item.key for item in definition.items),
+            ),
+        ),
     )
 
 

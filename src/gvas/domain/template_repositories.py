@@ -3,6 +3,8 @@ from typing import Protocol
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.templates import (
     BusinessTemplateProfile,
+    ReportTemplateDefinition,
+    ReportTemplateRef,
     TemplateSet,
     TemplateSetKey,
     TemplateSetRef,
@@ -26,6 +28,14 @@ class TemplateSetRepository(Protocol):
     ) -> TemplateSet | None: ...
 
     async def set_status(self, ref: TemplateSetRef, status: TemplateSetStatus) -> TemplateSet: ...
+
+
+class ReportTemplateDefinitionRepository(Protocol):
+    """Versioned report structure per business; versions are immutable."""
+
+    async def upsert(self, definition: ReportTemplateDefinition) -> None: ...
+
+    async def get(self, ref: ReportTemplateRef) -> ReportTemplateDefinition | None: ...
 
 
 class BusinessTemplateProfileRepository(Protocol):

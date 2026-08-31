@@ -5,6 +5,29 @@
   "version": 1,
   "report_template_key": "landscape_field_notes_report",
   "report_template_version": 1,
+  "report_title": "Landscape Installation Visit Report",
+  "report_sections": [
+    {
+      "section_key": "property_and_crew",
+      "heading": "Property, Work Zone and Crew",
+      "checklist_item_keys": ["property", "crew"]
+    },
+    {
+      "section_key": "installed_work",
+      "heading": "Plantings and Materials Installed",
+      "checklist_item_keys": ["plantings", "materials"]
+    },
+    {
+      "section_key": "irrigation",
+      "heading": "Irrigation Status",
+      "checklist_item_keys": ["irrigation"]
+    },
+    {
+      "section_key": "schedule_impact",
+      "heading": "Weather and Access Delays",
+      "checklist_item_keys": ["weather_delay"]
+    }
+  ],
   "items": [
     {
       "key": "property",

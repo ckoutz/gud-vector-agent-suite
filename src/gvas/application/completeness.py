@@ -30,7 +30,7 @@ from gvas.domain.messages import (
     TextPart,
 )
 from gvas.domain.outbox import owner_reply_command
-from gvas.domain.templates import TemplateResolutionPort
+from gvas.domain.templates import TemplateResolutionPort, TemplateSetRef
 
 
 class CompletenessStatus(StrEnum):
@@ -87,6 +87,28 @@ class FieldNoteCompletenessService:
         self._review_port = review_port
         self._templates = templates
 
+    async def _pin(
+        self,
+        business_id: BusinessId,
+        conversation_id: ConversationId,
+        inbound_message_id: MessageId,
+    ) -> TemplateSetRef:
+        """The case's existing pin, or a freshly resolved one for a first review.
+
+        A case stays open until the owner closes it, so a later transcript
+        revision must keep reporting from the template its first review pinned,
+        even once that version is deprecated and no active version resolves.
+        """
+        async with self._unit_of_work_factory() as unit_of_work:
+            latest = await unit_of_work.field_note_reviews.latest_for_origin(
+                business_id, inbound_message_id
+            )
+            await unit_of_work.commit()
+        pinned = None if latest is None else latest.template_set
+        if pinned is not None:
+            return pinned
+        return await self._templates.resolve_for_new_case(business_id, conversation_id)
+
     async def start_review(
         self,
         business_id: BusinessId,
@@ -95,7 +117,7 @@ class FieldNoteCompletenessService:
         inbound_message_id: MessageId,
         transcript_text: str,
     ) -> CompletenessOutcome:
-        resolved = await self._templates.resolve_for_new_case(business_id, conversation_id)
+        resolved = await self._pin(business_id, conversation_id, inbound_message_id)
         template_set = await self._templates.load(resolved)
         async with self._unit_of_work_factory() as unit_of_work:
             review = await unit_of_work.field_note_reviews.get_or_create(

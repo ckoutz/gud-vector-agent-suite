@@ -7,7 +7,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.application.report_generation import GenerateFieldNotesReportService
-from gvas.domain.identifiers import BusinessId, JsonValue
+from gvas.domain.completeness import ChecklistItemKey
+from gvas.domain.identifiers import BusinessId, ConversationId, JsonValue
 from gvas.domain.reporting import (
     FieldNoteCaseSnapshot,
     FieldNoteCaseStatus,
@@ -24,6 +25,14 @@ from gvas.domain.reporting import (
     field_notes_report_id,
     field_notes_report_version_id,
 )
+from gvas.domain.templates import (
+    ReportTemplateDefinition,
+    ReportTemplateRef,
+    ReportTemplateSection,
+    TemplateSet,
+    TemplateSetRef,
+    UnknownReportTemplateError,
+)
 from gvas.infrastructure.models import (
     Business,
     FieldNoteReport,
@@ -39,6 +48,44 @@ from gvas.infrastructure.reporting_unit_of_work import (
 
 NOW = datetime(2026, 8, 27, 18, 0, tzinfo=UTC)
 STALE_BEFORE = NOW - timedelta(minutes=5)
+REPORT_TEMPLATE_KEY = "inspection_report"
+
+
+def report_template(business_id: BusinessId, version: int = 1) -> ReportTemplateDefinition:
+    return ReportTemplateDefinition(
+        business_id=business_id,
+        report_template_key=REPORT_TEMPLATE_KEY,
+        version=version,
+        title="Inspection Report",
+        sections=(
+            ReportTemplateSection(
+                section_key="observations",
+                heading="Observations",
+                checklist_item_keys=(ChecklistItemKey("safety.panel"),),
+            ),
+        ),
+    )
+
+
+class PinnedTemplates:
+    """Resolves only the pinned report template a case was created against."""
+
+    def __init__(self, *definitions: ReportTemplateDefinition) -> None:
+        self._definitions = {definition.ref: definition for definition in definitions}
+
+    async def resolve_for_new_case(
+        self, business_id: BusinessId, conversation_id: ConversationId
+    ) -> TemplateSetRef:
+        raise NotImplementedError
+
+    async def load(self, ref: TemplateSetRef) -> TemplateSet:
+        raise NotImplementedError
+
+    async def load_report_template(self, ref: ReportTemplateRef) -> ReportTemplateDefinition:
+        definition = self._definitions.get(ref)
+        if definition is None:
+            raise UnknownReportTemplateError(f"{ref.report_template_key} is not configured")
+        return definition
 
 
 class UnitOfWorkTracker:
@@ -115,6 +162,7 @@ def source(
     case_id: UUID | None = None,
     status: FieldNoteCaseStatus = FieldNoteCaseStatus.COMPLETED,
     transcript: str = "Canonical field observation.",
+    report_template_version: int = 1,
 ) -> FieldNoteCaseSnapshot:
     return FieldNoteCaseSnapshot(
         business_id=business_id,
@@ -137,6 +185,8 @@ def source(
                 "answer": "No.",
             },
         ),
+        report_template_key=REPORT_TEMPLATE_KEY,
+        report_template_version=report_template_version,
     )
 
 
@@ -193,6 +243,7 @@ async def test_valid_generation_is_idempotent_and_runs_outside_uow(
     service = GenerateFieldNotesReportService(
         TrackingUnitOfWorkFactory(session_factory, tracker),
         generator,
+        PinnedTemplates(report_template(business_id)),
     )
 
     first = await service.generate(case, now=NOW, stale_before=STALE_BEFORE)
@@ -233,6 +284,7 @@ async def test_incomplete_case_is_rejected_before_persistence_or_generation(
     service = GenerateFieldNotesReportService(
         SqlReportUnitOfWorkFactory(session_factory),
         generator,
+        PinnedTemplates(report_template(business_id)),
     )
 
     with pytest.raises(IncompleteFieldNoteCaseError):
@@ -268,6 +320,7 @@ async def test_malformed_content_is_failed_and_retry_uses_same_version(
     service = GenerateFieldNotesReportService(
         SqlReportUnitOfWorkFactory(session_factory),
         generator,
+        PinnedTemplates(report_template(business_id)),
     )
 
     with pytest.raises(MalformedGeneratedReportError):
@@ -311,6 +364,7 @@ async def test_generation_failure_is_retryable_without_partial_version(
     service = GenerateFieldNotesReportService(
         SqlReportUnitOfWorkFactory(session_factory),
         generator,
+        PinnedTemplates(report_template(business_id)),
     )
 
     with pytest.raises(ReportGenerationFailedError):
@@ -348,6 +402,7 @@ async def test_changed_source_creates_next_version_and_old_source_replays(
     service = GenerateFieldNotesReportService(
         SqlReportUnitOfWorkFactory(session_factory),
         generator,
+        PinnedTemplates(report_template(business_id)),
     )
 
     first = await service.generate(first_source, now=NOW, stale_before=STALE_BEFORE)
@@ -386,6 +441,7 @@ async def test_report_identity_and_reads_are_tenant_isolated(
     service = GenerateFieldNotesReportService(
         SqlReportUnitOfWorkFactory(session_factory),
         generator,
+        PinnedTemplates(report_template(first_business), report_template(second_business)),
     )
 
     first = await service.generate(

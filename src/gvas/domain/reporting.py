@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from gvas.domain.completeness import CompletenessChecklist
 from gvas.domain.identifiers import BusinessId, JsonValue, OutboxCommandId
 from gvas.domain.outbox import OutboxCommand
+from gvas.domain.templates import ReportTemplateDefinition
 
 REPORT_SCHEMA_VERSION: Literal["field-notes-report/v1"] = "field-notes-report/v1"
 _REPORT_NAMESPACE = UUID("7281d38a-7bbb-5d4b-bbf7-adb9de54dcf8")
@@ -161,6 +162,23 @@ class ReportGenerationRequest(ReportDomainModel):
     report_version: int = Field(ge=1)
     source_fingerprint: str = Field(min_length=64, max_length=64)
     source: FieldNoteCaseSnapshot
+    report_template: ReportTemplateDefinition
+
+    @model_validator(mode="after")
+    def report_template_matches_pin(self) -> "ReportGenerationRequest":
+        """The generator renders the case's pinned schema, never the active one."""
+        if self.report_template.business_id != self.source.business_id:
+            raise ValueError("report template must belong to the case's business")
+        pinned_key = self.source.report_template_key
+        pinned_version = self.source.report_template_version
+        if pinned_key is None or pinned_version is None:
+            return self
+        if (
+            self.report_template.report_template_key != pinned_key
+            or self.report_template.version != pinned_version
+        ):
+            raise ValueError("report template does not match the case's pinned version")
+        return self
 
 
 class FieldNotesReportVersion(ReportDomainModel):

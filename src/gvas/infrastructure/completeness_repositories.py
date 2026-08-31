@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
@@ -57,6 +58,43 @@ def _review_record(row: FieldNoteReview) -> FieldNoteReviewRecord:
         thread_correlation_id=row.thread_correlation_id,
         status=FieldNoteReviewStatus(row.status),
         round_index=row.round_index,
+    )
+
+
+@dataclass(frozen=True)
+class _ReviewPins:
+    checklist_key: str
+    checklist_version: int
+    template_set_key: str
+    template_set_version: int
+
+
+def _pins(
+    latest: FieldNoteReview | None,
+    checklist_key: ChecklistKey,
+    checklist_version: int,
+    template_set: TemplateSetRef,
+) -> _ReviewPins:
+    """Pins for a review row: inherited from the case, else freshly resolved.
+
+    A field-note case stays open until the owner closes it, so every review
+    revision of that case reports from the template its first review pinned, even
+    once a newer version has been published and become active.
+    """
+    if latest is not None and latest.template_set_key is not None:
+        if latest.template_set_version is None:
+            raise ValueError(f"review {latest.id} has a template key without a version")
+        return _ReviewPins(
+            checklist_key=latest.checklist_key,
+            checklist_version=latest.checklist_version,
+            template_set_key=latest.template_set_key,
+            template_set_version=latest.template_set_version,
+        )
+    return _ReviewPins(
+        checklist_key=checklist_key,
+        checklist_version=checklist_version,
+        template_set_key=template_set.template_set_key,
+        template_set_version=template_set.version,
     )
 
 
@@ -151,16 +189,7 @@ class SqlFieldNoteReviewRepository:
         )
         if existing is not None:
             return _review_record(existing)
-        latest = await self.session.scalar(
-            select(FieldNoteReview)
-            .where(
-                FieldNoteReview.business_id == business_id,
-                FieldNoteReview.inbound_message_id == inbound_message_id,
-            )
-            .order_by(FieldNoteReview.revision.desc())
-            .limit(1)
-            .with_for_update()
-        )
+        latest = await self._latest(business_id, inbound_message_id, lock=True)
         if latest is not None and latest.status != FieldNoteReviewStatus.COMPLETE.value:
             return _review_record(latest)
         active = await self.session.scalar(
@@ -174,16 +203,17 @@ class SqlFieldNoteReviewRepository:
                 f"conversation {conversation_id} already has an active field-note review"
             )
         now = datetime.now(UTC)
+        pins = _pins(latest, checklist_key, checklist_version, template_set)
         row = FieldNoteReview(
             business_id=business_id,
             conversation_id=conversation_id,
             active_conversation_id=conversation_id,
             external_conversation_id=external_conversation_id,
             inbound_message_id=inbound_message_id,
-            checklist_key=checklist_key,
-            checklist_version=checklist_version,
-            template_set_key=template_set.template_set_key,
-            template_set_version=template_set.version,
+            checklist_key=pins.checklist_key,
+            checklist_version=pins.checklist_version,
+            template_set_key=pins.template_set_key,
+            template_set_version=pins.template_set_version,
             transcript_text=transcript_text,
             transcript_fingerprint=fingerprint,
             revision=1 if latest is None else latest.revision + 1,
@@ -220,6 +250,29 @@ class SqlFieldNoteReviewRepository:
             )
         )
         return _review_record(row) if row is not None else None
+
+    async def latest_for_origin(
+        self, business_id: BusinessId, inbound_message_id: MessageId
+    ) -> FieldNoteReviewRecord | None:
+        row = await self._latest(business_id, inbound_message_id)
+        return None if row is None else _review_record(row)
+
+    async def _latest(
+        self, business_id: BusinessId, inbound_message_id: MessageId, *, lock: bool = False
+    ) -> FieldNoteReview | None:
+        statement = (
+            select(FieldNoteReview)
+            .where(
+                FieldNoteReview.business_id == business_id,
+                FieldNoteReview.inbound_message_id == inbound_message_id,
+            )
+            .order_by(FieldNoteReview.revision.desc())
+            .limit(1)
+        )
+        row: FieldNoteReview | None = await self.session.scalar(
+            statement.with_for_update() if lock else statement
+        )
+        return row
 
     async def get_active_for_conversation(
         self, business_id: BusinessId, conversation_id: ConversationId

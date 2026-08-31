@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gvas.domain.completeness import ChecklistItem, ChecklistKey, CompletenessChecklist
 from gvas.domain.completeness_repositories import CompletenessUnitOfWork
@@ -8,10 +8,15 @@ from gvas.domain.identifiers import BusinessId, ConversationId
 from gvas.domain.templates import (
     BusinessTemplateProfile,
     IndustryKey,
+    ReportTemplateDefinition,
+    ReportTemplateRef,
+    ReportTemplateSection,
     TemplateSet,
     TemplateSetKey,
     TemplateSetRef,
     TemplateSetStatus,
+    UnknownChecklistBindingError,
+    UnknownReportTemplateError,
     UnknownTemplateSetError,
 )
 
@@ -36,6 +41,24 @@ class IndustryTemplateDefinition(BaseModel):
     items: tuple[ChecklistItem, ...] = Field(min_length=1)
     report_template_key: str = Field(min_length=1)
     report_template_version: int = Field(default=1, ge=1)
+    report_title: str = Field(min_length=1)
+    report_sections: tuple[ReportTemplateSection, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def report_sections_bind_known_items(self) -> "IndustryTemplateDefinition":
+        known = {item.key for item in self.items}
+        unknown = sorted(
+            item_key
+            for section in self.report_sections
+            for item_key in section.checklist_item_keys
+            if item_key not in known
+        )
+        if unknown:
+            raise UnknownChecklistBindingError(
+                f"industry {self.industry_key} report sections bind unknown "
+                f"checklist items: {unknown}"
+            )
+        return self
 
     def checklist(self, business_id: BusinessId) -> CompletenessChecklist:
         return CompletenessChecklist(
@@ -43,6 +66,15 @@ class IndustryTemplateDefinition(BaseModel):
             checklist_key=self.checklist_key,
             version=self.version,
             items=self.items,
+        )
+
+    def report_template(self, business_id: BusinessId) -> ReportTemplateDefinition:
+        return ReportTemplateDefinition(
+            business_id=business_id,
+            report_template_key=self.report_template_key,
+            version=self.report_template_version,
+            title=self.report_title,
+            sections=self.report_sections,
         )
 
     def template_set(self, business_id: BusinessId) -> TemplateSet:
@@ -105,6 +137,17 @@ class TemplateResolver:
             )
         return template_set
 
+    async def load_report_template(self, ref: ReportTemplateRef) -> ReportTemplateDefinition:
+        async with self._unit_of_work_factory() as unit_of_work:
+            definition = await unit_of_work.report_templates.get(ref)
+            await unit_of_work.commit()
+        if definition is None:
+            raise UnknownReportTemplateError(
+                f"report template {ref.report_template_key} version "
+                f"{ref.report_template_version} is not configured"
+            )
+        return definition
+
 
 class PublishTemplateSetService:
     """Publishes template-set versions and seeds industry defaults.
@@ -121,9 +164,10 @@ class PublishTemplateSetService:
         self,
         template_set: TemplateSet,
         checklist: CompletenessChecklist | None = None,
+        report_template: ReportTemplateDefinition | None = None,
     ) -> TemplateSet:
         async with self._unit_of_work_factory() as unit_of_work:
-            published = await self._write(unit_of_work, template_set, checklist)
+            published = await self._write(unit_of_work, template_set, checklist, report_template)
             await unit_of_work.commit()
         return published
 
@@ -136,6 +180,7 @@ class PublishTemplateSetService:
                 unit_of_work,
                 definition.template_set(business_id),
                 definition.checklist(business_id),
+                definition.report_template(business_id),
             )
             profile = await unit_of_work.business_template_profiles.get(business_id)
             assigned = (
@@ -160,9 +205,14 @@ class PublishTemplateSetService:
         unit_of_work: CompletenessUnitOfWork,
         template_set: TemplateSet,
         checklist: CompletenessChecklist | None,
+        report_template: ReportTemplateDefinition | None,
     ) -> TemplateSet:
         if checklist is not None:
             await unit_of_work.checklists.upsert(checklist)
+        if report_template is not None:
+            if checklist is not None:
+                report_template.validate_against(checklist)
+            await unit_of_work.report_templates.upsert(report_template)
         await unit_of_work.template_sets.upsert(
             template_set.model_copy(update={"status": TemplateSetStatus.DRAFT})
         )

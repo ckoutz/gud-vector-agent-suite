@@ -18,6 +18,7 @@ from gvas.domain.identifiers import BusinessId, ConversationId, MessageId
 from gvas.domain.repositories import OutboundMessageRepository, OutboxRepository
 from gvas.domain.template_repositories import (
     BusinessTemplateProfileRepository,
+    ReportTemplateDefinitionRepository,
     TemplateSetRepository,
 )
 from gvas.domain.templates import TemplateSetKey, TemplateSetRef
@@ -85,7 +86,9 @@ class FieldNoteReviewRepository(Protocol):
 
     A case is reviewed once per transcript revision: the same transcript always
     resolves to the same review row, and content added after a completed review
-    opens the next revision instead of reusing the completed one.
+    opens the next revision instead of reusing the completed one. Later revisions
+    inherit the first revision's checklist and template pins, because every
+    revision of a case that is still open must report from the same template.
     """
 
     async def get_or_create(
@@ -103,6 +106,10 @@ class FieldNoteReviewRepository(Protocol):
 
     async def get(
         self, business_id: BusinessId, review_id: FieldNoteReviewId
+    ) -> FieldNoteReviewRecord | None: ...
+
+    async def latest_for_origin(
+        self, business_id: BusinessId, inbound_message_id: MessageId
     ) -> FieldNoteReviewRecord | None: ...
 
     async def get_active_for_conversation(
@@ -150,6 +157,7 @@ class FollowUpQuestionRepository(Protocol):
 class CompletenessUnitOfWork(Protocol):
     checklists: ChecklistDefinitionRepository
     template_sets: TemplateSetRepository
+    report_templates: ReportTemplateDefinitionRepository
     business_template_profiles: BusinessTemplateProfileRepository
     field_note_reviews: FieldNoteReviewRepository
     follow_up_questions: FollowUpQuestionRepository

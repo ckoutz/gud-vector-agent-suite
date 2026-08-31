@@ -1,9 +1,9 @@
 from enum import StrEnum
 from typing import NewType, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from gvas.domain.completeness import ChecklistKey
+from gvas.domain.completeness import ChecklistItemKey, ChecklistKey, CompletenessChecklist
 from gvas.domain.identifiers import BusinessId, ConversationId
 
 TemplateSetKey = NewType("TemplateSetKey", str)
@@ -36,6 +36,68 @@ class ReportTemplateRef(TemplateModel):
     business_id: BusinessId
     report_template_key: str = Field(min_length=1)
     report_template_version: int = Field(ge=1)
+
+
+class ReportTemplateSection(TemplateModel):
+    """One output section of a business's report, bound to checklist items.
+
+    The bindings are what keep report structure out of the generator: a section
+    names the checklist items whose evidence belongs under its heading.
+    """
+
+    section_key: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9_.-]*$")
+    heading: str = Field(min_length=1)
+    checklist_item_keys: tuple[ChecklistItemKey, ...] = ()
+
+    @model_validator(mode="after")
+    def item_keys_are_unique(self) -> "ReportTemplateSection":
+        if len(set(self.checklist_item_keys)) != len(self.checklist_item_keys):
+            raise ValueError(f"section {self.section_key} binds a checklist item twice")
+        return self
+
+
+class ReportTemplateDefinition(TemplateModel):
+    """Immutable versioned report structure for one business.
+
+    Report generation receives this definition, so the section schema of a report
+    is tenant configuration rather than industry logic inside a generator.
+    """
+
+    business_id: BusinessId
+    report_template_key: str = Field(min_length=1)
+    version: int = Field(ge=1)
+    title: str = Field(min_length=1)
+    sections: tuple[ReportTemplateSection, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def section_keys_are_unique(self) -> "ReportTemplateDefinition":
+        section_keys = [section.section_key for section in self.sections]
+        if len(set(section_keys)) != len(section_keys):
+            raise ValueError("report template section keys must be unique")
+        return self
+
+    @property
+    def ref(self) -> "ReportTemplateRef":
+        return ReportTemplateRef(
+            business_id=self.business_id,
+            report_template_key=self.report_template_key,
+            report_template_version=self.version,
+        )
+
+    def validate_against(self, checklist: CompletenessChecklist) -> None:
+        """Reject bindings to checklist items the pinned checklist does not define."""
+        known = {item.key for item in checklist.items}
+        unknown = sorted(
+            item_key
+            for section in self.sections
+            for item_key in section.checklist_item_keys
+            if item_key not in known
+        )
+        if unknown:
+            raise UnknownChecklistBindingError(
+                f"report template {self.report_template_key} version {self.version} "
+                f"binds unknown checklist items: {unknown}"
+            )
 
 
 class TemplateSet(TemplateModel):
@@ -97,6 +159,8 @@ class TemplateResolutionPort(Protocol):
 
     async def load(self, ref: TemplateSetRef) -> TemplateSet: ...
 
+    async def load_report_template(self, ref: ReportTemplateRef) -> ReportTemplateDefinition: ...
+
 
 class UnknownTemplateSetError(LookupError):
     """No template set resolves for the business; reviewing would be a guess."""
@@ -104,3 +168,15 @@ class UnknownTemplateSetError(LookupError):
 
 class TemplateSetVersionConflictError(ValueError):
     """A published template-set version is immutable apart from its status."""
+
+
+class UnknownReportTemplateError(LookupError):
+    """The pinned report template definition is missing; nothing can be rendered."""
+
+
+class ReportTemplateVersionConflictError(ValueError):
+    """A published report template version is immutable."""
+
+
+class UnknownChecklistBindingError(ValueError):
+    """A report template section binds a checklist item that does not exist."""

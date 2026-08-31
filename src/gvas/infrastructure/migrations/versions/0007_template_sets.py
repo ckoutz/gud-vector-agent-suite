@@ -6,14 +6,46 @@ Revises: 0006_field_note_review_revisions
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects import postgresql
 
 revision = "0007_template_sets"
 down_revision = "0006_field_note_review_revisions"
 branch_labels = None
 depends_on = None
 
+json_type = sa.JSON().with_variant(postgresql.JSONB(), "postgresql")
+
 
 def upgrade() -> None:
+    op.create_table(
+        "field_note_report_templates",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("business_id", sa.Uuid(), nullable=False),
+        sa.Column("report_template_key", sa.String(length=255), nullable=False),
+        sa.Column("version", sa.Integer(), nullable=False),
+        sa.Column("title", sa.String(length=500), nullable=False),
+        sa.Column("sections", json_type, nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.PrimaryKeyConstraint("id", name="pk_field_note_report_templates"),
+        sa.ForeignKeyConstraint(
+            ["business_id"],
+            ["businesses.id"],
+            name="fk_field_note_report_templates_business_id_businesses",
+            ondelete="CASCADE",
+        ),
+        sa.UniqueConstraint(
+            "business_id",
+            "report_template_key",
+            "version",
+            name="uq_field_note_report_templates_key_version",
+        ),
+    )
+    op.create_index(
+        "ix_field_note_report_templates_business_id",
+        "field_note_report_templates",
+        ["business_id"],
+    )
     op.create_table(
         "field_note_template_sets",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -43,6 +75,16 @@ def upgrade() -> None:
                 "field_note_checklists.version",
             ],
             name="fk_field_note_template_sets_checklist",
+            ondelete="RESTRICT",
+        ),
+        sa.ForeignKeyConstraint(
+            ["business_id", "report_template_key", "report_template_version"],
+            [
+                "field_note_report_templates.business_id",
+                "field_note_report_templates.report_template_key",
+                "field_note_report_templates.version",
+            ],
+            name="fk_field_note_template_sets_report_template",
             ondelete="RESTRICT",
         ),
         sa.UniqueConstraint(
@@ -108,3 +150,8 @@ def downgrade() -> None:
     op.drop_index("uq_field_note_template_sets_active", table_name="field_note_template_sets")
     op.drop_index("ix_field_note_template_sets_business_id", table_name="field_note_template_sets")
     op.drop_table("field_note_template_sets")
+    op.drop_index(
+        "ix_field_note_report_templates_business_id",
+        table_name="field_note_report_templates",
+    )
+    op.drop_table("field_note_report_templates")

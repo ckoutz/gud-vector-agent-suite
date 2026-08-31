@@ -19,6 +19,7 @@ from gvas.domain.repositories import (
 )
 from gvas.domain.template_repositories import (
     BusinessTemplateProfileRepository,
+    ReportTemplateDefinitionRepository,
     TemplateSetRepository,
 )
 from gvas.infrastructure.completeness_repositories import (
@@ -38,6 +39,7 @@ from gvas.infrastructure.repositories import (
 )
 from gvas.infrastructure.template_repositories import (
     SqlBusinessTemplateProfileRepository,
+    SqlReportTemplateDefinitionRepository,
     SqlTemplateSetRepository,
 )
 
@@ -102,6 +104,7 @@ class SqlUnitOfWorkFactory:
 class SqlCompletenessUnitOfWork:
     checklists: ChecklistDefinitionRepository
     template_sets: TemplateSetRepository
+    report_templates: ReportTemplateDefinitionRepository
     business_template_profiles: BusinessTemplateProfileRepository
     field_note_reviews: FieldNoteReviewRepository
     follow_up_questions: FollowUpQuestionRepository
@@ -116,6 +119,7 @@ class SqlCompletenessUnitOfWork:
         self._session = self._session_factory()
         self.checklists = SqlChecklistDefinitionRepository(self._session)
         self.template_sets = SqlTemplateSetRepository(self._session)
+        self.report_templates = SqlReportTemplateDefinitionRepository(self._session)
         self.business_template_profiles = SqlBusinessTemplateProfileRepository(self._session)
         self.field_note_reviews = SqlFieldNoteReviewRepository(self._session)
         self.follow_up_questions = SqlFollowUpQuestionRepository(self._session)

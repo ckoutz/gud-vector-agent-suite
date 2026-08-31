@@ -4,10 +4,14 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gvas.domain.completeness import ChecklistKey
-from gvas.domain.identifiers import BusinessId
+from gvas.domain.identifiers import BusinessId, JsonValue
 from gvas.domain.templates import (
     BusinessTemplateProfile,
     IndustryKey,
+    ReportTemplateDefinition,
+    ReportTemplateRef,
+    ReportTemplateSection,
+    ReportTemplateVersionConflictError,
     TemplateSet,
     TemplateSetKey,
     TemplateSetRef,
@@ -16,6 +20,7 @@ from gvas.domain.templates import (
 )
 from gvas.infrastructure.template_models import (
     BusinessTemplateProfileRow,
+    FieldNoteReportTemplate,
     FieldNoteTemplateSet,
 )
 
@@ -31,6 +36,16 @@ def _template_set(row: FieldNoteTemplateSet) -> TemplateSet:
         checklist_version=row.checklist_version,
         report_template_key=row.report_template_key,
         report_template_version=row.report_template_version,
+    )
+
+
+def _report_template(row: FieldNoteReportTemplate) -> ReportTemplateDefinition:
+    return ReportTemplateDefinition(
+        business_id=BusinessId(row.business_id),
+        report_template_key=row.report_template_key,
+        version=row.version,
+        title=row.title,
+        sections=tuple(ReportTemplateSection.model_validate(section) for section in row.sections),
     )
 
 
@@ -110,6 +125,48 @@ class SqlTemplateSetRepository:
                 FieldNoteTemplateSet.business_id == ref.business_id,
                 FieldNoteTemplateSet.template_set_key == ref.template_set_key,
                 FieldNoteTemplateSet.version == ref.version,
+            )
+        )
+        return row
+
+
+class SqlReportTemplateDefinitionRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def upsert(self, definition: ReportTemplateDefinition) -> None:
+        row = await self._row(definition.ref)
+        if row is None:
+            sections: list[JsonValue] = [
+                section.model_dump(mode="json") for section in definition.sections
+            ]
+            self.session.add(
+                FieldNoteReportTemplate(
+                    business_id=definition.business_id,
+                    report_template_key=definition.report_template_key,
+                    version=definition.version,
+                    title=definition.title,
+                    sections=sections,
+                )
+            )
+            await self.session.flush()
+            return
+        if _report_template(row) != definition:
+            raise ReportTemplateVersionConflictError(
+                f"report template {definition.report_template_key} version "
+                f"{definition.version} is immutable"
+            )
+
+    async def get(self, ref: ReportTemplateRef) -> ReportTemplateDefinition | None:
+        row = await self._row(ref)
+        return None if row is None else _report_template(row)
+
+    async def _row(self, ref: ReportTemplateRef) -> FieldNoteReportTemplate | None:
+        row: FieldNoteReportTemplate | None = await self.session.scalar(
+            select(FieldNoteReportTemplate).where(
+                FieldNoteReportTemplate.business_id == ref.business_id,
+                FieldNoteReportTemplate.report_template_key == ref.report_template_key,
+                FieldNoteReportTemplate.version == ref.report_template_version,
             )
         )
         return row
