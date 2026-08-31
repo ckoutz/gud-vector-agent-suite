@@ -36,13 +36,35 @@ GVAS_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/gva
 ```
 
 ```bash
-uv run alembic upgrade heads
+uv run alembic upgrade head
 uv run alembic downgrade base
 uv run uvicorn gvas.interfaces.http.app:app --reload
 docker compose up --build
 ```
 
 The health endpoint is available at `http://localhost:8000/healthz`.
+
+The migration graph has a single head; `uv run alembic heads` must report exactly
+one revision.
+
+## Composition root and worker
+
+`gvas.composition` wires the accepted workflows into one application and an
+outbox worker. Every external capability is injected as a port, so the
+repository still contains no provider implementation:
+
+```python
+from gvas.composition import ApplicationPorts, build_application
+
+application = build_application(ApplicationPorts(...))
+await application.worker.drain()
+```
+
+Deterministic fakes for every port live in `tests/composition_fakes.py`, which is
+how the integration tests run the full quote and field-note paths without a
+provider. See [`docs/composition.md`](docs/composition.md) for the dispatched
+command types, the field-note chain, where production adapters plug in, and the
+decisions that are still open.
 
 Model-selection evaluation tooling for field-note extraction lives in
 [`evals/field_notes`](evals/field_notes/README.md). It is isolated from the product:

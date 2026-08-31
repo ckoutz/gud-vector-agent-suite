@@ -27,6 +27,14 @@ cases. Parts use monotonic per-case sequences, and replaying the same inbound
 delivery does not create additional parts or commands. Active case state is
 scoped by the persisted conversation ID.
 
+## Composed chain
+
+The dispatcher path from intake through canonical transcript, completeness
+review, follow-up correlation, and report generation is documented in
+[`docs/composition.md`](composition.md), including the deterministic
+`field_note.review` and `field_notes_report.generate` commands and the gaps that
+remain at the neutral boundary.
+
 ## Open questions
 
 - How long neutral attachment locators and payloads may be retained, and

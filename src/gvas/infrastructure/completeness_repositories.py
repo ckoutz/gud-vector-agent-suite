@@ -170,6 +170,17 @@ class SqlFieldNoteReviewRepository:
         await self.session.flush()
         return _review_record(row)
 
+    async def get(
+        self, business_id: BusinessId, review_id: FieldNoteReviewId
+    ) -> FieldNoteReviewRecord | None:
+        row = await self.session.scalar(
+            select(FieldNoteReview).where(
+                FieldNoteReview.id == review_id,
+                FieldNoteReview.business_id == business_id,
+            )
+        )
+        return _review_record(row) if row is not None else None
+
     async def get_active_for_conversation(
         self, business_id: BusinessId, conversation_id: ConversationId
     ) -> FieldNoteReviewRecord | None:

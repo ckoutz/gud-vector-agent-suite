@@ -12,7 +12,7 @@ src/gvas/
   application/     ingestion, intent resolution, and outbox services
   infrastructure/  SQLAlchemy models, repositories, UoW, and Alembic
   interfaces/      FastAPI health endpoint
-  composition.py   concrete wiring
+  composition/     concrete wiring, intent resolver, and outbox dispatcher
 ```
 
 Domain imports only the standard library and Pydantic. Application imports only
@@ -159,6 +159,11 @@ messages, and linked outbox commands from crossing tenant boundaries.
 
 ## HTTP and composition
 
-`create_app()` exposes only `GET /healthz`; module-level `app` remains available
-for Uvicorn. `build_application()` accepts an optional intent resolver and
-defaults to `UnconfiguredIntentResolver`.
+`create_app()` exposes only `GET /healthz` plus any routers passed to it;
+module-level `app` remains available for Uvicorn.
+`build_application(ApplicationPorts(...))` wires the accepted workflows, the
+deterministic intent resolver, and the outbox dispatcher/worker; ports keep every
+provider outside the application. `UnconfiguredIntentResolver` remains available
+as an override for foundation-only runs. See
+[`docs/composition.md`](composition.md) for the dispatched command types, the
+worker loop, and the decisions still open at the neutral boundary.
