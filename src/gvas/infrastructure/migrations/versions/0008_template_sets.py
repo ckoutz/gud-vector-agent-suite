@@ -1,15 +1,15 @@
 """per-business template sets and the case-level template pin
 
-Revision ID: 0007_template_sets
-Revises: 0006_field_note_review_revisions
+Revision ID: 0008_template_sets
+Revises: 0007_sites_and_plan_set_custody
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0007_template_sets"
-down_revision = "0006_field_note_review_revisions"
+revision = "0008_template_sets"
+down_revision = "0007_sites_and_plan_set_custody"
 branch_labels = None
 depends_on = None
 
