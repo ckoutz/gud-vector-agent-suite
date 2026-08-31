@@ -70,10 +70,12 @@ class CoordinateFieldNoteReviewService:
     """Joins a field-note case to its completeness review and report request.
 
     Review only starts once the canonical transcript has no pending or failed
-    audio, and a completed review enqueues exactly one report command per case.
-    An already-complete review re-requests the report because the review commit
-    and the report enqueue are separate transactions; the command is keyed on the
-    case, so recovery cannot produce a second report.
+    audio. Each transcript revision of a case is reviewed once and enqueues
+    exactly one report command; an already-complete review re-requests the report
+    because the review commit and the report enqueue are separate transactions,
+    and the command is keyed on the reviewed revision, so recovery cannot produce
+    a second report while notes added to an open case still produce the next
+    report version.
     """
 
     def __init__(

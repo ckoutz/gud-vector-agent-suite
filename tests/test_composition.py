@@ -57,6 +57,7 @@ from gvas.infrastructure.field_note_models import FieldNotePartRow
 from gvas.infrastructure.models import (
     Business,
     FieldNoteReport,
+    FieldNoteReportVersion,
     OutboxMessage,
     QuoteRecord,
 )
@@ -567,6 +568,19 @@ async def case_rows(
         )
 
 
+async def report_versions(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> list[FieldNoteReportVersion]:
+    async with session_factory() as session:
+        return list(
+            (
+                await session.scalars(
+                    select(FieldNoteReportVersion).order_by(FieldNoteReportVersion.version)
+                )
+            ).all()
+        )
+
+
 async def unsucceeded_outbox(session_factory: async_sessionmaker[AsyncSession]) -> int:
     async with session_factory() as session:
         count = await session.scalar(
@@ -700,6 +714,8 @@ async def test_field_notes_after_closure_start_a_distinct_case(
 async def test_notes_after_a_report_extend_the_open_case(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """Extending an open case reviews the updated transcript and versions the report."""
+
     business_id = BusinessId(uuid4())
     await seed_business(session_factory, business_id)
     reports = ReportGenerationFake()
@@ -731,8 +747,16 @@ async def test_notes_after_a_report_extend_the_open_case(
             await session.scalars(select(FieldNotePartRow).order_by(FieldNotePartRow.sequence))
         ).all()
     assert [part.case_id for part in parts] == [cases[0].id, cases[0].id]
-    assert len(reports.requests) == 1
-    assert len(await outbox_rows(session_factory, "field_notes_report.generate")) == 1
+    assert len(reports.requests) == 2
+    assert "replaced the downpipe" in reports.requests[1].source.canonical_transcript
+    assert [version.version for version in await report_versions(session_factory)] == [1, 2]
+    assert len(await outbox_rows(session_factory, "field_notes_report.generate")) == 2
+
+    await application.ingest_service.ingest(follow_up)
+    await drain(application)
+
+    assert len(reports.requests) == 2
+    assert [version.version for version in await report_versions(session_factory)] == [1, 2]
 
 
 @pytest.mark.asyncio
@@ -809,6 +833,38 @@ async def test_quote_trigger_during_an_active_field_note_case_is_rejected(
 
 
 @pytest.mark.asyncio
+async def test_close_notes_during_a_quote_only_conversation_is_rejected(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    owner_replies = OwnerReplyFake()
+    application = build(
+        session_factory,
+        owner_replies=owner_replies,
+        quote_drafting=QuoteDraftingFake(),
+        quote_delivery=CustomerDeliveryFake(),
+        transcription=TranscriptionFake({}),
+        report_generation=ReportGenerationFake(),
+    )
+    await configure_checklist(application, business_id)
+
+    await application.ingest_service.ingest(
+        inbound(business_id, "quote: replace two gutters", message_key="quote-1")
+    )
+    await drain(application)
+    await application.ingest_service.ingest(
+        inbound(business_id, "close notes", message_key="close-during-quote")
+    )
+    await drain(application)
+
+    assert await unsucceeded_outbox(session_factory) == 0
+    assert await case_rows(session_factory) == []
+    assert reply_texts(owner_replies).count(FIELD_NOTE_CONFLICT_REPLY) == 1
+    assert NO_OPEN_CASE_REPLY not in reply_texts(owner_replies)
+
+
+@pytest.mark.asyncio
 async def test_close_notes_is_scoped_to_one_business(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -850,3 +906,59 @@ async def test_close_notes_is_scoped_to_one_business(
         )
     ]
     assert closing == [first]
+
+
+@pytest.mark.asyncio
+async def test_postgres_backed_report_versions_follow_case_revisions(
+    postgres_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(postgres_session_factory, business_id)
+    reports = ReportGenerationFake()
+    application = build(
+        postgres_session_factory,
+        owner_replies=OwnerReplyFake(),
+        quote_drafting=QuoteDraftingFake(),
+        quote_delivery=CustomerDeliveryFake(),
+        transcription=TranscriptionFake({}),
+        report_generation=reports,
+    )
+    await configure_checklist(application, business_id)
+
+    first = inbound(
+        business_id,
+        "field notes: site: north work: inspection",
+        message_key="pg-rev-notes",
+        conversation="pg-rev",
+    )
+    await application.ingest_service.ingest(first)
+    await drain(application)
+    assert [version.version for version in await report_versions(postgres_session_factory)] == [1]
+
+    more = inbound(
+        business_id,
+        "work: replaced the downpipe",
+        message_key="pg-rev-more",
+        conversation="pg-rev",
+    )
+    await application.ingest_service.ingest(more)
+    await drain(application)
+
+    versions = await report_versions(postgres_session_factory)
+    assert [version.version for version in versions] == [1, 2]
+    assert versions[0].source_fingerprint != versions[1].source_fingerprint
+    assert "replaced the downpipe" in reports.requests[1].source.canonical_transcript
+
+    await application.ingest_service.ingest(first)
+    await application.ingest_service.ingest(more)
+    await drain(application)
+
+    assert [version.version for version in await report_versions(postgres_session_factory)] == [
+        1,
+        2,
+    ]
+    assert len(reports.requests) == 2
+    assert [case.status for case in await case_rows(postgres_session_factory)] == [
+        FieldNoteCaseStatus.OPEN.value
+    ]
+    assert await unsucceeded_outbox(postgres_session_factory) == 0

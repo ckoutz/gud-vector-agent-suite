@@ -80,7 +80,14 @@ class FieldNoteReview(Base):
         UniqueConstraint(
             "business_id",
             "inbound_message_id",
-            name="uq_field_note_reviews_business_id_inbound_message_id",
+            "transcript_fingerprint",
+            name="uq_field_note_reviews_business_id_inbound_message_transcript",
+        ),
+        UniqueConstraint(
+            "business_id",
+            "inbound_message_id",
+            "revision",
+            name="uq_field_note_reviews_business_id_inbound_message_revision",
         ),
         UniqueConstraint(
             "business_id",
@@ -101,6 +108,8 @@ class FieldNoteReview(Base):
     checklist_key: Mapped[str] = mapped_column(String(255), nullable=False)
     checklist_version: Mapped[int] = mapped_column(nullable=False)
     transcript_text: Mapped[str] = mapped_column(Text, nullable=False)
+    transcript_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(nullable=False, default=1)
     thread_correlation_id: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
     round_index: Mapped[int] = mapped_column(nullable=False, default=0)

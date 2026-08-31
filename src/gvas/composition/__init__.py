@@ -152,7 +152,7 @@ def build_application(
         checklist_key,
     )
     snapshots = BuildFieldNoteCaseSnapshotService(
-        completeness_unit_of_work_factory, transcripts, ports.checklist_evidence
+        completeness_unit_of_work_factory, ports.checklist_evidence
     )
     reports = GenerateFieldNotesReportService(report_unit_of_work_factory, ports.report_generation)
     processing = ProcessOwnerMessageService(unit_of_work_factory, router, resolver)

@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime
 from enum import StrEnum
 from typing import NewType, Protocol
@@ -148,6 +149,12 @@ def field_note_thread_correlation_id(inbound_message_id: MessageId) -> str:
     """Channel-neutral thread identity for a field-note conversation."""
 
     return f"{FIELD_NOTE_THREAD_PREFIX}:{inbound_message_id}"
+
+
+def transcript_fingerprint(transcript_text: str) -> str:
+    """Stable identity of the reviewed transcript revision."""
+
+    return hashlib.sha256(transcript_text.encode()).hexdigest()
 
 
 def follow_up_correlation_id(

@@ -1,7 +1,6 @@
 from datetime import datetime
 from typing import Protocol
 
-from gvas.application.field_note_transcription import FieldNoteTranscriptService
 from gvas.domain.completeness import (
     FieldNoteReviewId,
     FieldNoteReviewStatus,
@@ -38,18 +37,19 @@ class CompletenessUnitOfWorkFactory(Protocol):
 class BuildFieldNoteCaseSnapshotService:
     """Assembles the report source for a completed field-note review.
 
-    Checklist evidence is attributed through a provider-neutral port because the
-    accepted completeness outcome only reports items that are still missing.
+    The source is the transcript the review actually ran against, not the live
+    canonical transcript, so a retried report command cannot pick up notes that
+    arrived after the review and change the snapshot fingerprint. Checklist
+    evidence is attributed through a provider-neutral port because the accepted
+    completeness outcome only reports items that are still missing.
     """
 
     def __init__(
         self,
         completeness_unit_of_work_factory: CompletenessUnitOfWorkFactory,
-        transcripts: FieldNoteTranscriptService,
         evidence: ChecklistEvidencePort,
     ) -> None:
         self._completeness = completeness_unit_of_work_factory
-        self._transcripts = transcripts
         self._evidence = evidence
 
     async def build(
@@ -78,8 +78,8 @@ class BuildFieldNoteCaseSnapshotService:
         if review.status is not FieldNoteReviewStatus.COMPLETE:
             raise IncompleteFieldNoteReviewError("only completed reviews produce report snapshots")
 
-        transcript = await self._transcripts.canonical_transcript(business_id, case_id)
-        if not transcript.text:
+        transcript_text = review.transcript_text
+        if not transcript_text:
             raise FieldNoteCaseNotFoundError("field-note case has no canonical transcript")
         prompts = {item.key: item.prompt for item in checklist.items}
         correlated = tuple(
@@ -95,7 +95,7 @@ class BuildFieldNoteCaseSnapshotService:
                 business_id=business_id,
                 case_id=case_id,
                 checklist=checklist,
-                canonical_transcript=transcript.text,
+                canonical_transcript=transcript_text,
                 correlated_answers=correlated,
             )
         )
@@ -109,7 +109,7 @@ class BuildFieldNoteCaseSnapshotService:
             case_id=case_id,
             status=FieldNoteCaseStatus.COMPLETED,
             completed_at=completed_at,
-            canonical_transcript=transcript.text,
+            canonical_transcript=transcript_text,
             checklist_evidence=evidence,
             correlated_answers=correlated,
         )

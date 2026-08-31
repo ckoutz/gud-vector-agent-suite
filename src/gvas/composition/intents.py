@@ -28,7 +28,10 @@ class DeterministicIntentResolver:
     quote or field-note case. One conversation runs one workflow: a trigger for
     the other workflow, or a conversation that already carries both, resolves to
     the conflict intent so the owner is told to use another thread instead of a
-    precedence being guessed.
+    precedence being guessed. ``close notes`` is a field-note command, so it only
+    reaches the field-note workflow when this conversation is not a quote-only
+    conversation; with both workflows active it is allowed through to repair the
+    field-note state.
     """
 
     def __init__(
@@ -49,9 +52,11 @@ class DeterministicIntentResolver:
             if quote_resolution is not None:
                 return IntentResolution(intent=WORKFLOW_CONFLICT_INTENT, confidence=1)
             return IntentResolution(intent=FIELD_NOTE_INTENT, confidence=1)
-        if has_field_note_close_trigger(message):
-            return IntentResolution(intent=FIELD_NOTE_INTENT, confidence=1)
         field_note_intent = await self._field_notes.contribute(message)
+        if has_field_note_close_trigger(message):
+            if field_note_intent is None and quote_resolution is not None:
+                return IntentResolution(intent=WORKFLOW_CONFLICT_INTENT, confidence=1)
+            return IntentResolution(intent=FIELD_NOTE_INTENT, confidence=1)
         if field_note_intent is not None and quote_resolution is not None:
             return IntentResolution(intent=WORKFLOW_CONFLICT_INTENT, confidence=1)
         if quote_resolution is not None:
