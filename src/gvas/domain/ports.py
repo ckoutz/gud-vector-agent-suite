@@ -1,5 +1,6 @@
 from typing import Protocol
 
+from gvas.domain.identifiers import BusinessId
 from gvas.domain.intents import IntentResolution
 from gvas.domain.messages import (
     AttachmentPayload,
@@ -12,6 +13,7 @@ from gvas.domain.messages import (
     OutboundOwnerMessage,
     TranscriptResult,
 )
+from gvas.domain.object_storage import ObjectCustodyRequest, StoredObject
 from gvas.domain.quotes import QuoteDraftProposal, QuoteDraftRequest
 from gvas.domain.reporting import ChecklistEvidence, ChecklistEvidenceRequest
 
@@ -28,6 +30,22 @@ class OwnerReplyPort(Protocol):
 
 class AttachmentAccessPort(Protocol):
     async def fetch(self, attachment: AttachmentReference) -> AttachmentPayload: ...
+
+
+class ObjectStoragePort(Protocol):
+    """Managed custody of bytes the system must retain (D7b).
+
+    ``put`` is idempotent for a given request: storing the same content under
+    the same scope and name twice yields one object and the same reference.
+    ``fetch`` is tenant-checked by the adapter: a reference belonging to
+    another business is refused even when the caller holds it.
+    """
+
+    async def put(self, request: ObjectCustodyRequest) -> StoredObject: ...
+
+    async def fetch(
+        self, business_id: BusinessId, artifact: AttachmentReference
+    ) -> AttachmentPayload: ...
 
 
 class TranscriptionPort(Protocol):

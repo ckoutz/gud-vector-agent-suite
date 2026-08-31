@@ -17,6 +17,10 @@ from gvas.application.field_notes import (
 from gvas.application.ingestion import IngestOwnerMessageService
 from gvas.application.outbox_service import OutboxService
 from gvas.application.owner_reply_delivery import DeliverOwnerReplyService
+from gvas.application.plan_custody import (
+    CopyPlanSetIntoCustodyService,
+    RegisterPlanSetUploadService,
+)
 from gvas.application.processing import ProcessOwnerMessageService
 from gvas.application.quotes import (
     DeliverApprovedQuoteService,
@@ -33,9 +37,11 @@ from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.config import Settings
 from gvas.domain.completeness import ChecklistKey, CompletenessReviewPort
 from gvas.domain.ports import (
+    AttachmentAccessPort,
     ChecklistEvidencePort,
     CustomerQuoteDeliveryPort,
     IntentResolutionPort,
+    ObjectStoragePort,
     OwnerReplyPort,
     QuoteDraftingPort,
     TranscriptionPort,
@@ -44,6 +50,7 @@ from gvas.domain.reporting import ReportGenerationPort
 from gvas.domain.workflows import WorkflowRouter
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.field_note_repositories import SqlFieldNoteUnitOfWorkFactory
+from gvas.infrastructure.plan_repositories import SqlPlanCustodyUnitOfWorkFactory
 from gvas.infrastructure.reporting_unit_of_work import SqlReportUnitOfWorkFactory
 from gvas.infrastructure.unit_of_work import (
     SqlCompletenessUnitOfWorkFactory,
@@ -68,6 +75,8 @@ class ApplicationPorts:
     completeness_review: CompletenessReviewPort
     checklist_evidence: ChecklistEvidencePort
     report_generation: ReportGenerationPort
+    source_attachments: AttachmentAccessPort | None = None
+    object_storage: ObjectStoragePort | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +87,7 @@ class Application:
     field_note_unit_of_work_factory: SqlFieldNoteUnitOfWorkFactory
     completeness_unit_of_work_factory: SqlCompletenessUnitOfWorkFactory
     report_unit_of_work_factory: SqlReportUnitOfWorkFactory
+    plan_custody_unit_of_work_factory: SqlPlanCustodyUnitOfWorkFactory
     router: WorkflowRouter
     intent_resolver: IntentResolutionPort
     ingest_service: IngestOwnerMessageService
@@ -90,6 +100,8 @@ class Application:
     review_service: CoordinateFieldNoteReviewService
     snapshot_service: BuildFieldNoteCaseSnapshotService
     report_service: GenerateFieldNotesReportService
+    plan_set_upload_service: RegisterPlanSetUploadService
+    plan_custody_service: CopyPlanSetIntoCustodyService | None
     outbox: OutboxService
     dispatcher: OutboxCommandDispatcher
     worker: OutboxWorker
@@ -124,6 +136,7 @@ def build_application(
     field_note_unit_of_work_factory = SqlFieldNoteUnitOfWorkFactory(sessions)
     completeness_unit_of_work_factory = SqlCompletenessUnitOfWorkFactory(sessions)
     report_unit_of_work_factory = SqlReportUnitOfWorkFactory(sessions)
+    plan_custody_unit_of_work_factory = SqlPlanCustodyUnitOfWorkFactory(sessions)
 
     intake = FieldNoteIntakeHandler(field_note_unit_of_work_factory, now=now)
     closure = CloseFieldNoteCaseHandler(field_note_unit_of_work_factory, now=now)
@@ -161,6 +174,14 @@ def build_application(
     transcription = TranscribeFieldNoteAudioService(
         field_note_unit_of_work_factory, ports.transcription
     )
+    plan_set_uploads = RegisterPlanSetUploadService(plan_custody_unit_of_work_factory)
+    plan_custody = (
+        CopyPlanSetIntoCustodyService(
+            plan_custody_unit_of_work_factory, ports.source_attachments, ports.object_storage
+        )
+        if ports.source_attachments is not None and ports.object_storage is not None
+        else None
+    )
     outbox = OutboxService(unit_of_work_factory)
     dispatcher = OutboxCommandDispatcher(
         processing=processing,
@@ -172,6 +193,7 @@ def build_application(
         reports=reports,
         outbox=outbox,
         now=now,
+        plan_custody=plan_custody,
         lease_ttl=lease_ttl,
     )
     return Application(
@@ -181,6 +203,7 @@ def build_application(
         field_note_unit_of_work_factory=field_note_unit_of_work_factory,
         completeness_unit_of_work_factory=completeness_unit_of_work_factory,
         report_unit_of_work_factory=report_unit_of_work_factory,
+        plan_custody_unit_of_work_factory=plan_custody_unit_of_work_factory,
         router=router,
         intent_resolver=resolver,
         ingest_service=IngestOwnerMessageService(unit_of_work_factory),
@@ -193,6 +216,8 @@ def build_application(
         review_service=review,
         snapshot_service=snapshots,
         report_service=reports,
+        plan_set_upload_service=plan_set_uploads,
+        plan_custody_service=plan_custody,
         outbox=outbox,
         dispatcher=dispatcher,
         worker=OutboxWorker(outbox, dispatcher, now=now, lease_ttl=lease_ttl),
