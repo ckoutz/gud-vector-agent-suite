@@ -204,3 +204,46 @@ class OutboxMessage(Base):
     dedup_key: Mapped[str | None] = mapped_column(String(255))
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     locked_by: Mapped[str | None] = mapped_column(String(255))
+
+
+class QuoteRecord(Base):
+    __tablename__ = "quotes"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["business_id", "conversation_id"],
+            ["conversations.business_id", "conversations.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("business_id", "id", name="uq_quotes_business_id_id"),
+        UniqueConstraint(
+            "business_id",
+            "active_conversation_id",
+            name="uq_quotes_business_id_active_conversation_id",
+        ),
+        UniqueConstraint(
+            "conversation_id",
+            "last_message_key",
+            name="uq_quotes_conversation_id_last_message_key",
+        ),
+        Index("ix_quotes_business_id", "business_id"),
+        Index("ix_quotes_conversation_id", "conversation_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[UUID] = mapped_column(nullable=False)
+    active_conversation_id: Mapped[UUID | None] = mapped_column()
+    external_conversation_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    revision: Mapped[int] = mapped_column(nullable=False)
+    source_message_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    last_message_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    pending_request_text: Mapped[str] = mapped_column(Text, nullable=False)
+    draft: Mapped[dict[str, JsonValue] | None] = mapped_column(json_type)
+    approval_correlation_id: Mapped[str | None] = mapped_column(String(255))
+    delivery_receipt: Mapped[dict[str, JsonValue] | None] = mapped_column(json_type)
+    version: Mapped[int] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

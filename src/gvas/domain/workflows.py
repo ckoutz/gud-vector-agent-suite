@@ -3,7 +3,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gvas.domain.enums import WorkflowRunStatus
-from gvas.domain.identifiers import WorkflowIntent, WorkflowRunId
+from gvas.domain.identifiers import ConversationId, WorkflowIntent, WorkflowRunId
 from gvas.domain.messages import NormalizedOwnerMessage, OutboundOwnerMessage
 from gvas.domain.outbox import OutboxCommand
 
@@ -14,6 +14,7 @@ class WorkflowContext(BaseModel):
     run_id: WorkflowRunId
     intent: WorkflowIntent
     message: NormalizedOwnerMessage
+    conversation_id: ConversationId | None = None
 
 
 TERMINAL_WORKFLOW_STATUSES = frozenset({WorkflowRunStatus.SUCCEEDED, WorkflowRunStatus.FAILED})
