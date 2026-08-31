@@ -105,6 +105,7 @@ field notes: inbound
   -> field_notes_report.generate on COMPLETE or ALREADY_COMPLETE
   -> snapshot from persisted review, checklist, and answers
   -> report version
+  -> case stays open until the owner sends `close notes`
 ```
 
 Report snapshots are assembled only from persisted evidence: the review's
@@ -114,6 +115,32 @@ The review commit and the report enqueue are separate transactions, so review
 coordination requests the report for an already-complete review too. The report
 command's id and dedup key are derived from the case, so the recovery path
 enqueues at most one report command per case.
+
+## Case closure is explicit (decided)
+
+Neither a completed review nor a generated report closes a case. A case closes
+only when the owner sends `close notes`, matched channel-neutrally and
+case-insensitively with surrounding whitespace tolerated, in the same
+deterministic style as `field notes:` and `quote:`. Closure runs in one
+transaction: it stamps `field_note_cases.closed_at`, sets the case status to
+`closed`, and clears the conversation's active case, all scoped by
+`business_id`. It is idempotent — a second `close notes`, or a replayed inbound
+event, closes nothing again, and the owner reply carries a deterministic
+correlation ID (`field_note.close:<message key>`) so no duplicate reply is
+persisted or delivered. `close notes` with no active case replies that there is
+nothing open instead of failing. While a case is open, notes after a report
+still extend the same case; after closure, the next `field notes:` message
+starts a new case. Report requests stay keyed on the case, so extending a case
+does not produce another report version.
+
+## One workflow per conversation (decided)
+
+A conversation runs one workflow. A `field notes:` trigger while a quote is
+active, a `quote:` trigger while a field-note case is open, and a conversation
+that carries both resolve to `workflow.conflict`, whose handler creates no second
+workflow and replies through `OwnerReplyPort` and the outbox, asking the owner to
+use a separate thread or conversation. Intent resolution never guesses a
+precedence and never switches workflows silently.
 
 ## Where production adapters plug in
 
@@ -146,20 +173,14 @@ These need a product or provider decision and are wired only up to the port:
    what is missing, so evidence for satisfied items is attributed through
    `ChecklistEvidencePort`. The in-repo attributor is marker-based, mirroring
    `MarkerCompletenessReviewer`; an AI provider decision is still open.
-2. **Case closure.** A completed review triggers exactly one report, but no
-   accepted contract closes the persisted field-note case, so cases remain
-   `open` and a later note can extend the same case.
-3. **Report distribution.** Report versions are persisted; no recipient,
+2. **Report distribution.** Report versions are persisted; no recipient,
    channel, or delivery command exists yet.
-4. **Two active workflows in one conversation.** If a conversation has both an
-   active quote and an active field-note case, intent resolution reports the
-   message as unresolved (resumable) instead of choosing a precedence.
-5. **Permanent transcription or review failure.** Failures retry through the
+3. **Permanent transcription or review failure.** Failures retry through the
    outbox and eventually dead-letter; no owner-facing failure message is
    defined.
-6. **Report and transcript retention.** Unchanged from the accepted
+4. **Report and transcript retention.** Unchanged from the accepted
    workstreams: retention, redaction, and cost ceilings remain open.
-7. **Per-business templates and plan artifacts.** Composition hardcodes no
+5. **Per-business templates and plan artifacts.** Composition hardcodes no
    industry: checklists are per-business, keyed, and versioned rows, and
    `build_application` takes `checklist_key` as an argument, so a future
    template resolver can select note/checklist/report templates per business

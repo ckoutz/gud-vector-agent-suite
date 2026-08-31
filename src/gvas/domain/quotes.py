@@ -18,10 +18,17 @@ from gvas.domain.identifiers import (
     QuoteId,
     WorkflowIntent,
 )
-from gvas.domain.messages import ConversationRef, CustomerRecipient, DeliveryReceipt
+from gvas.domain.messages import (
+    ConversationRef,
+    CustomerRecipient,
+    DeliveryReceipt,
+    NormalizedOwnerMessage,
+    TextPart,
+)
 from gvas.domain.outbox import OutboxCommand
 
 QUOTE_INTENT = WorkflowIntent("quote")
+QUOTE_TRIGGER_PREFIX = "quote:"
 QUOTE_DELIVERY_COMMAND_TYPE = "customer_quote.deliver"
 QUOTE_ID_NAMESPACE = UUID("391d4c69-e58a-4621-ad77-1f45ac243ae2")
 QUOTE_DELIVERY_COMMAND_NAMESPACE = UUID("e940a293-273c-4914-b17b-63ac10db4db4")
@@ -313,6 +320,11 @@ def new_quote(
         created_at=now,
         updated_at=now,
     )
+
+
+def has_quote_trigger(message: NormalizedOwnerMessage) -> bool:
+    text = "\n".join(part.text for part in message.parts if isinstance(part, TextPart))
+    return text.lstrip().lower().startswith(QUOTE_TRIGGER_PREFIX)
 
 
 def approval_correlation_id(quote_id: QuoteId, revision: int) -> str:

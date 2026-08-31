@@ -67,6 +67,12 @@ class FieldNoteIntakeResult(FieldNoteRepositoryModel):
     audio_part_ids: tuple[FieldNotePartId, ...] = Field(default_factory=tuple)
 
 
+class FieldNoteCaseClosureResult(StrEnum):
+    CLOSED = "closed"
+    ALREADY_CLOSED = "already_closed"
+    MISSING = "missing"
+
+
 class TranscriptionClaimResult(StrEnum):
     ACQUIRED = "acquired"
     TERMINAL = "terminal"
@@ -129,6 +135,10 @@ class FieldNoteCaseRepository(Protocol):
         parts: Sequence[FieldNotePartDraft],
         case_id: FieldNoteCaseId | None,
     ) -> FieldNoteIntakeResult: ...
+
+    async def close(
+        self, business_id: BusinessId, case_id: FieldNoteCaseId, *, now: datetime
+    ) -> FieldNoteCaseClosureResult: ...
 
 
 class FieldNoteMessageLocator(Protocol):
