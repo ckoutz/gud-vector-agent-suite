@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from gvas.application.ingestion import IngestOwnerMessageService
 from gvas.infrastructure.slack.config import SlackSettings
 from gvas.infrastructure.slack.delivery import (
-    InMemorySlackDeliveryLedger,
     SlackChatPoster,
     SlackDeliveryLedger,
     SlackOwnerReplyAdapter,
@@ -40,10 +39,18 @@ def build_slack_event_router(
 def build_slack_owner_reply_adapter(
     poster: SlackChatPoster,
     session_factory: async_sessionmaker[AsyncSession],
-    ledger: SlackDeliveryLedger | None = None,
+    ledger: SlackDeliveryLedger,
 ) -> SlackOwnerReplyAdapter:
+    """Composes Slack owner-reply delivery over an explicitly supplied ledger.
+
+    The ledger is required rather than defaulted: retries are claimed by any
+    worker process, so a delivery ledger that is not shared across processes
+    cannot suppress a duplicate post. Deployments inject a durable shared
+    ledger; tests may inject ``InMemorySlackDeliveryLedger``.
+    """
+
     return SlackOwnerReplyAdapter(
         poster,
         SqlSlackRoutingResolver(session_factory),
-        ledger if ledger is not None else InMemorySlackDeliveryLedger(),
+        ledger,
     )

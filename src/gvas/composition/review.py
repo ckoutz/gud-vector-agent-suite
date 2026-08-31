@@ -63,12 +63,17 @@ _COORDINATION_STATUSES = {
     CompletenessStatus.NO_ACTIVE_REVIEW: ReviewCoordinationStatus.IGNORED_REPLY,
 }
 
+_COMPLETED_STATUSES = frozenset({CompletenessStatus.COMPLETE, CompletenessStatus.ALREADY_COMPLETE})
+
 
 class CoordinateFieldNoteReviewService:
     """Joins a field-note case to its completeness review and report request.
 
     Review only starts once the canonical transcript has no pending or failed
     audio, and a completed review enqueues exactly one report command per case.
+    An already-complete review re-requests the report because the review commit
+    and the report enqueue are separate transactions; the command is keyed on the
+    case, so recovery cannot produce a second report.
     """
 
     def __init__(
@@ -128,7 +133,7 @@ class CoordinateFieldNoteReviewService:
             )
 
         report_requested = False
-        if outcome.status is CompletenessStatus.COMPLETE and outcome.review_id is not None:
+        if outcome.status in _COMPLETED_STATUSES and outcome.review_id is not None:
             await self._enqueue(
                 field_notes_report_command(business_id, case_id, outcome.review_id, now)
             )

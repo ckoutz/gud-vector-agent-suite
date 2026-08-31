@@ -15,6 +15,10 @@ from composition_fakes import (
 )
 from gvas.composition import Application, build_application
 from gvas.composition.dispatcher import UnknownCommandTypeError
+from gvas.composition.review import (
+    CoordinateFieldNoteReviewService,
+    ReviewCoordinationStatus,
+)
 from gvas.domain.completeness import (
     ChecklistItem,
     ChecklistItemKey,
@@ -22,7 +26,11 @@ from gvas.domain.completeness import (
     CompletenessChecklist,
 )
 from gvas.domain.enums import MediaKind, OutboxStatus
-from gvas.domain.field_notes import FieldNoteCaseId, TranscriptionStatus
+from gvas.domain.field_notes import (
+    FieldNoteCaseId,
+    FieldNoteReviewTrigger,
+    TranscriptionStatus,
+)
 from gvas.domain.identifiers import BusinessId, MessageKey, OutboxCommandId
 from gvas.domain.messages import (
     AttachmentPart,
@@ -36,6 +44,7 @@ from gvas.domain.messages import (
     TextPart,
 )
 from gvas.domain.outbox import OutboxCommand, OutboxRecord
+from gvas.domain.repositories import UnitOfWork
 from gvas.infrastructure.completeness_models import FieldNoteFollowUpQuestion
 from gvas.infrastructure.field_note_models import FieldNoteCase as FieldNoteCaseRow
 from gvas.infrastructure.field_note_models import FieldNotePartRow
@@ -272,6 +281,81 @@ async def test_text_field_note_path_reaches_report_with_one_follow_up(
             await session.scalar(select(func.count()).select_from(FieldNoteFollowUpQuestion)) == 1
         )
     assert answer_key is not None
+
+
+class CrashingUnitOfWorkFactory:
+    """Stands in for a crash between the review commit and the report enqueue."""
+
+    def __call__(self) -> UnitOfWork:
+        raise RuntimeError("crashed before the report command was enqueued")
+
+
+@pytest.mark.asyncio
+async def test_completed_review_recovers_a_lost_report_request(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    reports = ReportGenerationFake()
+    application = build(
+        session_factory,
+        owner_replies=OwnerReplyFake(),
+        quote_drafting=QuoteDraftingFake(),
+        quote_delivery=CustomerDeliveryFake(),
+        transcription=TranscriptionFake({}),
+        report_generation=reports,
+    )
+    await configure_checklist(application, business_id)
+    await application.ingest_service.ingest(
+        inbound(
+            business_id,
+            "field notes: site: north work: inspection",
+            message_key="recovered-notes",
+        )
+    )
+    await application.worker.run_once()
+
+    async with session_factory() as session:
+        case = await session.scalar(select(FieldNoteCaseRow))
+    assert case is not None
+    crashing = CoordinateFieldNoteReviewService(
+        application.field_note_unit_of_work_factory,
+        CrashingUnitOfWorkFactory(),
+        application.transcript_service,
+        application.completeness_service,
+        CHECKLIST_KEY,
+    )
+    with pytest.raises(RuntimeError):
+        await crashing.coordinate(
+            business_id,
+            FieldNoteCaseId(case.id),
+            FieldNoteReviewTrigger.INTAKE,
+            now=NOW,
+        )
+    assert await outbox_rows(session_factory, "field_notes_report.generate") == []
+
+    recovered = await application.review_service.coordinate(
+        business_id,
+        FieldNoteCaseId(case.id),
+        FieldNoteReviewTrigger.INTAKE,
+        now=NOW,
+    )
+    assert recovered.status is ReviewCoordinationStatus.ALREADY_COMPLETE
+    assert recovered.report_requested
+    await drain(application)
+    await application.review_service.coordinate(
+        business_id,
+        FieldNoteCaseId(case.id),
+        FieldNoteReviewTrigger.INTAKE,
+        now=NOW,
+    )
+    await drain(application)
+
+    assert len(reports.requests) == 1
+    report_commands = await outbox_rows(session_factory, "field_notes_report.generate")
+    assert [row.status for row in report_commands] == [OutboxStatus.SUCCEEDED.value]
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(FieldNoteReport)) == 1
 
 
 @pytest.mark.asyncio

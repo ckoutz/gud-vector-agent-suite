@@ -102,7 +102,7 @@ field notes: inbound
   -> canonical transcript (blocked while audio is pending or failed)
   -> completeness review, one persisted ASKED question at a time
   -> owner reply routed back to the same review by persisted correlation
-  -> field_notes_report.generate on COMPLETE
+  -> field_notes_report.generate on COMPLETE or ALREADY_COMPLETE
   -> snapshot from persisted review, checklist, and answers
   -> report version
 ```
@@ -110,12 +110,23 @@ field notes: inbound
 Report snapshots are assembled only from persisted evidence: the review's
 checklist version, its correlated answers, and the canonical transcript.
 
+The review commit and the report enqueue are separate transactions, so review
+coordination requests the report for an already-complete review too. The report
+command's id and dedup key are derived from the case, so the recovery path
+enqueues at most one report command per case.
+
 ## Where production adapters plug in
 
 Each port has exactly one implementation site, all outside domain and
 application:
 
 - `OwnerReplyPort` — `gvas.infrastructure.slack` (owner chat channel).
+  `build_slack_owner_reply_adapter` requires an explicit `SlackDeliveryLedger`;
+  there is no in-memory default, because outbox retries can be claimed by any
+  worker process. Until a production poster exists, Slack delivery is deduped
+  only within one process: the future poster must honor
+  `SlackChatPostRequest.idempotency_key`, and deployments must inject a durable
+  shared ledger.
 - `CustomerQuoteDeliveryPort` — future email adapter, or the future SMS/voice
   adapter (Telnyx) for text delivery.
 - `TranscriptionPort` and `AttachmentAccessPort` — future media adapters.
