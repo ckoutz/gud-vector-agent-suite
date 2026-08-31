@@ -25,11 +25,27 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from field_notes.adapters.base import (
     AdapterUnavailableError,
+    TokenUsage,
     TurnOutcome,
     TurnRequest,
 )
 from field_notes.prompt import build_user_content, system_prompt, turn_result_json_schema
 from field_notes.schema import TurnResult
+
+
+class TransportResponse(BaseModel):
+    """What one candidate call returned.
+
+    ``cost_usd`` and ``usage`` are how a real run populates the scorecard's operational
+    slots. A transport reports what its provider billed or metered; the suite never
+    estimates cost from token counts, since price tables belong outside this repo.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    raw: str
+    cost_usd: float | None = None
+    usage: TokenUsage | None = None
 
 
 class SchemaCompletionTransport(Protocol):
@@ -46,8 +62,8 @@ class SchemaCompletionTransport(Protocol):
         user_content: str,
         json_schema: dict[str, Any],
         parameters: dict[str, Any],
-    ) -> str:
-        """Return the raw JSON text produced by the candidate."""
+    ) -> TransportResponse:
+        """Return the candidate's raw JSON text plus whatever cost/usage it reported."""
         ...
 
 
@@ -101,7 +117,7 @@ class SchemaOutputAdapter:
         base_url, api_key = self._endpoint.resolve()
         user_content = build_user_content(request.prior_fields, request.history, request.transcript)
         started = time.perf_counter()
-        raw = self._transport.complete(
+        response = self._transport.complete(
             request_id=f"{request.case_id}:{request.turn_index}",
             base_url=base_url,
             api_key=api_key,
@@ -112,12 +128,17 @@ class SchemaOutputAdapter:
             parameters=self._parameters,
         )
         latency_ms = (time.perf_counter() - started) * 1000
-        return _parse(raw, latency_ms)
+        return _parse(response, latency_ms)
 
 
-def _parse(raw: str, latency_ms: float) -> TurnOutcome:
+def _parse(response: TransportResponse, latency_ms: float) -> TurnOutcome:
+    """Turn a transport response into an outcome, keeping cost/usage either way.
+
+    A schema failure still cost money, so the operational slots are populated even when
+    the payload is unusable.
+    """
     try:
-        payload = json.loads(raw)
+        payload = json.loads(response.raw)
         result = TurnResult.model_validate(payload)
     except (json.JSONDecodeError, ValidationError) as exc:
         return TurnOutcome(
@@ -125,26 +146,36 @@ def _parse(raw: str, latency_ms: float) -> TurnOutcome:
             schema_valid=False,
             error=str(exc),
             latency_ms=latency_ms,
-            raw_response=raw,
+            cost_usd=response.cost_usd,
+            usage=response.usage,
+            raw_response=response.raw,
         )
     return TurnOutcome(
         result=result,
         schema_valid=True,
         latency_ms=latency_ms,
-        raw_response=raw,
+        cost_usd=response.cost_usd,
+        usage=response.usage,
+        raw_response=response.raw,
     )
 
 
 class RecordedTransport:
-    """Replays raw responses keyed by ``case_id:turn_index``.
+    """Replays responses keyed by ``case_id:turn_index``.
 
-    Lets a future real run's captured outputs be re-scored offline, and lets tests
-    exercise the parsing path with no network access.
+    Lets a future real run's captured outputs — including the cost and usage it
+    reported — be re-scored offline, and lets tests exercise the parsing path with no
+    network access. Bare strings are accepted for the common case of replaying only the
+    payload.
     """
 
-    def __init__(self, responses: dict[str, str], fallback: str | None = None) -> None:
-        self._responses = dict(responses)
-        self._fallback = fallback
+    def __init__(
+        self,
+        responses: dict[str, TransportResponse | str],
+        fallback: TransportResponse | str | None = None,
+    ) -> None:
+        self._responses = {key: _as_response(value) for key, value in responses.items()}
+        self._fallback = None if fallback is None else _as_response(fallback)
 
     def complete(
         self,
@@ -157,12 +188,16 @@ class RecordedTransport:
         user_content: str,
         json_schema: dict[str, Any],
         parameters: dict[str, Any],
-    ) -> str:
+    ) -> TransportResponse:
         del base_url, api_key, model, system, user_content, json_schema, parameters
         recorded = self._responses.get(request_id, self._fallback)
         if recorded is None:
             raise AdapterUnavailableError(f"no recorded response for {request_id!r}")
         return recorded
+
+
+def _as_response(value: TransportResponse | str) -> TransportResponse:
+    return value if isinstance(value, TransportResponse) else TransportResponse(raw=value)
 
 
 class TransportParameters(BaseModel):

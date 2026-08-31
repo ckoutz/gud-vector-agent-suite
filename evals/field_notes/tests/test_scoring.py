@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 
 from field_notes.adapters.fake import DegradedAdapter, Fault, OracleAdapter
 from field_notes.cases import Split, load_cases
 from field_notes.runner import run_suite
+from field_notes.schema import Finding, NoteFields
 from field_notes.scoring import Scorecard, format_scorecard, normalize, score_run, values_match
 
 CASES = load_cases()
@@ -89,6 +92,55 @@ def test_inventing_a_job_number_is_an_unsupported_fact() -> None:
     assert any(v.metric == "unsupported_fact_rate" for v in card.violations)
 
 
+def _score_oracle_with_mutation(
+    case_id: str, turn_index: int, mutate: Callable[[NoteFields], None]
+) -> Scorecard:
+    """Score a perfect run whose one named turn had a fact grafted onto it."""
+    record = run_suite(OracleAdapter(CASES), CASES)
+    for turn in record.turns:
+        if turn.case_id == case_id and turn.turn_index == turn_index:
+            assert turn.outcome.result is not None
+            mutate(turn.outcome.result.fields)
+            return score_run(record)
+    raise AssertionError(f"no turn {turn_index} for {case_id!r}")
+
+
+def test_an_invented_optional_scalar_is_an_unsupported_fact() -> None:
+    def invent_client(fields: NoteFields) -> None:
+        fields.client = "Invented Customer"
+
+    card = _score_oracle_with_mutation("fn-dev-contradiction-002", 1, invent_client)
+    assert card.unsupported_fact_rate.hits == 1
+    assert card.unsupported_fact_rate.rate is not None
+    assert card.unsupported_fact_rate.rate > 0.0
+    assert card.unsupported_fact_turn_rate.hits == 1
+    assert [v.metric for v in card.violations].count("unsupported_fact_rate") == 1
+
+
+def test_an_invented_container_fact_is_an_unsupported_fact() -> None:
+    def invent_finding(fields: NoteFields) -> None:
+        fields.findings.append(
+            Finding(location_area="Boiler room", material_condition="Pipe lagging, suspect")
+        )
+
+    card = _score_oracle_with_mutation("fn-dev-contradiction-002", 1, invent_finding)
+    assert card.unsupported_fact_rate.hits == 1
+    assert card.unsupported_fact_turn_rate.hits == 1
+    assert any(
+        v.metric == "unsupported_fact_rate" and "finding" in v.detail for v in card.violations
+    )
+
+
+def test_a_fact_breaking_several_rules_is_counted_once() -> None:
+    """A value that both fills a declared critical gap and is unsupported is one fact."""
+
+    def invent_address(fields: NoteFields) -> None:
+        fields.job_address = "17 Invented Row"
+
+    card = _score_oracle_with_mutation("fn-dev-missing-002", 1, invent_address)
+    assert card.unsupported_fact_rate.hits == 1
+
+
 def test_asking_about_an_optional_field_is_a_false_follow_up() -> None:
     card = _score(Fault.ASK_ABOUT_OPTIONAL)
     assert card.false_follow_up_rate.rate == 1.0
@@ -146,6 +198,7 @@ def test_formatting_a_scorecard_reports_every_metric(oracle: Scorecard) -> None:
         "field_precision",
         "field_recall",
         "unsupported_fact_rate",
+        "unsupported_fact_turn_rate",
         "critical_gap_recall",
         "critical_gap_precision",
         "false_follow_up_rate",

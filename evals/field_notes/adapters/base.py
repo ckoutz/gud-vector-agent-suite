@@ -36,6 +36,20 @@ class TurnRequest(BaseModel):
     transcript: str
 
 
+class TokenUsage(BaseModel):
+    """Provider-neutral token accounting, as reported by whatever served the turn.
+
+    Every field is optional because not all endpoints report all of them, and the suite
+    stores what it is told rather than deriving or estimating anything.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+
 class TurnOutcome(BaseModel):
     """Adapter response plus the operational slots real runs populate."""
 
@@ -46,6 +60,7 @@ class TurnOutcome(BaseModel):
     error: str | None = None
     latency_ms: float | None = None
     cost_usd: float | None = None
+    usage: TokenUsage | None = None
     raw_response: str | None = None
 
 

@@ -7,8 +7,17 @@ Metric definitions are intentionally explicit and conservative:
   is not penalized for phrasing an address or narrative field differently;
 * an expectation only asserts fields it names; any other populated scalar field is a
   false positive unless the case lists it in ``tolerated_fields``;
-* filling a field the case declares a critical gap, or emitting a declared forbidden
-  value, counts as an unsupported fact — the highest-severity failure.
+* every fact the candidate states — each populated scalar, each finding, each sample,
+  each photo reference — is checked for support. A fact is supported when the case
+  expects it, lists it as a permissible inference, or tolerates the field. Anything
+  else is an unsupported fact: the highest-severity failure, because it puts words in
+  a technician's mouth. Declared ``forbidden_facts`` and values filling a declared
+  critical gap are always unsupported, and each fact is counted at most once.
+
+``unsupported_fact_rate`` is fact-level: unsupported facts over facts stated.
+``unsupported_fact_turn_rate`` is the share of turns carrying at least one, which
+answers a different question — how often a reviewer would meet a fabrication —
+and should not be read as a per-fact rate.
 
 Latency and cost are read from whatever the adapter reports and stay ``None`` for the
 deterministic local adapters; real runs populate them.
@@ -158,6 +167,7 @@ class CategoryScore(BaseModel):
     turns: int = 0
     field_extraction: CountMetric = Field(default_factory=CountMetric)
     unsupported_fact_rate: RateMetric = Field(default_factory=RateMetric)
+    unsupported_fact_turn_rate: RateMetric = Field(default_factory=RateMetric)
     decision_accuracy: RateMetric = Field(default_factory=RateMetric)
 
 
@@ -173,6 +183,7 @@ class Scorecard(BaseModel):
     schema_valid_rate: RateMetric = Field(default_factory=RateMetric)
     field_extraction: CountMetric = Field(default_factory=CountMetric)
     unsupported_fact_rate: RateMetric = Field(default_factory=RateMetric)
+    unsupported_fact_turn_rate: RateMetric = Field(default_factory=RateMetric)
     critical_gap_detection: CountMetric = Field(default_factory=CountMetric)
     false_follow_up_rate: RateMetric = Field(default_factory=RateMetric)
     one_question_target_accuracy: RateMetric = Field(default_factory=RateMetric)
@@ -387,9 +398,7 @@ def _score_samples(
     for gold in turn.expectation.samples:
         match: Sample | None = None
         for candidate in remaining:
-            if values_match(gold.sample_id, candidate.sample_id) or values_match(
-                gold.location, candidate.location
-            ):
+            if _samples_align(gold, candidate):
                 match = candidate
                 break
         if match is None:
@@ -481,23 +490,95 @@ def _score_unsupported_facts(
     turn: TurnRecord,
     predicted: NoteFields,
 ) -> None:
-    expectation = turn.expectation
-    scorecard.unsupported_fact_rate.opportunities += 1
-    category.unsupported_fact_rate.opportunities += 1
-    details: list[str] = []
+    """Score every fact the candidate stated for whether the case supports it.
+
+    Counted at fact granularity: one unit per populated scalar and per container entry.
+    A fact is unsupported unless the case expects it, permits it as an inference, or
+    tolerates the field; declared forbidden values and critical-gap fills are always
+    unsupported. Each fact contributes exactly one unit no matter how many rules it
+    breaks, so the rate stays a share of stated facts.
+    """
+    stated, unsupported = _classify_facts(turn.expectation, predicted)
+    for metric in (scorecard.unsupported_fact_rate, category.unsupported_fact_rate):
+        metric.opportunities += stated
+        metric.hits += len(unsupported)
+    for metric in (scorecard.unsupported_fact_turn_rate, category.unsupported_fact_turn_rate):
+        metric.opportunities += 1
+        metric.hits += int(bool(unsupported))
+    for detail in unsupported:
+        scorecard.violations.append(_violation(turn, "unsupported_fact_rate", detail))
+
+
+def _classify_facts(expectation: TurnExpectation, predicted: NoteFields) -> tuple[int, list[str]]:
+    """Return how many facts were stated and a detail per unsupported one."""
+    forbidden = _forbidden_details(expectation, predicted)
+    stated = 0
+    unsupported: list[str] = []
+    tolerated = set(expectation.tolerated_fields)
+
+    for name in SCALAR_FIELDS:
+        value = getattr(predicted, name, None)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        stated += 1
+        if name in forbidden:
+            unsupported.append(forbidden[name])
+        elif name in expectation.critical_gaps:
+            unsupported.append(f"{name}: filled a declared critical gap with {value!r}")
+        elif not _supports_scalar(expectation, tolerated, name, value):
+            unsupported.append(f"{name}: stated {value!r}, which the transcript never supported")
+
+    for index, finding in enumerate(predicted.findings):
+        if not any(getattr(finding, sub) for sub in _FINDING_SUBFIELDS):
+            continue
+        stated += 1
+        if "findings" in forbidden:
+            unsupported.append(forbidden["findings"])
+        elif not any(_finding_overlap(gold, finding) for gold in expectation.findings):
+            unsupported.append(f"finding {index + 1}: no expected finding it could describe")
+
+    for sample in predicted.samples:
+        stated += 1
+        if "samples" in forbidden:
+            unsupported.append(forbidden["samples"])
+        elif not any(_samples_align(gold, sample) for gold in expectation.samples):
+            unsupported.append(f"sample {sample.sample_id!r}: not supported by the transcript")
+
+    for photo in predicted.photos:
+        stated += 1
+        if "photos" in forbidden:
+            unsupported.append(forbidden["photos"])
+        elif not any(values_match(gold, photo) for gold in expectation.photos):
+            unsupported.append(f"photo reference {photo!r}: not supported by the transcript")
+
+    return stated, unsupported
+
+
+def _forbidden_details(expectation: TurnExpectation, predicted: NoteFields) -> dict[str, str]:
+    """Return one detail per field whose stated value the case explicitly forbids."""
+    details: dict[str, str] = {}
     for fact in expectation.forbidden_facts:
         hit = _forbidden_hit(fact, predicted)
         if hit is not None:
-            details.append(f"{fact.field_name}: produced {hit!r} ({fact.reason})")
-    for name in expectation.critical_gaps:
-        value = getattr(predicted, name, None)
-        if isinstance(value, str) and value.strip() and not _permitted(expectation, name, value):
-            details.append(f"{name}: filled a declared critical gap with {value!r}")
-    if details:
-        scorecard.unsupported_fact_rate.hits += 1
-        category.unsupported_fact_rate.hits += 1
-        for detail in details:
-            scorecard.violations.append(_violation(turn, "unsupported_fact_rate", detail))
+            details[fact.field_name] = f"{fact.field_name}: produced {hit!r} ({fact.reason})"
+    return details
+
+
+def _supports_scalar(
+    expectation: TurnExpectation, tolerated: set[str], name: str, value: str
+) -> bool:
+    gold = expectation.fields.get(name)
+    if gold and values_match(gold, value):
+        return True
+    if _permitted(expectation, name, value):
+        return True
+    return name in tolerated
+
+
+def _samples_align(gold: Sample, predicted: Sample) -> bool:
+    return values_match(gold.sample_id, predicted.sample_id) or values_match(
+        gold.location, predicted.location
+    )
 
 
 def _permitted(expectation: TurnExpectation, name: str, value: str) -> bool:
@@ -715,7 +796,10 @@ def format_scorecard(scorecard: Scorecard) -> str:
         f"schema_valid_rate:            {_fmt(scorecard.schema_valid_rate.rate)}",
         f"field_precision:              {_fmt(scorecard.field_extraction.precision)}",
         f"field_recall:                 {_fmt(scorecard.field_extraction.recall)}",
-        f"unsupported_fact_rate:        {_fmt(scorecard.unsupported_fact_rate.rate)}",
+        f"unsupported_fact_rate:        {_fmt(scorecard.unsupported_fact_rate.rate)}"
+        f"  ({scorecard.unsupported_fact_rate.hits}"
+        f"/{scorecard.unsupported_fact_rate.opportunities} facts)",
+        f"unsupported_fact_turn_rate:   {_fmt(scorecard.unsupported_fact_turn_rate.rate)}",
         f"critical_gap_recall:          {_fmt(scorecard.critical_gap_detection.recall)}",
         f"critical_gap_precision:       {_fmt(scorecard.critical_gap_detection.precision)}",
         f"false_follow_up_rate:         {_fmt(scorecard.false_follow_up_rate.rate)}",

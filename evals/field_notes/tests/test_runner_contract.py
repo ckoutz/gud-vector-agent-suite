@@ -8,13 +8,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from field_notes.adapters.base import AdapterUnavailableError, TurnRequest
+from field_notes.adapters.base import AdapterUnavailableError, TokenUsage, TurnRequest
 from field_notes.adapters.fake import Fault, OracleAdapter
 from field_notes.adapters.schema_output import (
     EndpointConfig,
     RecordedTransport,
     SchemaOutputAdapter,
     TransportParameters,
+    TransportResponse,
 )
 from field_notes.cases import Split, load_cases
 from field_notes.gold import gold_result
@@ -28,6 +29,7 @@ from field_notes.manifest import (
 from field_notes.prompt import build_user_content, system_prompt, turn_result_json_schema
 from field_notes.runner import run_case, run_suite
 from field_notes.schema import empty_fields
+from field_notes.scoring import score_run
 
 CASES = load_cases()
 SECRET_MARKERS = ("sk-", "api_key:", "apikey:", "token:", "password", "bearer ")
@@ -106,6 +108,80 @@ def test_schema_output_adapter_reports_unparseable_output_without_raising() -> N
     assert outcome.raw_response == "not json at all"
 
 
+def test_transport_reported_cost_and_usage_reach_the_outcome() -> None:
+    case = CASES[0]
+    expected = gold_result(case.turns[0].expect)
+    transport = RecordedTransport(
+        {
+            f"{case.case_id}:1": TransportResponse(
+                raw=expected.model_dump_json(),
+                cost_usd=0.00042,
+                usage=TokenUsage(input_tokens=1200, output_tokens=310, total_tokens=1510),
+            )
+        }
+    )
+    adapter = SchemaOutputAdapter(name="replay", model="recorded", transport=transport)
+    outcome = adapter.run_turn(
+        TurnRequest(
+            case_id=case.case_id,
+            turn_index=1,
+            prior_fields=empty_fields(),
+            history=[],
+            transcript=case.turns[0].transcript,
+        )
+    )
+    assert outcome.schema_valid
+    assert outcome.cost_usd == 0.00042
+    assert outcome.usage == TokenUsage(input_tokens=1200, output_tokens=310, total_tokens=1510)
+
+
+def test_cost_is_kept_even_when_the_payload_is_unusable() -> None:
+    transport = RecordedTransport({}, fallback=TransportResponse(raw="{", cost_usd=0.001))
+    adapter = SchemaOutputAdapter(name="replay", model="recorded", transport=transport)
+    outcome = adapter.run_turn(
+        TurnRequest(
+            case_id="x",
+            turn_index=1,
+            prior_fields=empty_fields(),
+            history=[],
+            transcript="t",
+        )
+    )
+    assert not outcome.schema_valid
+    assert outcome.cost_usd == 0.001
+
+
+def test_recorded_transport_accepts_a_bare_payload_string() -> None:
+    transport = RecordedTransport({"a:1": "{}"})
+    response = transport.complete(
+        request_id="a:1",
+        base_url=None,
+        api_key=None,
+        model="m",
+        system="s",
+        user_content="u",
+        json_schema={},
+        parameters={},
+    )
+    assert response == TransportResponse(raw="{}")
+
+
+def test_scored_cost_comes_from_the_reported_per_turn_costs() -> None:
+    case = CASES[0]
+    responses: dict[str, TransportResponse | str] = {
+        f"{case.case_id}:{turn.index}": TransportResponse(
+            raw=gold_result(turn.expect).model_dump_json(), cost_usd=0.002
+        )
+        for turn in case.turns
+    }
+    adapter = SchemaOutputAdapter(
+        name="replay", model="recorded", transport=RecordedTransport(responses)
+    )
+    scorecard = score_run(run_suite(adapter, [case]))
+    assert scorecard.operational.cost_samples == len(case.turns)
+    assert scorecard.operational.cost_usd_per_case == pytest.approx(0.002 * len(case.turns))
+
+
 def test_endpoint_config_reads_only_named_environment_variables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -125,9 +201,9 @@ def test_transport_receives_the_schema_and_prompt(monkeypatch: pytest.MonkeyPatc
     seen: dict[str, Any] = {}
 
     class CapturingTransport:
-        def complete(self, **kwargs: Any) -> str:
+        def complete(self, **kwargs: Any) -> TransportResponse:
             seen.update(kwargs)
-            return gold_result(CASES[0].turns[0].expect).model_dump_json()
+            return TransportResponse(raw=gold_result(CASES[0].turns[0].expect).model_dump_json())
 
     monkeypatch.setenv("GVAS_EVAL_TEST_KEY", "dummy-value-not-a-real-credential")
     adapter = SchemaOutputAdapter(

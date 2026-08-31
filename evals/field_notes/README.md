@@ -54,8 +54,20 @@ is what makes a final comparison meaningless.
 ## What is measured
 
 Extraction quality: field precision/recall (scalars, findings, samples, photos),
-unsupported-fact rate (values the transcript never supported), inference compliance
-(inferred values must come from the case's permissible set).
+unsupported-fact rate, and inference compliance (inferred values must come from the case's
+permissible set).
+
+`unsupported_fact_rate` is **fact-level**: the denominator is every fact the candidate
+stated on a scored turn — one unit per populated scalar, per finding, per sample, per photo
+reference — and the numerator is those the case does not support. A stated fact is supported
+when the case expects that value, lists it as a permissible inference, or tolerates the
+field; a declared forbidden value or a value filling a declared critical gap is never
+supported. A fact that breaks several rules at once still counts once, so the metric stays a
+share of facts. `unsupported_fact_turn_rate` reports the separate, coarser question of how
+many turns carry at least one unsupported fact.
+
+An invented value is deliberately penalized twice over, by field precision and by this
+metric: fabrication is worse than omission, because a reviewer cannot see it.
 
 Conversation behavior: critical-gap detection, false follow-up rate (optional fields must
 never trigger a question), one-question target accuracy (exactly one question, on the right
@@ -97,5 +109,11 @@ outside the repo: a manifest names *environment variables* (`base_url_env`, `api
 never values. See `manifests/candidates.example.yaml`.
 
 To run real candidates, supply a transport implementing `SchemaCompletionTransport` and pass
-it in. `RecordedTransport` replays captured raw responses keyed by `case_id:turn_index`, which
-lets a real run be re-scored offline after the fact.
+it in. It returns a `TransportResponse`: the raw JSON plus the `cost_usd` and provider-neutral
+`TokenUsage` its provider reported, which is how the operational cost slot gets populated. The
+suite stores what the transport reports and never estimates cost from token counts, so price
+tables stay outside this repo.
+
+`RecordedTransport` replays captured responses keyed by `case_id:turn_index` — including their
+cost and usage — so a real run can be re-scored offline after the fact; it also accepts bare
+payload strings when only the JSON was captured.
