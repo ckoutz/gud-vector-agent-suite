@@ -206,6 +206,65 @@ class OutboxMessage(Base):
     locked_by: Mapped[str | None] = mapped_column(String(255))
 
 
+class FieldNoteReport(Base):
+    __tablename__ = "field_note_reports"
+    __table_args__ = (
+        UniqueConstraint("business_id", "id", name="uq_field_note_reports_business_id_id"),
+        UniqueConstraint(
+            "business_id",
+            "case_id",
+            name="uq_field_note_reports_business_id_case_id",
+        ),
+        Index("ix_field_note_reports_business_id", "business_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    case_id: Mapped[UUID] = mapped_column(nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    attempts: Mapped[int] = mapped_column(nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    leased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_token: Mapped[UUID] = mapped_column(nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    current_version: Mapped[int] = mapped_column(nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class FieldNoteReportVersion(Base):
+    __tablename__ = "field_note_report_versions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["business_id", "report_id"],
+            ["field_note_reports.business_id", "field_note_reports.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "report_id",
+            "version",
+            name="uq_field_note_report_versions_report_id_version",
+        ),
+        UniqueConstraint(
+            "report_id",
+            "source_fingerprint",
+            name="uq_field_note_report_versions_report_id_source_fingerprint",
+        ),
+        Index("ix_field_note_report_versions_report_id", "report_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(nullable=False)
+    report_id: Mapped[UUID] = mapped_column(nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    document: Mapped[dict[str, JsonValue]] = mapped_column(json_type, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class QuoteRecord(Base):
     __tablename__ = "quotes"
     __table_args__ = (
@@ -247,3 +306,8 @@ class QuoteRecord(Base):
     version: Mapped[int] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# Workstream models are imported after Base is defined to register metadata.
+from gvas.infrastructure import completeness_models as completeness_models  # noqa: E402, F401
+from gvas.infrastructure import field_note_models as field_note_models  # noqa: E402, F401
