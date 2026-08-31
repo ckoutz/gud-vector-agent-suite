@@ -187,6 +187,20 @@ class Quote(QuoteModel):
             }
         )
 
+    def abandon_draft(self, message_key: MessageKey, now: datetime) -> "Quote":
+        """Close a draft the drafting port refused so the owner can send a new one."""
+
+        if self.status is not QuoteStatus.DRAFTING:
+            raise InvalidQuoteTransitionError(f"cannot abandon quote in {self.status}")
+        return self.model_copy(
+            update={
+                "status": QuoteStatus.REJECTED,
+                "last_message_key": message_key,
+                "updated_at": now,
+                "version": self.version + 1,
+            }
+        )
+
     def approve(self, message_key: MessageKey, now: datetime) -> "Quote":
         self._require_awaiting_approval()
         return self.model_copy(
@@ -290,6 +304,12 @@ class InvalidQuoteTransitionError(ValueError):
 
 class QuoteConcurrencyError(RuntimeError):
     pass
+
+
+class QuoteDraftRejectedError(ValueError):
+    """A drafting port refused the request. The message is shown to the owner,
+    so it must describe how to fix the request and must never carry provider
+    responses, internals, or credentials."""
 
 
 def new_quote(

@@ -31,8 +31,10 @@ from gvas.application.report_generation import GenerateFieldNotesReportService
 from gvas.application.templates import PublishTemplateSetService, TemplateResolver
 from gvas.application.workflow_conflicts import WorkflowConflictHandler
 from gvas.composition.dispatcher import OutboxCommandDispatcher, OutboxWorker
+from gvas.composition.failure_notices import NotifyExhaustedCommandService
 from gvas.composition.field_note_workflow import FieldNoteWorkflowHandler
 from gvas.composition.intents import DeterministicIntentResolver
+from gvas.composition.report_delivery import DeliverFieldNotesReportService
 from gvas.composition.review import CoordinateFieldNoteReviewService
 from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.config import Settings
@@ -101,6 +103,8 @@ class Application:
     review_service: CoordinateFieldNoteReviewService
     snapshot_service: BuildFieldNoteCaseSnapshotService
     report_service: GenerateFieldNotesReportService
+    report_delivery_service: DeliverFieldNotesReportService
+    failure_notice_service: NotifyExhaustedCommandService
     plan_set_upload_service: RegisterPlanSetUploadService
     plan_custody_service: CopyPlanSetIntoCustodyService | None
     outbox: OutboxService
@@ -185,6 +189,12 @@ def build_application(
         if ports.source_attachments is not None and ports.object_storage is not None
         else None
     )
+    report_delivery = DeliverFieldNotesReportService(
+        field_note_unit_of_work_factory, unit_of_work_factory
+    )
+    failure_notices = NotifyExhaustedCommandService(
+        unit_of_work_factory, field_note_unit_of_work_factory
+    )
     outbox = OutboxService(unit_of_work_factory)
     dispatcher = OutboxCommandDispatcher(
         processing=processing,
@@ -194,6 +204,7 @@ def build_application(
         review=review,
         snapshots=snapshots,
         reports=reports,
+        report_delivery=report_delivery,
         outbox=outbox,
         now=now,
         plan_custody=plan_custody,
@@ -221,9 +232,17 @@ def build_application(
         review_service=review,
         snapshot_service=snapshots,
         report_service=reports,
+        report_delivery_service=report_delivery,
+        failure_notice_service=failure_notices,
         plan_set_upload_service=plan_set_uploads,
         plan_custody_service=plan_custody,
         outbox=outbox,
         dispatcher=dispatcher,
-        worker=OutboxWorker(outbox, dispatcher, now=now, lease_ttl=lease_ttl),
+        worker=OutboxWorker(
+            outbox,
+            dispatcher,
+            now=now,
+            lease_ttl=lease_ttl,
+            failure_notices=failure_notices,
+        ),
     )

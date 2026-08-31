@@ -81,6 +81,20 @@ class SqlBusinessRepository:
             name=row.name,
         )
 
+    async def ensure(
+        self, business_id: BusinessId, slug: str, name: str, *, now: datetime
+    ) -> BusinessRecord:
+        row = await self.session.scalar(select(Business).where(Business.id == business_id))
+        if row is None:
+            row = Business(id=business_id, slug=slug, name=name, created_at=now, updated_at=now)
+            self.session.add(row)
+        elif row.slug != slug or row.name != name:
+            row.slug = slug
+            row.name = name
+            row.updated_at = now
+        await self.session.flush()
+        return BusinessRecord(business_id=BusinessId(row.id), slug=row.slug, name=row.name)
+
 
 class SqlOwnerChannelEndpointRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -252,34 +266,61 @@ class SqlInboundMessageRepository:
         if row is None:
             return None
         inbound, conversation = row
-        message = NormalizedOwnerMessage.model_validate(
-            {
-                "message_key": inbound.message_key,
-                "business_id": inbound.business_id,
-                "conversation_ref": {
-                    "business_id": conversation.business_id,
-                    "external_conversation_id": conversation.external_conversation_id,
-                },
-                "sender": {
-                    "external_id": inbound.sender_external_id,
-                    "role": inbound.sender_role,
-                },
-                "received_at": (
-                    inbound.received_at
-                    if inbound.received_at.tzinfo is not None
-                    else inbound.received_at.replace(tzinfo=UTC)
-                ),
-                "parts": inbound.parts,
-                "reply_to": inbound.reply_to,
-            }
+        return _processing_record(inbound, conversation)
+
+    async def find_by_key(
+        self,
+        business_id: BusinessId,
+        conversation_id: ConversationId,
+        message_key: MessageKey,
+    ) -> InboundProcessingRecord | None:
+        result = await self.session.execute(
+            select(InboundMessage, Conversation)
+            .join(Conversation, Conversation.id == InboundMessage.conversation_id)
+            .where(
+                InboundMessage.business_id == business_id,
+                InboundMessage.conversation_id == conversation_id,
+                InboundMessage.message_key == message_key,
+            )
         )
-        return InboundProcessingRecord(
-            inbound_message_id=MessageId(inbound.id),
-            business_id=BusinessId(inbound.business_id),
-            conversation_id=ConversationId(inbound.conversation_id),
-            endpoint_id=EndpointId(inbound.endpoint_id),
-            message=message,
-        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        inbound, conversation = row
+        return _processing_record(inbound, conversation)
+
+
+def _processing_record(
+    inbound: InboundMessage, conversation: Conversation
+) -> InboundProcessingRecord:
+    message = NormalizedOwnerMessage.model_validate(
+        {
+            "message_key": inbound.message_key,
+            "business_id": inbound.business_id,
+            "conversation_ref": {
+                "business_id": conversation.business_id,
+                "external_conversation_id": conversation.external_conversation_id,
+            },
+            "sender": {
+                "external_id": inbound.sender_external_id,
+                "role": inbound.sender_role,
+            },
+            "received_at": (
+                inbound.received_at
+                if inbound.received_at.tzinfo is not None
+                else inbound.received_at.replace(tzinfo=UTC)
+            ),
+            "parts": inbound.parts,
+            "reply_to": inbound.reply_to,
+        }
+    )
+    return InboundProcessingRecord(
+        inbound_message_id=MessageId(inbound.id),
+        business_id=BusinessId(inbound.business_id),
+        conversation_id=ConversationId(inbound.conversation_id),
+        endpoint_id=EndpointId(inbound.endpoint_id),
+        message=message,
+    )
 
 
 class SqlOutboundMessageRepository:

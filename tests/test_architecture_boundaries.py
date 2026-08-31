@@ -83,6 +83,31 @@ def test_object_storage_sdk_is_confined_to_its_adapter() -> None:
     assert importers == {"infrastructure/object_storage.py"}
 
 
+PROVIDER_NAMES = ("openai", "resend", "whisper", "railway", "httpx", "uvicorn")
+
+
+def test_provider_names_stay_out_of_domain_and_application() -> None:
+    """A port that names its provider has stopped being a port."""
+
+    offenders = [
+        f"{path.relative_to(ROOT)}: {name}"
+        for layer in ("domain", "application")
+        for path in (ROOT / layer).rglob("*.py")
+        for name in PROVIDER_NAMES
+        if name in path.read_text().lower()
+    ]
+    assert offenders == []
+
+
+def test_the_http_client_is_confined_to_infrastructure() -> None:
+    importers = {
+        path.relative_to(ROOT).parts[0]
+        for path in ROOT.rglob("*.py")
+        if "import httpx" in path.read_text()
+    }
+    assert importers <= {"infrastructure", "composition"}
+
+
 def test_boundary_checker_catches_violations(tmp_path: Path) -> None:
     path = tmp_path / "invalid.py"
     violations = find_violations("application", path, "import slack_sdk\nvalue = 'slack'\n")

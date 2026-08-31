@@ -2,10 +2,14 @@ import ast
 from pathlib import Path
 
 SRC = Path(__file__).parents[1] / "src" / "gvas"
+# The production composition root chooses the channel, so it is the one module
+# outside the adapter that is allowed to name Slack. Everything else stays
+# channel-neutral.
 SLACK_MODULES = frozenset(
     {
         Path("infrastructure/slack"),
         Path("interfaces/http/slack.py"),
+        Path("composition/production.py"),
     }
 )
 WORKFLOW_MODULES = (

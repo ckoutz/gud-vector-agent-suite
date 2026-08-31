@@ -67,7 +67,14 @@ class SlackRoutingResolver(Protocol):
 
 
 class SlackDeliveryLedger(Protocol):
-    """Records completed deliveries so a retried command posts at most once."""
+    """Records completed deliveries so a retried command usually skips reposting.
+
+    Delivery is at-least-once. A recorded receipt suppresses the repost, but a
+    process that crashes after Slack accepts the post and before ``record``
+    commits leaves no receipt, and the retry posts again. Implementations must
+    not claim to close that window; the post carries a delivery key in its
+    message metadata so duplicates can be reconciled after the fact.
+    """
 
     async def find(self, key: str) -> DeliveryReceipt | None: ...
 

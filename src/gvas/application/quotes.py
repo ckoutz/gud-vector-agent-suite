@@ -12,6 +12,7 @@ from gvas.domain.messages import (
     OutboundOwnerMessage,
     TextPart,
 )
+from gvas.domain.money import format_money
 from gvas.domain.ports import CustomerQuoteDeliveryPort, QuoteDraftingPort
 from gvas.domain.quotes import (
     QUOTE_INTENT,
@@ -19,6 +20,7 @@ from gvas.domain.quotes import (
     Quote,
     QuoteConcurrencyError,
     QuoteDraftProposal,
+    QuoteDraftRejectedError,
     QuoteDraftRequest,
     QuoteSendAssessment,
     QuoteSendPolicy,
@@ -175,7 +177,10 @@ class QuoteWorkflowHandler:
             revision=quote.revision,
             idempotency_key=f"quote-draft:{quote.quote_id}:{quote.revision}",
         )
-        proposal = await self._drafting_port.draft(request)
+        try:
+            proposal = await self._drafting_port.draft(request)
+        except QuoteDraftRejectedError as error:
+            return await self._abandon_draft(quote, message, str(error))
         drafted = quote.apply_draft(proposal, message.message_key, message.received_at)
         detail = self._send_decision_detail(proposal)
         try:
@@ -186,6 +191,22 @@ class QuoteWorkflowHandler:
                 raise
             drafted = current
         return _workflow_reply(drafted, message.message_key, detail=detail)
+
+    async def _abandon_draft(
+        self, quote: Quote, message: NormalizedOwnerMessage, reason: str
+    ) -> WorkflowResult:
+        abandoned = quote.abandon_draft(message.message_key, message.received_at)
+        await self._save(abandoned, expected_version=quote.version)
+        return WorkflowResult(
+            status=WorkflowRunStatus.SUCCEEDED,
+            replies=(
+                _owner_reply(
+                    abandoned,
+                    message.message_key,
+                    f"{reason}\nSend the corrected request as a new quote.",
+                ),
+            ),
+        )
 
     def _send_decision_detail(self, proposal: QuoteDraftProposal) -> str | None:
         decision = self._send_policy.decide(
@@ -370,24 +391,20 @@ def _owner_quote_body(quote: Quote) -> str:
     if draft is None:
         raise ValueError("quote draft is missing")
     lines = [
-        f"{item.quantity} × {item.description}: {_money(item.total_minor, draft.currency)}"
+        f"{item.quantity} × {item.description}: {format_money(item.total_minor, draft.currency)}"
         for item in draft.line_items
     ]
-    lines.append(f"Total: {_money(draft.total_minor, draft.currency)}")
+    lines.append(f"Total: {format_money(draft.total_minor, draft.currency)}")
     lines.append("Reply with approve, reject, or correct: <changes>.")
     return "\n".join(lines)
 
 
 def _customer_quote_body(draft: QuoteDraftProposal) -> str:
     lines = [
-        f"{item.quantity} × {item.description}: {_money(item.total_minor, draft.currency)}"
+        f"{item.quantity} × {item.description}: {format_money(item.total_minor, draft.currency)}"
         for item in draft.line_items
     ]
-    lines.append(f"Total: {_money(draft.total_minor, draft.currency)}")
+    lines.append(f"Total: {format_money(draft.total_minor, draft.currency)}")
     if draft.owner_note:
         lines.append(draft.owner_note)
     return "\n".join(lines)
-
-
-def _money(amount_minor: int, currency: str) -> str:
-    return f"{currency} {amount_minor / 100:.2f}"
