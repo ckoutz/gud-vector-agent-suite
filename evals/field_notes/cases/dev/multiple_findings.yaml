@@ -1,0 +1,400 @@
+# Several distinct observations in one conversation. A new distinct location must
+# become a new findings entry; elaboration on the same observation must update the
+# existing entry instead of appending a duplicate.
+cases:
+  - case_id: fn-dev-multi-001
+    split: dev
+    category: multiple_findings
+    tags: [asbestos, three_findings]
+    description: Three distinct findings dictated across two turns.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey, 415 Thistlewood Drive, main house. Camille Okafor,
+          March 19 2025, client Brightwater Homes, job PT-8801. Basement first, boiler
+          room pipe insulation is the old wrap, torn in two places, suspect, friable.
+        expect:
+          fields:
+            job_address: 415 Thistlewood Drive, main house
+            job_number: PT-8801
+            client: Brightwater Homes
+            date: March 19, 2025
+            technician: Camille Okafor
+            inspection_type: Asbestos
+          findings:
+            - location_area: Basement boiler room
+              material_condition: Old pipe insulation wrap, torn in two places
+              suspect_status: Suspect
+              condition: Friable
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 415 Thistlewood Drive
+            - item: date
+              state: satisfied
+              evidence_contains: March 19
+            - item: technician
+              state: satisfied
+              evidence_contains: Camille Okafor
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Upstairs now. Kitchen has nine by nine floor tile under the newer vinyl, tile
+          is intact, suspect, condition good. And the attic has vermiculite type loose
+          fill insulation between the joists, undisturbed, suspect, condition good.
+        expect:
+          fields:
+            job_address: 415 Thistlewood Drive, main house
+            job_number: PT-8801
+            client: Brightwater Homes
+            date: March 19, 2025
+            technician: Camille Okafor
+            inspection_type: Asbestos
+          findings:
+            - location_area: Basement boiler room
+              material_condition: Old pipe insulation wrap, torn in two places
+              suspect_status: Suspect
+              condition: Friable
+            - location_area: Kitchen
+              material_condition: 9x9 floor tile beneath newer vinyl, intact
+              suspect_status: Suspect
+              condition: Good
+            - location_area: Attic, between joists
+              material_condition: Vermiculite-type loose fill insulation, undisturbed
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, job_number, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 415 Thistlewood Drive
+            - item: date
+              state: satisfied
+              evidence_contains: March 19
+            - item: technician
+              state: satisfied
+              evidence_contains: Camille Okafor
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-multi-002
+    split: dev
+    category: multiple_findings
+    tags: [elaboration, not_a_new_finding]
+    description: Turn 3 elaborates on the existing finding and must not create a second entry.
+    turns:
+      - index: 1
+        transcript: >-
+          Mold assessment at 1201 Bricklin Street, ground floor cafe. Technician is
+          Soren Vasquez, April 28 2025, client Two Rivers Hospitality.
+        expect:
+          fields:
+            job_address: 1201 Bricklin Street, ground floor cafe
+            client: Two Rivers Hospitality
+            date: April 28, 2025
+            technician: Soren Vasquez
+            inspection_type: Mold
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 1201 Bricklin Street
+            - item: date
+              state: satisfied
+              evidence_contains: April 28
+            - item: technician
+              state: satisfied
+              evidence_contains: Soren Vasquez
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold assessment
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Behind the dish pit there is drywall damage at the base of the wall, damp to
+          the touch. Confirmed growth, condition damaged.
+        expect:
+          fields:
+            job_address: 1201 Bricklin Street, ground floor cafe
+            client: Two Rivers Hospitality
+            date: April 28, 2025
+            technician: Soren Vasquez
+            inspection_type: Mold
+          findings:
+            - location_area: Behind the dish pit, base of wall
+              material_condition: Damp drywall damage
+              suspect_status: Confirmed
+              condition: Damaged
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 1201 Bricklin Street
+            - item: date
+              state: satisfied
+              evidence_contains: April 28
+            - item: technician
+              state: satisfied
+              evidence_contains: Soren Vasquez
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold assessment
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 3
+        transcript: >-
+          More on that same dish pit wall, the damage runs about four feet along the base
+          and the baseboard is swollen. Same spot, just adding detail.
+        expect:
+          fields:
+            job_address: 1201 Bricklin Street, ground floor cafe
+            client: Two Rivers Hospitality
+            date: April 28, 2025
+            technician: Soren Vasquez
+            inspection_type: Mold
+          findings:
+            - location_area: Behind the dish pit, base of wall
+              material_condition: >-
+                Damp drywall damage running about four feet along the base with a swollen
+                baseboard
+              suspect_status: Confirmed
+              condition: Damaged
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 1201 Bricklin Street
+            - item: date
+              state: satisfied
+              evidence_contains: April 28
+            - item: technician
+              state: satisfied
+              evidence_contains: Soren Vasquez
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold assessment
+          forbidden_facts:
+            - field: findings
+              reason: the second utterance elaborates the same observation, it is not a new finding
+              forbidden_values: ["four feet along the base and the baseboard is swollen only"]
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-multi-003
+    split: dev
+    category: multiple_findings
+    tags: [lead, multiple_units, samples]
+    description: Findings in three units plus two samples, with a critical gap on turn one.
+    turns:
+      - index: 1
+        transcript: >-
+          Lead inspection, 620 Halberd Avenue, the six unit walk-up. Client is Vantage
+          Lane Housing.
+        expect:
+          fields:
+            job_address: 620 Halberd Avenue, six-unit walk-up
+            client: Vantage Lane Housing
+            inspection_type: Lead
+          critical_gaps: [date, technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 620 Halberd Avenue
+            - item: date
+              state: missing
+            - item: technician
+              state: missing
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead inspection
+          follow_up:
+            needed: true
+            target: date
+            topic: date of the inspection
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          It is May 30 2025 and this is Odalys Brenner. Unit 1 door casing is chipping,
+          suspect, damaged. Unit 3 window sash is intact painted wood, suspect, good.
+          Unit 5 porch railing is peeling badly, suspect, damaged.
+        expect:
+          fields:
+            job_address: 620 Halberd Avenue, six-unit walk-up
+            client: Vantage Lane Housing
+            date: May 30, 2025
+            technician: Odalys Brenner
+            inspection_type: Lead
+          findings:
+            - location_area: Unit 1 door casing
+              material_condition: Chipping paint
+              suspect_status: Suspect
+              condition: Damaged
+            - location_area: Unit 3 window sash
+              material_condition: Intact painted wood
+              suspect_status: Suspect
+              condition: Good
+            - location_area: Unit 5 porch railing
+              material_condition: Badly peeling paint
+              suspect_status: Suspect
+              condition: Damaged
+          preserved_fields: [job_address, client, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 620 Halberd Avenue
+            - item: date
+              state: satisfied
+              evidence_contains: May 30
+            - item: technician
+              state: satisfied
+              evidence_contains: Odalys Brenner
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 3
+        transcript: >-
+          Two paint chip samples, L-1 from the unit 1 door casing and L-2 from the unit 5
+          railing, both going to Ridgeline Labs.
+        expect:
+          fields:
+            job_address: 620 Halberd Avenue, six-unit walk-up
+            client: Vantage Lane Housing
+            date: May 30, 2025
+            technician: Odalys Brenner
+            inspection_type: Lead
+          findings:
+            - location_area: Unit 1 door casing
+              material_condition: Chipping paint
+              suspect_status: Suspect
+              condition: Damaged
+            - location_area: Unit 3 window sash
+              material_condition: Intact painted wood
+              suspect_status: Suspect
+              condition: Good
+            - location_area: Unit 5 porch railing
+              material_condition: Badly peeling paint
+              suspect_status: Suspect
+              condition: Damaged
+          samples:
+            - sample_id: L-1
+              location: Unit 1 door casing
+              material_type: Paint chip
+              sent_to_lab: Y, Ridgeline Labs
+            - sample_id: L-2
+              location: Unit 5 porch railing
+              material_type: Paint chip
+              sent_to_lab: Y, Ridgeline Labs
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 620 Halberd Avenue
+            - item: date
+              state: satisfied
+              evidence_contains: May 30
+            - item: technician
+              state: satisfied
+              evidence_contains: Odalys Brenner
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-dev-multi-004
+    split: dev
+    category: multiple_findings
+    tags: [pre_demo, mixed_materials]
+    description: Four findings of different material classes in one pre-demo walk.
+    turns:
+      - index: 1
+        transcript: >-
+          Pre-demolition survey at 8 Ellery Bight, the old cannery office block. Rafe
+          Donnelly, June 24 2025, client Sable Point Development.
+        expect:
+          fields:
+            job_address: 8 Ellery Bight, old cannery office block
+            client: Sable Point Development
+            date: June 24, 2025
+            technician: Rafe Donnelly
+            inspection_type: Pre-Demo
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 8 Ellery Bight
+            - item: date
+              state: satisfied
+              evidence_contains: June 24
+            - item: technician
+              state: satisfied
+              evidence_contains: Rafe Donnelly
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Pre-demolition survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Ceiling tile in the front office, twelve by twelve, intact, suspect, good.
+          Transite panel on the exterior of the mechanical shed, cracked at one corner,
+          suspect, damaged. Painted steel stair stringers in the back, peeling, suspect,
+          damaged. And the fluorescent ballasts in the shop area look pre-1980, suspect,
+          condition good.
+        expect:
+          fields:
+            job_address: 8 Ellery Bight, old cannery office block
+            client: Sable Point Development
+            date: June 24, 2025
+            technician: Rafe Donnelly
+            inspection_type: Pre-Demo
+          findings:
+            - location_area: Front office
+              material_condition: 12x12 ceiling tile, intact
+              suspect_status: Suspect
+              condition: Good
+            - location_area: Mechanical shed exterior
+              material_condition: Transite panel, cracked at one corner
+              suspect_status: Suspect
+              condition: Damaged
+            - location_area: Back stairs
+              material_condition: Painted steel stair stringers, peeling
+              suspect_status: Suspect
+              condition: Damaged
+            - location_area: Shop area
+              material_condition: Fluorescent ballasts, appear pre-1980
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 8 Ellery Bight
+            - item: date
+              state: satisfied
+              evidence_contains: June 24
+            - item: technician
+              state: satisfied
+              evidence_contains: Rafe Donnelly
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Pre-demolition survey
+          follow_up:
+            needed: false
+          status: ready_for_review

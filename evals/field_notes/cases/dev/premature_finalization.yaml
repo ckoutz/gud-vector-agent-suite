@@ -1,0 +1,301 @@
+# Finalization language ("that's it", "looks good, send it") must not by itself make a
+# note ready. Where the note genuinely is complete, the same language must not cause a
+# spurious question either.
+cases:
+  - case_id: fn-dev-premature-001
+    split: dev
+    category: premature_finalization
+    tags: [send_it, gap_remains]
+    description: "\"Send it\" while the date is still unknown."
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey at 88 Larkspur Walk, the maisonette. Technician Bo Hallberg,
+          client Pinehaven Estates. Floor tile in the hall is intact, suspect, good.
+        expect:
+          fields:
+            job_address: 88 Larkspur Walk, maisonette
+            client: Pinehaven Estates
+            technician: Bo Hallberg
+            inspection_type: Asbestos
+          critical_gaps: [date]
+          findings:
+            - location_area: Hall
+              material_condition: Floor tile, intact
+              suspect_status: Suspect
+              condition: Good
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 88 Larkspur Walk
+            - item: date
+              state: missing
+            - item: technician
+              state: satisfied
+              evidence_contains: Bo Hallberg
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: true
+            target: date
+            topic: date of the visit
+          status: need_more_info
+      - index: 2
+        transcript: That is everything, looks good, send it through to the office.
+        expect:
+          fields:
+            job_address: 88 Larkspur Walk, maisonette
+            client: Pinehaven Estates
+            technician: Bo Hallberg
+            inspection_type: Asbestos
+          critical_gaps: [date]
+          findings:
+            - location_area: Hall
+              material_condition: Floor tile, intact
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, client, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 88 Larkspur Walk
+            - item: date
+              state: missing
+            - item: technician
+              state: satisfied
+              evidence_contains: Bo Hallberg
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          forbidden_facts:
+            - field: date
+              reason: finalization language is not a date
+          follow_up:
+            needed: true
+            target: date
+            topic: date of the visit
+          status: need_more_info
+          premature_finalization: true
+
+  - case_id: fn-dev-premature-002
+    split: dev
+    category: premature_finalization
+    tags: [done_mid_sentence]
+    description: "\"Done\" appears mid-dictation and must not finalize anything."
+    turns:
+      - index: 1
+        transcript: >-
+          Lead inspection at 12 Ashcombe Vale. November 3 2026, client Grovewood Lettings.
+        expect:
+          fields:
+            job_address: 12 Ashcombe Vale
+            client: Grovewood Lettings
+            date: November 3, 2026
+            inspection_type: Lead
+          critical_gaps: [technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 12 Ashcombe Vale
+            - item: date
+              state: satisfied
+              evidence_contains: November 3
+            - item: technician
+              state: missing
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead inspection
+          follow_up:
+            needed: true
+            target: technician
+            topic: technician on site
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          Right, done with the upstairs, that all looks good, now moving to the cellar
+          stairs where the handrail paint is flaking. Suspect, damaged.
+        expect:
+          fields:
+            job_address: 12 Ashcombe Vale
+            client: Grovewood Lettings
+            date: November 3, 2026
+            inspection_type: Lead
+          critical_gaps: [technician]
+          findings:
+            - location_area: Cellar stairs handrail
+              material_condition: Flaking paint
+              suspect_status: Suspect
+              condition: Damaged
+          preserved_fields: [job_address, client, date, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 12 Ashcombe Vale
+            - item: date
+              state: satisfied
+              evidence_contains: November 3
+            - item: technician
+              state: missing
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead inspection
+          follow_up:
+            needed: true
+            target: technician
+            topic: technician on site
+          status: need_more_info
+          premature_finalization: true
+
+  - case_id: fn-dev-premature-003
+    split: dev
+    category: premature_finalization
+    tags: [complete_note, finalization_allowed]
+    description: Finalization language on a genuinely complete note; no question allowed.
+    turns:
+      - index: 1
+        transcript: >-
+          Pre-demo survey at 400 Halloway Wharf, unit 6. Technician Marguerite Oyelaran,
+          December 1 2026, client Tidebank Regeneration, job PT-3390. Ceiling tiles are
+          intact throughout, suspect, condition good.
+        expect:
+          fields:
+            job_address: 400 Halloway Wharf, unit 6
+            job_number: PT-3390
+            client: Tidebank Regeneration
+            date: December 1, 2026
+            technician: Marguerite Oyelaran
+            inspection_type: Pre-Demo
+          findings:
+            - location_area: Throughout unit 6
+              material_condition: Ceiling tiles, intact
+              suspect_status: Suspect
+              condition: Good
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 400 Halloway Wharf
+            - item: date
+              state: satisfied
+              evidence_contains: December 1
+            - item: technician
+              state: satisfied
+              evidence_contains: Marguerite Oyelaran
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Pre-demo survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: Yep, that is correct, we are done, looks good to me.
+        expect:
+          fields:
+            job_address: 400 Halloway Wharf, unit 6
+            job_number: PT-3390
+            client: Tidebank Regeneration
+            date: December 1, 2026
+            technician: Marguerite Oyelaran
+            inspection_type: Pre-Demo
+          findings:
+            - location_area: Throughout unit 6
+              material_condition: Ceiling tiles, intact
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields:
+            [job_address, job_number, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 400 Halloway Wharf
+            - item: date
+              state: satisfied
+              evidence_contains: December 1
+            - item: technician
+              state: satisfied
+              evidence_contains: Marguerite Oyelaran
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Pre-demo survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+          premature_finalization: true
+
+  - case_id: fn-dev-premature-004
+    split: dev
+    category: premature_finalization
+    tags: [finalize_over_contradiction]
+    description: The technician tries to close out while a hard contradiction is open.
+    turns:
+      - index: 1
+        transcript: >-
+          Mold inspection at 9 Brackenhurst Rise. Technician Idun Halvorsen, January 9
+          2027. Findings are all asbestos insulation board, three locations, all suspect,
+          and the flat is bone dry throughout with no growth at all.
+        expect:
+          fields:
+            job_address: 9 Brackenhurst Rise
+            date: January 9, 2027
+            technician: Idun Halvorsen
+            inspection_type: Mold
+          tolerated_fields: [general_condition_notes]
+          findings:
+            - material_condition: Asbestos insulation board, suspect, three locations
+              suspect_status: Suspect
+          contradiction: >-
+            inspection_type is Mold while every finding is suspect asbestos insulation
+            board and the property is reported dry
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 9 Brackenhurst Rise
+            - item: date
+              state: satisfied
+              evidence_contains: January 9
+            - item: technician
+              state: satisfied
+              evidence_contains: Idun Halvorsen
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold inspection
+          follow_up:
+            needed: true
+            target: inspection_type
+            topic: whether this is a mold or asbestos scope
+          status: need_more_info
+      - index: 2
+        transcript: It is fine, that is correct, finalize it and send it to the office please.
+        expect:
+          fields:
+            job_address: 9 Brackenhurst Rise
+            date: January 9, 2027
+            technician: Idun Halvorsen
+            inspection_type: Mold
+          tolerated_fields: [general_condition_notes]
+          findings:
+            - material_condition: Asbestos insulation board, suspect, three locations
+              suspect_status: Suspect
+          preserved_fields: [job_address, date, technician, inspection_type]
+          contradiction: >-
+            inspection_type is Mold while every finding is suspect asbestos insulation
+            board and the property is reported dry
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 9 Brackenhurst Rise
+            - item: date
+              state: satisfied
+              evidence_contains: January 9
+            - item: technician
+              state: satisfied
+              evidence_contains: Idun Halvorsen
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold inspection
+          follow_up:
+            needed: true
+            target: inspection_type
+            topic: whether this is a mold or asbestos scope
+          status: need_more_info
+          premature_finalization: true

@@ -1,0 +1,418 @@
+# A critical item is genuinely unstated and not inferable, so exactly one question is
+# warranted about exactly that item. Where an item IS inferable, inferring it is
+# required and asking about it is a failure.
+cases:
+  - case_id: fn-dev-missing-001
+    split: dev
+    category: missing_critical
+    tags: [asbestos, no_date]
+    description: Everything but the date; inspection type is inferable from the findings.
+    turns:
+      - index: 1
+        transcript: >-
+          This is Hollis Grant at 12 Pemberton Row, the coach house behind the main
+          building. Client is Ardley Estates.
+        expect:
+          fields:
+            job_address: 12 Pemberton Row, coach house
+            client: Ardley Estates
+            technician: Hollis Grant
+          critical_gaps: [date, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 12 Pemberton Row
+            - item: date
+              state: missing
+            - item: technician
+              state: satisfied
+              evidence_contains: Hollis Grant
+            - item: inspection_type
+              state: missing
+          forbidden_facts:
+            - field: date
+              reason: no date was stated and today's date must not be assumed
+          follow_up:
+            needed: true
+            target: date
+            topic: date of the inspection
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          Friable pipe insulation on the boiler runs in the crawlspace, suspect ACM,
+          about thirty feet of it, badly deteriorated at the elbows. Condition friable.
+        expect:
+          fields:
+            job_address: 12 Pemberton Row, coach house
+            client: Ardley Estates
+            technician: Hollis Grant
+            inspection_type: Asbestos
+          critical_gaps: [date]
+          findings:
+            - location_area: Crawlspace, boiler pipe runs
+              material_condition: About 30 feet of friable pipe insulation, deteriorated at the elbows
+              suspect_status: Suspect
+              condition: Friable
+          preserved_fields: [job_address, client, technician]
+          permissible_inferences:
+            - field: inspection_type
+              allowed_values: [Asbestos, "Asbestos (inferred)"]
+              rationale: friable pipe insulation and suspect ACM terminology
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 12 Pemberton Row
+            - item: date
+              state: missing
+            - item: technician
+              state: satisfied
+              evidence_contains: Hollis Grant
+            - item: inspection_type
+              state: inferred
+              evidence_contains: friable pipe insulation
+          forbidden_facts:
+            - field: date
+              reason: still unstated
+          follow_up:
+            needed: true
+            target: date
+            topic: date of the inspection
+          status: need_more_info
+
+  - case_id: fn-dev-missing-002
+    split: dev
+    category: missing_critical
+    tags: [mold, no_address]
+    description: Address never stated; a unit number alone is not an address.
+    turns:
+      - index: 1
+        transcript: >-
+          Mold inspection for Kestrel Holdings, September 3 2025, this is Bea Lindqvist.
+          I am in unit 4C right now.
+        expect:
+          fields:
+            client: Kestrel Holdings
+            date: September 3, 2025
+            technician: Bea Lindqvist
+            inspection_type: Mold
+          tolerated_fields: [missing_info, areas_accessed]
+          critical_gaps: [job_address]
+          checklist:
+            - item: job_address
+              state: missing
+            - item: date
+              state: satisfied
+              evidence_contains: September 3
+            - item: technician
+              state: satisfied
+              evidence_contains: Bea Lindqvist
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold inspection
+          forbidden_facts:
+            - field: job_address
+              reason: only a unit number was given, never a street address
+              forbidden_values: ["4C"]
+          follow_up:
+            needed: true
+            target: job_address
+            topic: street address of the building
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          Bathroom ceiling has a soft patch under the upstairs shower, active staining,
+          smells musty. Confirmed, damaged.
+        expect:
+          fields:
+            client: Kestrel Holdings
+            date: September 3, 2025
+            technician: Bea Lindqvist
+            inspection_type: Mold
+          tolerated_fields: [missing_info, areas_accessed]
+          critical_gaps: [job_address]
+          findings:
+            - location_area: Bathroom ceiling under the upstairs shower
+              material_condition: Soft patch with active staining and musty odor
+              suspect_status: Confirmed
+              condition: Damaged
+          preserved_fields: [client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: missing
+            - item: date
+              state: satisfied
+              evidence_contains: September 3
+            - item: technician
+              state: satisfied
+              evidence_contains: Bea Lindqvist
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold inspection
+          forbidden_facts:
+            - field: job_address
+              reason: still only a unit number
+              forbidden_values: ["4C"]
+          follow_up:
+            needed: true
+            target: job_address
+            topic: street address of the building
+          status: need_more_info
+
+  - case_id: fn-dev-missing-003
+    split: dev
+    category: missing_critical
+    tags: [lead, no_technician]
+    description: No technician named; a client contact's name must not be used instead.
+    turns:
+      - index: 1
+        transcript: >-
+          Lead inspection at 340 Quarrier Street, the duplex on the corner. October 21
+          2025. Met the property manager, Dale Fenwick, who let me in.
+        expect:
+          fields:
+            job_address: 340 Quarrier Street, corner duplex
+            date: October 21, 2025
+            inspection_type: Lead
+          tolerated_fields: [general_condition_notes, missing_info]
+          critical_gaps: [technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 340 Quarrier Street
+            - item: date
+              state: satisfied
+              evidence_contains: October 21
+            - item: technician
+              state: missing
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead inspection
+          forbidden_facts:
+            - field: technician
+              reason: Dale Fenwick is the property manager, not the inspecting technician
+              forbidden_values: ["Dale Fenwick"]
+          follow_up:
+            needed: true
+            target: technician
+            topic: name of the technician on site
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          Painted wood trim throughout the first floor unit, intact, no chipping.
+          Suspect, condition good.
+        expect:
+          fields:
+            job_address: 340 Quarrier Street, corner duplex
+            date: October 21, 2025
+            inspection_type: Lead
+          tolerated_fields: [general_condition_notes, missing_info]
+          critical_gaps: [technician]
+          findings:
+            - location_area: First floor unit, painted wood trim throughout
+              material_condition: Intact, no chipping
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, date, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 340 Quarrier Street
+            - item: date
+              state: satisfied
+              evidence_contains: October 21
+            - item: technician
+              state: missing
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead inspection
+          forbidden_facts:
+            - field: technician
+              reason: property manager is not the technician
+              forbidden_values: ["Dale Fenwick"]
+          follow_up:
+            needed: true
+            target: technician
+            topic: name of the technician on site
+          status: need_more_info
+
+  - case_id: fn-dev-missing-004
+    split: dev
+    category: missing_critical
+    tags: [ambiguous_type, no_inspection_type]
+    description: Findings are generic, so inspection type cannot be inferred and must be asked.
+    turns:
+      - index: 1
+        transcript: >-
+          Wendell Boyce, 78 Arbuckle Terrace, the front building. December 2 2025,
+          client is Tolliver Realty Trust.
+        expect:
+          fields:
+            job_address: 78 Arbuckle Terrace, front building
+            client: Tolliver Realty Trust
+            date: December 2, 2025
+            technician: Wendell Boyce
+          critical_gaps: [inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 78 Arbuckle Terrace
+            - item: date
+              state: satisfied
+              evidence_contains: December 2
+            - item: technician
+              state: satisfied
+              evidence_contains: Wendell Boyce
+            - item: inspection_type
+              state: missing
+          forbidden_facts:
+            - field: inspection_type
+              reason: nothing said so far indicates a discipline
+              forbidden_values: [Asbestos, Mold, Lead, PCB, IAQ, Pre-Demo]
+          follow_up:
+            needed: true
+            target: inspection_type
+            topic: type of inspection this is
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          Walked all three floors and the roof. General condition is tired but sound,
+          some water staining on the top floor ceilings, nothing acute.
+        expect:
+          fields:
+            job_address: 78 Arbuckle Terrace, front building
+            client: Tolliver Realty Trust
+            date: December 2, 2025
+            technician: Wendell Boyce
+            areas_accessed: All three floors and the roof
+            general_condition_notes: Tired but sound; some water staining on the top floor ceilings
+          critical_gaps: [inspection_type]
+          preserved_fields: [job_address, client, date, technician]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 78 Arbuckle Terrace
+            - item: date
+              state: satisfied
+              evidence_contains: December 2
+            - item: technician
+              state: satisfied
+              evidence_contains: Wendell Boyce
+            - item: inspection_type
+              state: missing
+          forbidden_facts:
+            - field: inspection_type
+              reason: water staining alone does not establish a mold scope
+              forbidden_values: [Asbestos, Mold, Lead, PCB, IAQ, Pre-Demo]
+          follow_up:
+            needed: true
+            target: inspection_type
+            topic: type of inspection this is
+          status: need_more_info
+
+  - case_id: fn-dev-missing-005
+    split: dev
+    category: missing_critical
+    tags: [asbestos, two_gaps]
+    description: Two critical items missing; only one question per turn is allowed.
+    turns:
+      - index: 1
+        transcript: >-
+          Starting the survey now. Suspect asbestos containing floor tile in the
+          corridor, nine by nine, intact.
+        expect:
+          fields:
+            inspection_type: Asbestos
+          critical_gaps: [job_address, date, technician]
+          findings:
+            - location_area: Corridor
+              material_condition: 9x9 floor tile, intact
+              suspect_status: Suspect
+              condition: Good
+          permissible_inferences:
+            - field: inspection_type
+              allowed_values: [Asbestos]
+              rationale: technician says suspect asbestos containing floor tile
+          checklist:
+            - item: job_address
+              state: missing
+            - item: date
+              state: missing
+            - item: technician
+              state: missing
+            - item: inspection_type
+              state: inferred
+              evidence_contains: suspect asbestos containing floor tile
+          forbidden_facts:
+            - field: job_address
+              reason: no location has been stated
+            - field: technician
+              reason: nobody has been named
+          follow_up:
+            needed: true
+            target: job_address
+            topic: address of the job
+          status: need_more_info
+      - index: 2
+        transcript: >-
+          Sorry, address is 19 Marchetti Way, the north corridor of the second floor.
+        expect:
+          fields:
+            job_address: 19 Marchetti Way, north corridor, second floor
+            inspection_type: Asbestos
+          critical_gaps: [date, technician]
+          findings:
+            - location_area: Corridor
+              material_condition: 9x9 floor tile, intact
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 19 Marchetti Way
+            - item: date
+              state: missing
+            - item: technician
+              state: missing
+            - item: inspection_type
+              state: inferred
+              evidence_contains: suspect asbestos containing floor tile
+          forbidden_facts:
+            - field: technician
+              reason: nobody has been named
+          follow_up:
+            needed: true
+            target: technician
+            topic: technician on site
+          status: need_more_info
+      - index: 3
+        transcript: >-
+          It is Ines Marchetti-Rowe, no relation to the street. Today is November 7 2025.
+        expect:
+          fields:
+            job_address: 19 Marchetti Way, north corridor, second floor
+            date: November 7, 2025
+            technician: Ines Marchetti-Rowe
+            inspection_type: Asbestos
+          findings:
+            - location_area: Corridor
+              material_condition: 9x9 floor tile, intact
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 19 Marchetti Way
+            - item: date
+              state: satisfied
+              evidence_contains: November 7
+            - item: technician
+              state: satisfied
+              evidence_contains: Ines Marchetti-Rowe
+            - item: inspection_type
+              state: inferred
+              evidence_contains: suspect asbestos containing floor tile
+          follow_up:
+            needed: false
+          status: ready_for_review

@@ -1,0 +1,489 @@
+# Held out for final selection only. Multi-finding merges, corrections,
+# contradictions, and transcription artifacts.
+cases:
+  - case_id: fn-hold-multi-001
+    split: holdout
+    category: multiple_findings
+    tags: [asbestos, four_findings, elaboration]
+    description: Three new findings then an elaboration that must not become a fourth.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey at 700 Marchwood Gardens, block C. Technician Delphine Aubert,
+          September 30 2027, client Kirkfell Housing, job PT-6640. Riser cupboard has
+          pipe lagging, intact, suspect, good. Bin store ceiling is insulating board,
+          suspect, good.
+        expect:
+          fields:
+            job_address: 700 Marchwood Gardens, block C
+            job_number: PT-6640
+            client: Kirkfell Housing
+            date: September 30, 2027
+            technician: Delphine Aubert
+            inspection_type: Asbestos
+          findings:
+            - location_area: Riser cupboard
+              material_condition: Pipe lagging, intact
+              suspect_status: Suspect
+              condition: Good
+            - location_area: Bin store ceiling
+              material_condition: Insulating board
+              suspect_status: Suspect
+              condition: Good
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 700 Marchwood Gardens
+            - item: date
+              state: satisfied
+              evidence_contains: September 30
+            - item: technician
+              state: satisfied
+              evidence_contains: Delphine Aubert
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Third one, the roof plant room has sprayed coating on the underside of the slab,
+          flaking in one corner, suspect, damaged.
+        expect:
+          fields:
+            job_address: 700 Marchwood Gardens, block C
+            job_number: PT-6640
+            client: Kirkfell Housing
+            date: September 30, 2027
+            technician: Delphine Aubert
+            inspection_type: Asbestos
+          findings:
+            - location_area: Riser cupboard
+              material_condition: Pipe lagging, intact
+              suspect_status: Suspect
+              condition: Good
+            - location_area: Bin store ceiling
+              material_condition: Insulating board
+              suspect_status: Suspect
+              condition: Good
+            - location_area: Roof plant room, underside of slab
+              material_condition: Sprayed coating, flaking in one corner
+              suspect_status: Suspect
+              condition: Damaged
+          preserved_fields: [job_address, job_number, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 700 Marchwood Gardens
+            - item: date
+              state: satisfied
+              evidence_contains: September 30
+            - item: technician
+              state: satisfied
+              evidence_contains: Delphine Aubert
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 3
+        transcript: >-
+          Back on the plant room coating, the flaking corner is above the pump base and
+          there is debris on the floor underneath it. Same location, adding detail.
+        expect:
+          fields:
+            job_address: 700 Marchwood Gardens, block C
+            job_number: PT-6640
+            client: Kirkfell Housing
+            date: September 30, 2027
+            technician: Delphine Aubert
+            inspection_type: Asbestos
+          findings:
+            - location_area: Riser cupboard
+              material_condition: Pipe lagging, intact
+              suspect_status: Suspect
+              condition: Good
+            - location_area: Bin store ceiling
+              material_condition: Insulating board
+              suspect_status: Suspect
+              condition: Good
+            - location_area: Roof plant room, underside of slab above the pump base
+              material_condition: >-
+                Sprayed coating flaking in one corner with debris on the floor underneath
+              suspect_status: Suspect
+              condition: Damaged
+          preserved_fields: [job_address, job_number, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 700 Marchwood Gardens
+            - item: date
+              state: satisfied
+              evidence_contains: September 30
+            - item: technician
+              state: satisfied
+              evidence_contains: Delphine Aubert
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-hold-correction-001
+    split: holdout
+    category: correction
+    tags: [technician_correction]
+    description: The technician name is corrected; the superseded name must disappear.
+    turns:
+      - index: 1
+        transcript: >-
+          Lead inspection at 18 Sowerby Place. Technician on record is Marcus Delgado,
+          October 14 2027, client Hollowbrook Homes.
+        expect:
+          fields:
+            job_address: 18 Sowerby Place
+            client: Hollowbrook Homes
+            date: October 14, 2027
+            technician: Marcus Delgado
+            inspection_type: Lead
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 18 Sowerby Place
+            - item: date
+              state: satisfied
+              evidence_contains: October 14
+            - item: technician
+              state: satisfied
+              evidence_contains: Marcus Delgado
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Correction, Marcus was scheduled but he is off sick, I covered it. Put me down,
+          Renata Filipovic.
+        expect:
+          fields:
+            job_address: 18 Sowerby Place
+            client: Hollowbrook Homes
+            date: October 14, 2027
+            technician: Renata Filipovic
+            inspection_type: Lead
+          preserved_fields: [job_address, client, date, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 18 Sowerby Place
+            - item: date
+              state: satisfied
+              evidence_contains: October 14
+            - item: technician
+              state: satisfied
+              evidence_contains: Renata Filipovic
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Lead inspection
+          forbidden_facts:
+            - field: technician
+              reason: the scheduled technician did not attend
+              forbidden_values: ["Marcus Delgado"]
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-hold-correction-002
+    split: holdout
+    category: correction
+    tags: [location_correction, findings]
+    description: A finding's location is corrected while its material detail stands.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey at 130 Yewbank Road, unit 2. Technician Casper Nwosu,
+          November 21 2027. Insulating board panel in the airing cupboard, intact,
+          suspect, good.
+        expect:
+          fields:
+            job_address: 130 Yewbank Road, unit 2
+            date: November 21, 2027
+            technician: Casper Nwosu
+            inspection_type: Asbestos
+          findings:
+            - location_area: Airing cupboard
+              material_condition: Insulating board panel, intact
+              suspect_status: Suspect
+              condition: Good
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 130 Yewbank Road
+            - item: date
+              state: satisfied
+              evidence_contains: November 21
+            - item: technician
+              state: satisfied
+              evidence_contains: Casper Nwosu
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          That panel is in the meter cupboard, not the airing cupboard. Board itself is as
+          I described.
+        expect:
+          fields:
+            job_address: 130 Yewbank Road, unit 2
+            date: November 21, 2027
+            technician: Casper Nwosu
+            inspection_type: Asbestos
+          findings:
+            - location_area: Meter cupboard
+              material_condition: Insulating board panel, intact
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, date, technician, inspection_type]
+          forbidden_facts:
+            - field: findings
+              reason: the superseded location must not remain
+              forbidden_values: ["airing cupboard"]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 130 Yewbank Road
+            - item: date
+              state: satisfied
+              evidence_contains: November 21
+            - item: technician
+              state: satisfied
+              evidence_contains: Casper Nwosu
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-hold-contradiction-001
+    split: holdout
+    category: contradiction
+    tags: [date_contradiction]
+    description: Two incompatible dates are given for the same visit.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos inspection at 24 Pellingham Street. Technician Anouk Devries,
+          December 5 2027, client Thornmead Group.
+        expect:
+          fields:
+            job_address: 24 Pellingham Street
+            client: Thornmead Group
+            date: December 5, 2027
+            technician: Anouk Devries
+            inspection_type: Asbestos
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 24 Pellingham Street
+            - item: date
+              state: satisfied
+              evidence_contains: December 5
+            - item: technician
+              state: satisfied
+              evidence_contains: Anouk Devries
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          For the record this visit was on December 5 and also the inspection took place
+          on December 15, both dates are right, put them both on there.
+        expect:
+          fields:
+            job_address: 24 Pellingham Street
+            client: Thornmead Group
+            date: December 5, 2027
+            technician: Anouk Devries
+            inspection_type: Asbestos
+          preserved_fields: [job_address, client, technician, inspection_type]
+          contradiction: >-
+            two different inspection dates are asserted for the same single visit
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 24 Pellingham Street
+            - item: date
+              state: satisfied
+              evidence_contains: December 5
+            - item: technician
+              state: satisfied
+              evidence_contains: Anouk Devries
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          follow_up:
+            needed: true
+            target: date
+            topic: which date the visit actually took place on
+          status: need_more_info
+
+  - case_id: fn-hold-contradiction-002
+    split: holdout
+    category: contradiction
+    tags: [minor_ambiguity, must_not_ask]
+    description: An unresolved-but-plausible reference; asking is a false follow-up.
+    turns:
+      - index: 1
+        transcript: >-
+          Pre-demo survey at 46 Stanhope Wharf, unit 9. Technician Emiliano Rustici,
+          January 18 2028, client Northcliff Build.
+        expect:
+          fields:
+            job_address: 46 Stanhope Wharf, unit 9
+            client: Northcliff Build
+            date: January 18, 2028
+            technician: Emiliano Rustici
+            inspection_type: Pre-Demo
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 46 Stanhope Wharf
+            - item: date
+              state: satisfied
+              evidence_contains: January 18
+            - item: technician
+              state: satisfied
+              evidence_contains: Emiliano Rustici
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Pre-demo survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Floor screed has a bitumen looking layer under it, could be from the original
+          build or the nineties refit, no way to tell from here. Suspect, condition good.
+          Office may already have the refit drawings.
+        expect:
+          fields:
+            job_address: 46 Stanhope Wharf, unit 9
+            client: Northcliff Build
+            date: January 18, 2028
+            technician: Emiliano Rustici
+            inspection_type: Pre-Demo
+          tolerated_fields: [flags_for_office_review, missing_info, recommended_next_steps]
+          findings:
+            - location_area: Floor screed
+              material_condition: Bitumen-appearing layer beneath the screed, age unclear
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 46 Stanhope Wharf
+            - item: date
+              state: satisfied
+              evidence_contains: January 18
+            - item: technician
+              state: satisfied
+              evidence_contains: Emiliano Rustici
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Pre-demo survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+
+  - case_id: fn-hold-transcript-001
+    split: holdout
+    category: transcription_error
+    tags: [garbled_terms, garbled_place]
+    description: "\"a sbestos\" and \"crawl spays\" artifacts plus a garbled street name."
+    turns:
+      - index: 1
+        transcript: >-
+          A sbestos survey at 39 Harrowgate Rize. Technician Piotr Wiśniewski,
+          February 29 2028.
+        expect:
+          fields:
+            date: February 29, 2028
+            technician: Piotr Wiśniewski
+            inspection_type: Asbestos
+          tolerated_fields: [job_address]
+          permissible_inferences:
+            - field: inspection_type
+              allowed_values: [Asbestos]
+              rationale: "\"a sbestos\" is a transcription artifact"
+            - field: job_address
+              allowed_values: [39 Harrowgate Rize, 39 Harrowgate Rise]
+              rationale: street suffix spelling is uncertain but the number and name are clear
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 39 Harrowgate
+            - item: date
+              state: satisfied
+              evidence_contains: February 29
+            - item: technician
+              state: satisfied
+              evidence_contains: Wiśniewski
+            - item: inspection_type
+              state: inferred
+              evidence_contains: sbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          In the crawl spays under the rear extension there is pipe lagging, dry and
+          intact, suspect, condition good.
+        expect:
+          fields:
+            date: February 29, 2028
+            technician: Piotr Wiśniewski
+            inspection_type: Asbestos
+          tolerated_fields: [job_address]
+          findings:
+            - location_area: Crawlspace under the rear extension
+              material_condition: Pipe lagging, dry and intact
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [date, technician, inspection_type]
+          permissible_inferences:
+            - field: job_address
+              allowed_values: [39 Harrowgate Rize, 39 Harrowgate Rise]
+              rationale: the address captured on turn one must survive
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 39 Harrowgate
+            - item: date
+              state: satisfied
+              evidence_contains: February 29
+            - item: technician
+              state: satisfied
+              evidence_contains: Wiśniewski
+            - item: inspection_type
+              state: inferred
+              evidence_contains: sbestos survey
+          forbidden_facts:
+            - field: findings
+              reason: the artifact spelling must not be stored
+              forbidden_values: ["crawl spays"]
+          follow_up:
+            needed: false
+          status: ready_for_review

@@ -1,0 +1,292 @@
+# Hard contradictions may raise exactly one question. Minor ambiguity may not: the
+# last two cases here fail any candidate that treats an unresolved-but-plausible
+# reference as a reason to ask.
+cases:
+  - case_id: fn-dev-contradiction-001
+    split: dev
+    category: contradiction
+    tags: [scope_vs_findings]
+    description: Stated mold scope while every finding is explicitly asbestos material.
+    turns:
+      - index: 1
+        transcript: >-
+          Mold inspection at 74 Ravensbourne Way, the annex. Technician Beatriz Salas,
+          November 12 2025, client Kingsmere Facilities.
+        expect:
+          fields:
+            job_address: 74 Ravensbourne Way, annex
+            client: Kingsmere Facilities
+            date: November 12, 2025
+            technician: Beatriz Salas
+            inspection_type: Mold
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 74 Ravensbourne Way
+            - item: date
+              state: satisfied
+              evidence_contains: November 12
+            - item: technician
+              state: satisfied
+              evidence_contains: Beatriz Salas
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Friable asbestos pipe lagging in the tunnel, deteriorated, suspect ACM. Transite
+          board behind the fan unit, suspect. No water damage anywhere in here, no growth,
+          nothing musty at all.
+        expect:
+          fields:
+            job_address: 74 Ravensbourne Way, annex
+            client: Kingsmere Facilities
+            date: November 12, 2025
+            technician: Beatriz Salas
+            inspection_type: Mold
+          findings:
+            - location_area: Tunnel
+              material_condition: Friable asbestos pipe lagging, deteriorated
+              suspect_status: Suspect
+              condition: Friable
+            - location_area: Behind the fan unit
+              material_condition: Transite board
+              suspect_status: Suspect
+          preserved_fields: [job_address, client, date, technician]
+          contradiction: >-
+            inspection_type is Mold but every finding is asbestos material and the
+            technician reports no growth
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 74 Ravensbourne Way
+            - item: date
+              state: satisfied
+              evidence_contains: November 12
+            - item: technician
+              state: satisfied
+              evidence_contains: Beatriz Salas
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Mold inspection
+          follow_up:
+            needed: true
+            target: inspection_type
+            topic: whether this job is a mold or an asbestos scope
+          status: need_more_info
+
+  - case_id: fn-dev-contradiction-002
+    split: dev
+    category: contradiction
+    tags: [access_contradiction]
+    description: A room is reported both inaccessible and inspected in detail.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey, 15 Dunmore Court. Ilya Petrenko, December 9 2025. Could not get
+          into the boiler room at all, it is locked and the caretaker is off today.
+        expect:
+          fields:
+            job_address: 15 Dunmore Court
+            date: December 9, 2025
+            technician: Ilya Petrenko
+            inspection_type: Asbestos
+            areas_not_accessed: Boiler room, locked and caretaker off site
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 15 Dunmore Court
+            - item: date
+              state: satisfied
+              evidence_contains: December 9
+            - item: technician
+              state: satisfied
+              evidence_contains: Ilya Petrenko
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          In the boiler room the header insulation is intact and I checked all four
+          elbows up close, suspect, condition good.
+        expect:
+          fields:
+            job_address: 15 Dunmore Court
+            date: December 9, 2025
+            technician: Ilya Petrenko
+            inspection_type: Asbestos
+            areas_not_accessed: Boiler room, locked and caretaker off site
+          findings:
+            - location_area: Boiler room, header insulation
+              material_condition: Intact, all four elbows checked up close
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, date, technician, inspection_type]
+          contradiction: >-
+            the boiler room is recorded as not accessed but a close inspection of it is
+            described
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 15 Dunmore Court
+            - item: date
+              state: satisfied
+              evidence_contains: December 9
+            - item: technician
+              state: satisfied
+              evidence_contains: Ilya Petrenko
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: true
+            target: areas_not_accessed
+            topic: whether the boiler room was actually entered
+          status: need_more_info
+
+  - case_id: fn-dev-contradiction-003
+    split: dev
+    category: contradiction
+    tags: [suspect_status_contradiction]
+    description: The same material is called not suspect and confirmed in one breath.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos inspection at 6 Ainsdale Green, upper flat. Marta Krol, January 15
+          2026, client Fenmoor Lettings.
+        expect:
+          fields:
+            job_address: 6 Ainsdale Green, upper flat
+            client: Fenmoor Lettings
+            date: January 15, 2026
+            technician: Marta Krol
+            inspection_type: Asbestos
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 6 Ainsdale Green
+            - item: date
+              state: satisfied
+              evidence_contains: January 15
+            - item: technician
+              state: satisfied
+              evidence_contains: Marta Krol
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Artex coating on the hallway ceiling. That is not suspect, it is a modern
+          replacement. Confirmed asbestos containing, prior lab result on file for it.
+          Condition good either way.
+        expect:
+          fields:
+            job_address: 6 Ainsdale Green, upper flat
+            client: Fenmoor Lettings
+            date: January 15, 2026
+            technician: Marta Krol
+            inspection_type: Asbestos
+          findings:
+            - location_area: Hallway ceiling
+              material_condition: Artex coating
+              condition: Good
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          contradiction: >-
+            the hallway ceiling coating is described as not suspect and as confirmed
+            asbestos containing
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 6 Ainsdale Green
+            - item: date
+              state: satisfied
+              evidence_contains: January 15
+            - item: technician
+              state: satisfied
+              evidence_contains: Marta Krol
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos inspection
+          follow_up:
+            needed: true
+            target: findings
+            topic: whether the hallway coating is suspect or confirmed
+          status: need_more_info
+
+  - case_id: fn-dev-contradiction-004
+    split: dev
+    category: contradiction
+    tags: [minor_ambiguity, must_not_ask]
+    description: Plausible loose ends only; asking anything here is a false follow-up.
+    turns:
+      - index: 1
+        transcript: >-
+          Asbestos survey at 210 Marlbrook Street, the annexe over the garage. Vidal
+          Ferreira, February 2 2026, client Hartsend Properties.
+        expect:
+          fields:
+            job_address: 210 Marlbrook Street, annexe over the garage
+            client: Hartsend Properties
+            date: February 2, 2026
+            technician: Vidal Ferreira
+            inspection_type: Asbestos
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 210 Marlbrook Street
+            - item: date
+              state: satisfied
+              evidence_contains: February 2
+            - item: technician
+              state: satisfied
+              evidence_contains: Vidal Ferreira
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review
+      - index: 2
+        transcript: >-
+          Soffit boards look like cement sheet, suspect, condition good. Might be the same
+          board as the garage ceiling, hard to say without a sample, and I think the
+          previous survey may have covered part of this. Either way nothing is damaged.
+        expect:
+          fields:
+            job_address: 210 Marlbrook Street, annexe over the garage
+            client: Hartsend Properties
+            date: February 2, 2026
+            technician: Vidal Ferreira
+            inspection_type: Asbestos
+          tolerated_fields: [missing_info, flags_for_office_review, general_condition_notes]
+          findings:
+            - location_area: Soffit boards
+              material_condition: Appear to be cement sheet
+              suspect_status: Suspect
+              condition: Good
+          preserved_fields: [job_address, client, date, technician, inspection_type]
+          checklist:
+            - item: job_address
+              state: satisfied
+              evidence_contains: 210 Marlbrook Street
+            - item: date
+              state: satisfied
+              evidence_contains: February 2
+            - item: technician
+              state: satisfied
+              evidence_contains: Vidal Ferreira
+            - item: inspection_type
+              state: satisfied
+              evidence_contains: Asbestos survey
+          follow_up:
+            needed: false
+          status: ready_for_review

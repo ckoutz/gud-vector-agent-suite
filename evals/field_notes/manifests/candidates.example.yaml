@@ -1,0 +1,76 @@
+# Example manifest for the eventual real comparison run. It is configuration only:
+# no credentials, no chosen provider, and no model is selected by committing this
+# file. Every candidate below is inert until a transport is injected in code
+# (`build_adapter(spec, cases, transport=...)`), so running this manifest through the
+# CLI reports each candidate as skipped rather than calling an API.
+#
+# Environment variables are referenced by name and must be supplied by the operator
+# at run time, e.g.:
+#   GVAS_EVAL_VLLM_BASE_URL=http://127.0.0.1:8000/v1
+#   GVAS_EVAL_VLLM_API_KEY=<token accepted by your own vLLM server>
+#   GVAS_EVAL_MANAGED_API_KEY=<managed provider key>
+#
+# Decoding settings are held fixed and identical across candidates so differences
+# reflect model behavior rather than sampling.
+name: candidates-example
+description: Comparison set from the field-extraction options review; nothing selected yet.
+splits:
+  - dev
+candidates:
+  # Baseline: the prompt was originally tuned against this family.
+  - name: managed-baseline-strong
+    kind: schema_output
+    model: <managed-baseline-model-id>
+    endpoint:
+      api_key_env: GVAS_EVAL_MANAGED_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 4096
+    notes: proven baseline; tool/structured-output mode
+
+  # One economical managed structured-output candidate.
+  - name: managed-economical
+    kind: schema_output
+    model: <economical-structured-output-model-id>
+    endpoint:
+      api_key_env: GVAS_EVAL_MANAGED_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 4096
+    notes: strict JSON-Schema structured output
+
+  # Open-weight candidates behind one OpenAI-compatible vLLM endpoint.
+  - name: openweight-general-a
+    kind: schema_output
+    model: <mistral-small-4-served-name>
+    endpoint:
+      base_url_env: GVAS_EVAL_VLLM_BASE_URL
+      api_key_env: GVAS_EVAL_VLLM_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 4096
+    notes: schema-constrained generation via vLLM structured outputs
+
+  - name: openweight-general-b
+    kind: schema_output
+    model: <qwen3-30b-a3b-served-name>
+    endpoint:
+      base_url_env: GVAS_EVAL_VLLM_BASE_URL
+      api_key_env: GVAS_EVAL_VLLM_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 4096
+    notes: MoE efficiency candidate; watch multi-turn merge behavior
+
+  # Extraction-only control: expected to score well on fields and poorly on the
+  # inference, contradiction, and question-selection metrics.
+  - name: openweight-extraction-control
+    kind: schema_output
+    model: <nuextract-2.0-8b-served-name>
+    endpoint:
+      base_url_env: GVAS_EVAL_VLLM_BASE_URL
+      api_key_env: GVAS_EVAL_VLLM_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 2048
+    notes: control only; not a full replacement for the assessment step

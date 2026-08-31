@@ -1,0 +1,40 @@
+name: fake-smoke
+description: >
+  Deterministic smoke run with no network access. The oracle candidate pins every
+  metric at its ceiling and proves the harness wiring; the degraded candidates show
+  that each metric actually penalizes the behavior it claims to measure.
+splits:
+  - dev
+candidates:
+  - name: fake-oracle
+    kind: fake_oracle
+    notes: replays case gold; expected to score perfectly
+
+  - name: fake-forgetful
+    kind: fake_degraded
+    faults:
+      - forget_prior_state
+      - drop_last_finding
+    notes: drops previously captured state and the newest finding
+
+  - name: fake-overeager
+    kind: fake_degraded
+    faults:
+      - ask_about_optional
+      - ask_multiple_questions
+      - invent_job_number
+    notes: chases optional fields, asks laundry lists, invents a job number
+
+  - name: fake-undereager
+    kind: fake_degraded
+    faults:
+      - miss_critical_gap
+      - miss_contradiction
+      - drop_evidence
+    notes: finalizes over gaps and contradictions and drops checklist evidence
+
+  - name: fake-malformed
+    kind: fake_degraded
+    faults:
+      - invalid_schema
+    notes: never returns a schema-valid payload
