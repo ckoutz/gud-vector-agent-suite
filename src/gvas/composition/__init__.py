@@ -9,7 +9,11 @@ from gvas.application.field_note_transcription import (
     FieldNoteTranscriptService,
     TranscribeFieldNoteAudioService,
 )
-from gvas.application.field_notes import FieldNoteIntakeHandler, FieldNoteIntentContribution
+from gvas.application.field_notes import (
+    CloseFieldNoteCaseHandler,
+    FieldNoteIntakeHandler,
+    FieldNoteIntentContribution,
+)
 from gvas.application.ingestion import IngestOwnerMessageService
 from gvas.application.outbox_service import OutboxService
 from gvas.application.owner_reply_delivery import DeliverOwnerReplyService
@@ -20,6 +24,7 @@ from gvas.application.quotes import (
     QuoteWorkflowHandler,
 )
 from gvas.application.report_generation import GenerateFieldNotesReportService
+from gvas.application.workflow_conflicts import WorkflowConflictHandler
 from gvas.composition.dispatcher import OutboxCommandDispatcher, OutboxWorker
 from gvas.composition.field_note_workflow import FieldNoteWorkflowHandler
 from gvas.composition.intents import DeterministicIntentResolver
@@ -121,11 +126,12 @@ def build_application(
     report_unit_of_work_factory = SqlReportUnitOfWorkFactory(sessions)
 
     intake = FieldNoteIntakeHandler(field_note_unit_of_work_factory, now=now)
+    closure = CloseFieldNoteCaseHandler(field_note_unit_of_work_factory, now=now)
     field_note_handler = FieldNoteWorkflowHandler(
-        intake, field_note_unit_of_work_factory, completeness_unit_of_work_factory
+        intake, closure, field_note_unit_of_work_factory, completeness_unit_of_work_factory
     )
     quote_handler = QuoteWorkflowHandler(unit_of_work_factory, ports.quote_drafting)
-    router = WorkflowRouter([quote_handler, field_note_handler])
+    router = WorkflowRouter([quote_handler, field_note_handler, WorkflowConflictHandler()])
 
     resolver = intent_resolver or DeterministicIntentResolver(
         FieldNoteIntentContribution(field_note_unit_of_work_factory),
@@ -146,7 +152,7 @@ def build_application(
         checklist_key,
     )
     snapshots = BuildFieldNoteCaseSnapshotService(
-        completeness_unit_of_work_factory, transcripts, ports.checklist_evidence
+        completeness_unit_of_work_factory, ports.checklist_evidence
     )
     reports = GenerateFieldNotesReportService(report_unit_of_work_factory, ports.report_generation)
     processing = ProcessOwnerMessageService(unit_of_work_factory, router, resolver)

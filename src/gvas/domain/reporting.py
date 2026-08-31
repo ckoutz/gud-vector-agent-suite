@@ -275,15 +275,18 @@ def field_notes_report_command(
     review_id: UUID,
     completed_at: datetime,
 ) -> OutboxCommand:
-    """Requests one report per completed field-note case.
+    """Requests one report per completed review revision of a field-note case.
 
+    The command identity is the reviewed revision, so recovery and replay of the
+    same completed review reuse one command and one report version, while notes
+    added to an open case are reviewed again and produce the next version.
     ``completed_at`` is persisted in the command payload so retries reuse the
-    same snapshot fingerprint instead of generating a second report version.
+    same snapshot fingerprint.
     """
 
     return OutboxCommand(
         command_id=OutboxCommandId(
-            uuid5(FIELD_NOTES_REPORT_COMMAND_NAMESPACE, f"{business_id}:{case_id}")
+            uuid5(FIELD_NOTES_REPORT_COMMAND_NAMESPACE, f"{business_id}:{case_id}:{review_id}")
         ),
         business_id=business_id,
         command_type=FIELD_NOTES_REPORT_COMMAND_TYPE,
@@ -292,7 +295,7 @@ def field_notes_report_command(
             "field_note_review_id": str(review_id),
             "completed_at": _aware(completed_at).isoformat(),
         },
-        dedup_key=f"field_notes_report:{case_id}",
+        dedup_key=f"field_notes_report:{case_id}:{review_id}",
     )
 
 

@@ -13,6 +13,7 @@ from gvas.domain.enums import MediaKind
 from gvas.domain.field_note_repositories import (
     AmbiguousFieldNoteMessageError,
     CrossBusinessFieldNoteError,
+    FieldNoteCaseClosureResult,
     FieldNoteCaseRecord,
     FieldNoteCaseRepository,
     FieldNoteConversationStateRepository,
@@ -418,6 +419,28 @@ class SqlFieldNoteCaseRepository:
                 FieldNotePartId(row.id) for row in rows if row.kind == FieldNotePartKind.AUDIO.value
             ),
         )
+
+    async def close(
+        self, business_id: BusinessId, case_id: FieldNoteCaseId, *, now: datetime
+    ) -> FieldNoteCaseClosureResult:
+        _aware(now, "now")
+        case = await self.session.scalar(
+            select(FieldNoteCaseRow)
+            .where(
+                FieldNoteCaseRow.business_id == business_id,
+                FieldNoteCaseRow.id == case_id,
+            )
+            .with_for_update()
+        )
+        if case is None:
+            return FieldNoteCaseClosureResult.MISSING
+        if case.status != FieldNoteCaseStatus.OPEN.value:
+            return FieldNoteCaseClosureResult.ALREADY_CLOSED
+        case.status = FieldNoteCaseStatus.CLOSED.value
+        case.closed_at = now
+        case.updated_at = now
+        await self.session.flush()
+        return FieldNoteCaseClosureResult.CLOSED
 
 
 class SqlFieldNoteConversationStateRepository:

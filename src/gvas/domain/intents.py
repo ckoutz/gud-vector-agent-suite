@@ -2,6 +2,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from gvas.domain.identifiers import WorkflowIntent
 
+WORKFLOW_CONFLICT_INTENT = WorkflowIntent("workflow.conflict")
+
 
 class IntentResolution(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")

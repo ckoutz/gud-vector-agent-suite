@@ -1,6 +1,10 @@
 from typing import Protocol
 
-from gvas.application.field_notes import FieldNoteIntakeHandler, FieldNoteUnitOfWorkFactory
+from gvas.application.field_notes import (
+    CloseFieldNoteCaseHandler,
+    FieldNoteIntakeHandler,
+    FieldNoteUnitOfWorkFactory,
+)
 from gvas.domain.completeness import FollowUpQuestionStatus
 from gvas.domain.completeness_repositories import CompletenessUnitOfWork
 from gvas.domain.enums import WorkflowRunStatus
@@ -10,6 +14,7 @@ from gvas.domain.field_notes import (
     FieldNoteCaseId,
     FieldNoteReviewTrigger,
     field_note_review_command,
+    has_field_note_close_trigger,
     match_field_note_trigger,
 )
 from gvas.domain.identifiers import BusinessId, ConversationId, MessageId
@@ -24,8 +29,8 @@ class FieldNoteWorkflowHandler:
     """Field-note workflow entry point for intake and follow-up answers.
 
     Intake stays in its accepted handler; this handler only decides whether an
-    owner message continues the note or answers the single outstanding follow-up
-    question, and hands review work to the outbox.
+    owner message closes the case, continues the note or answers the single
+    outstanding follow-up question, and hands review work to the outbox.
     """
 
     intent = FIELD_NOTE_INTENT
@@ -33,10 +38,12 @@ class FieldNoteWorkflowHandler:
     def __init__(
         self,
         intake: FieldNoteIntakeHandler,
+        closure: CloseFieldNoteCaseHandler,
         field_note_unit_of_work_factory: FieldNoteUnitOfWorkFactory,
         completeness_unit_of_work_factory: CompletenessUnitOfWorkFactory,
     ) -> None:
         self._intake = intake
+        self._closure = closure
         self._field_notes = field_note_unit_of_work_factory
         self._completeness = completeness_unit_of_work_factory
 
@@ -45,6 +52,8 @@ class FieldNoteWorkflowHandler:
         conversation_id = context.conversation_id
         if conversation_id is None:
             raise ValueError("field-note workflow requires a persisted conversation identity")
+        if has_field_note_close_trigger(message):
+            return await self._closure.close(message, conversation_id)
         if match_field_note_trigger(message) is None:
             answer = await self._answer_result(message.business_id, conversation_id, context)
             if answer is not None:

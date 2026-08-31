@@ -31,6 +31,8 @@ class FieldNoteReviewRecord(CompletenessRecord):
     checklist_key: ChecklistKey
     checklist_version: int = Field(ge=1)
     transcript_text: str
+    transcript_fingerprint: str = Field(min_length=64, max_length=64)
+    revision: int = Field(ge=1)
     thread_correlation_id: str = Field(min_length=1)
     status: FieldNoteReviewStatus
     round_index: int = Field(ge=0)
@@ -61,7 +63,12 @@ class ChecklistDefinitionRepository(Protocol):
 
 
 class FieldNoteReviewRepository(Protocol):
-    """Review references must stay inside one business."""
+    """Review references must stay inside one business.
+
+    A case is reviewed once per transcript revision: the same transcript always
+    resolves to the same review row, and content added after a completed review
+    opens the next revision instead of reusing the completed one.
+    """
 
     async def get_or_create(
         self,

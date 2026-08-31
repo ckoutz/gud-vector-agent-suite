@@ -5,6 +5,7 @@ from typing import Protocol
 from gvas.domain.enums import MediaKind, WorkflowRunStatus
 from gvas.domain.field_note_repositories import (
     AmbiguousFieldNoteMessageError,
+    FieldNoteCaseClosureResult,
     FieldNotePartDraft,
     FieldNoteUnitOfWork,
 )
@@ -15,7 +16,7 @@ from gvas.domain.field_notes import (
     field_note_transcribe_command,
     match_field_note_trigger,
 )
-from gvas.domain.identifiers import WorkflowIntent
+from gvas.domain.identifiers import ConversationId, WorkflowIntent
 from gvas.domain.messages import (
     AttachmentPart,
     ContentPart,
@@ -24,6 +25,14 @@ from gvas.domain.messages import (
     TextPart,
 )
 from gvas.domain.workflows import WorkflowContext, WorkflowResult
+
+CLOSED_CASE_REPLY = (
+    "Closed the field notes case. Send a new 'field notes:' message to start another one."
+)
+NO_OPEN_CASE_REPLY = (
+    "There is no open field notes case in this conversation. "
+    "Send a 'field notes:' message to start one."
+)
 
 
 class FieldNoteUnitOfWorkFactory(Protocol):
@@ -56,6 +65,54 @@ class FieldNoteIntentContribution:
             except AmbiguousFieldNoteMessageError:
                 await unit_of_work.rollback()
                 return None
+
+
+class CloseFieldNoteCaseHandler:
+    """Closes the active field-note case on an explicit owner close command.
+
+    Reviews and reports never close a case; only this command does, and it stays
+    idempotent so replays and repeated commands produce a single stored reply.
+    """
+
+    def __init__(
+        self, unit_of_work_factory: FieldNoteUnitOfWorkFactory, *, now: Callable[[], datetime]
+    ) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._now = now
+
+    async def close(
+        self, message: NormalizedOwnerMessage, conversation_id: ConversationId
+    ) -> WorkflowResult:
+        now = self._now()
+        async with self._unit_of_work_factory() as unit_of_work:
+            case_id = await unit_of_work.field_note_conversation_states.get_active_case_id(
+                message.business_id, conversation_id
+            )
+            closure = (
+                None
+                if case_id is None
+                else await unit_of_work.field_note_cases.close(
+                    message.business_id, case_id, now=now
+                )
+            )
+            if case_id is not None:
+                await unit_of_work.field_note_conversation_states.clear_active_case(
+                    message.business_id, conversation_id, now=now
+                )
+            await unit_of_work.commit()
+        if closure is FieldNoteCaseClosureResult.CLOSED:
+            body = CLOSED_CASE_REPLY
+            detail = "field-note case closed"
+        else:
+            body = NO_OPEN_CASE_REPLY
+            detail = "no open field-note case to close"
+        reply = OutboundOwnerMessage(
+            business_id=message.business_id,
+            conversation_ref=message.conversation_ref,
+            parts=(TextPart(text=body),),
+            correlation_id=f"field_note.close:{message.message_key}",
+        )
+        return WorkflowResult(status=WorkflowRunStatus.SUCCEEDED, replies=(reply,), detail=detail)
 
 
 class FieldNoteIntakeHandler:

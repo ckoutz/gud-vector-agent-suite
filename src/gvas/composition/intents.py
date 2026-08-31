@@ -3,8 +3,16 @@ from typing import Protocol
 from gvas.application.field_notes import FieldNoteIntentContribution, FieldNoteUnitOfWorkFactory
 from gvas.application.quotes import QuoteIntentSelector
 from gvas.domain.field_note_repositories import AmbiguousFieldNoteMessageError
-from gvas.domain.field_notes import FIELD_NOTE_INTENT, match_field_note_trigger
-from gvas.domain.intents import IntentResolution, IntentUnresolvedError
+from gvas.domain.field_notes import (
+    FIELD_NOTE_INTENT,
+    has_field_note_close_trigger,
+    has_field_note_trigger,
+)
+from gvas.domain.intents import (
+    WORKFLOW_CONFLICT_INTENT,
+    IntentResolution,
+    IntentUnresolvedError,
+)
 from gvas.domain.messages import NormalizedOwnerMessage
 from gvas.domain.repositories import UnitOfWork
 
@@ -17,8 +25,13 @@ class DeterministicIntentResolver:
     """Resolves intents from message triggers and persisted conversation state.
 
     A new conversation must carry an explicit trigger; replies follow the active
-    quote or field-note case. A conversation with both active workflows is
-    reported as unresolved instead of guessing a precedence.
+    quote or field-note case. One conversation runs one workflow: a trigger for
+    the other workflow, or a conversation that already carries both, resolves to
+    the conflict intent so the owner is told to use another thread instead of a
+    precedence being guessed. ``close notes`` is a field-note command, so it only
+    reaches the field-note workflow when this conversation is not a quote-only
+    conversation; with both workflows active it is allowed through to repair the
+    field-note state.
     """
 
     def __init__(
@@ -34,14 +47,18 @@ class DeterministicIntentResolver:
         self._message_unit_of_work_factory = message_unit_of_work_factory
 
     async def resolve(self, message: NormalizedOwnerMessage) -> IntentResolution:
-        if match_field_note_trigger(message) is not None:
-            return IntentResolution(intent=FIELD_NOTE_INTENT, confidence=1)
         quote_resolution = await self._resolve_quote(message)
+        if has_field_note_trigger(message):
+            if quote_resolution is not None:
+                return IntentResolution(intent=WORKFLOW_CONFLICT_INTENT, confidence=1)
+            return IntentResolution(intent=FIELD_NOTE_INTENT, confidence=1)
         field_note_intent = await self._field_notes.contribute(message)
+        if has_field_note_close_trigger(message):
+            if field_note_intent is None and quote_resolution is not None:
+                return IntentResolution(intent=WORKFLOW_CONFLICT_INTENT, confidence=1)
+            return IntentResolution(intent=FIELD_NOTE_INTENT, confidence=1)
         if field_note_intent is not None and quote_resolution is not None:
-            raise IntentUnresolvedError(
-                "conversation has both an active quote and an active field-note case"
-            )
+            return IntentResolution(intent=WORKFLOW_CONFLICT_INTENT, confidence=1)
         if quote_resolution is not None:
             return quote_resolution
         if field_note_intent is not None:

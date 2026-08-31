@@ -18,6 +18,7 @@ from gvas.domain.completeness import (
     FollowUpQuestionStatus,
     MissingChecklistItem,
     follow_up_correlation_id,
+    transcript_fingerprint,
 )
 from gvas.domain.completeness_repositories import (
     FieldNoteReviewRecord,
@@ -46,6 +47,8 @@ def _review_record(row: FieldNoteReview) -> FieldNoteReviewRecord:
         checklist_key=ChecklistKey(row.checklist_key),
         checklist_version=row.checklist_version,
         transcript_text=row.transcript_text,
+        transcript_fingerprint=row.transcript_fingerprint,
+        revision=row.revision,
         thread_correlation_id=row.thread_correlation_id,
         status=FieldNoteReviewStatus(row.status),
         round_index=row.round_index,
@@ -132,14 +135,28 @@ class SqlFieldNoteReviewRepository:
         transcript_text: str,
         thread_correlation_id: str,
     ) -> FieldNoteReviewRecord:
+        fingerprint = transcript_fingerprint(transcript_text)
         existing = await self.session.scalar(
             select(FieldNoteReview).where(
                 FieldNoteReview.business_id == business_id,
                 FieldNoteReview.inbound_message_id == inbound_message_id,
+                FieldNoteReview.transcript_fingerprint == fingerprint,
             )
         )
         if existing is not None:
             return _review_record(existing)
+        latest = await self.session.scalar(
+            select(FieldNoteReview)
+            .where(
+                FieldNoteReview.business_id == business_id,
+                FieldNoteReview.inbound_message_id == inbound_message_id,
+            )
+            .order_by(FieldNoteReview.revision.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if latest is not None and latest.status != FieldNoteReviewStatus.COMPLETE.value:
+            return _review_record(latest)
         active = await self.session.scalar(
             select(FieldNoteReview).where(
                 FieldNoteReview.business_id == business_id,
@@ -160,14 +177,29 @@ class SqlFieldNoteReviewRepository:
             checklist_key=checklist_key,
             checklist_version=checklist_version,
             transcript_text=transcript_text,
+            transcript_fingerprint=fingerprint,
+            revision=1 if latest is None else latest.revision + 1,
             thread_correlation_id=thread_correlation_id,
             status=FieldNoteReviewStatus.AWAITING_REVIEW.value,
             round_index=0,
             created_at=now,
             updated_at=now,
         )
-        self.session.add(row)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                self.session.add(row)
+                await self.session.flush()
+        except IntegrityError:
+            concurrent = await self.session.scalar(
+                select(FieldNoteReview).where(
+                    FieldNoteReview.business_id == business_id,
+                    FieldNoteReview.inbound_message_id == inbound_message_id,
+                    FieldNoteReview.transcript_fingerprint == fingerprint,
+                )
+            )
+            if concurrent is None:
+                raise
+            return _review_record(concurrent)
         return _review_record(row)
 
     async def get(
