@@ -346,7 +346,7 @@ class PlanSheetKind(StrEnum):
 
 class ExtractionMethod(StrEnum):
     EMBEDDED_TEXT = "embedded_text"   # vector/text PDF, as in the sample
-    RASTER = "raster"                 # image-only page; no title-block text
+    RASTER = "raster"                 # image-only page; read by OCR/vision adapter
 
 class PageFrame(PlanModel):
     """The source page's own coordinate frame, kept so normalized
@@ -415,9 +415,14 @@ class PlanSheetClassificationPort(Protocol):
 ```
 
 The sample is favourable — a rules-only classifier keyed on title text would
-likely handle it — but the port must not assume that. A raster-only set has no
-title-block text at all, in which case extraction returns `RASTER` with low
-confidence and every page goes to owner confirmation.
+likely handle it — but the port must not assume that. A raster page carries no
+embedded title-block text, so an adapter reads it some other way (OCR, a vision
+model, or a hybrid) and reports `ExtractionMethod.RASTER`. That says how the
+facts were obtained, not how good they are: a clean scan of a title block can
+yield high extraction and classification confidence, and confirmation is
+triggered by confidence falling below the configured threshold, never by the
+extraction method. Which technique an adapter uses stays behind the port and is
+not decided here.
 
 ### 3.4 Annotation model
 
@@ -456,9 +461,10 @@ class PlanRegion(PlanModel):
             raise ValueError("polygon regions require at least three points")
         return self
 
-class AnnotationConfidence(StrEnum):
+class PlacementState(StrEnum):
+    CANDIDATE = "candidate"            # model-inferred, not yet confirmed
     OWNER_CONFIRMED = "owner_confirmed"
-    INFERRED = "inferred"
+    REJECTED = "rejected"              # owner said no; kept for audit
 
 class PlanAnnotation(PlanModel):
     annotation_id: PlanAnnotationId
@@ -469,9 +475,19 @@ class PlanAnnotation(PlanModel):
     kind: AnnotationKind
     region: PlanRegion
     text: str = Field(min_length=1)
-    confidence: AnnotationConfidence
+    placement: PlacementState
+    placement_confidence: float = Field(ge=0.0, le=1.0)
     evidence_refs: tuple[ReportEvidenceReference, ...] = Field(min_length=1)
 ```
+
+Under D6 (§5) placement is **never** self-accepted, at any confidence. A
+model-inferred placement is a `CANDIDATE`; it becomes reportable only when the
+owner confirms it. Only `OWNER_CONFIRMED` annotations enter
+`FieldNoteCaseSnapshot.plan_annotations`, so candidates and rejections cannot be
+cited by a report block and do not change `field_note_source_fingerprint` until
+they are confirmed. Confidence still matters, but only for *phrasing*: a
+high-confidence candidate becomes a cheap yes/no confirmation, while a
+low-confidence or ambiguous one becomes an open question.
 
 The region carries no page identity of its own: `sheet_id` already pins the set
 version, the source page index, and the frame the coordinates are normalized
@@ -502,7 +518,8 @@ valid_keys = {
 ```
 
 Proposed: `FieldNoteCaseSnapshot` gains
-`plan_annotations: tuple[PlanAnnotationSummary, ...]`, `EvidenceSource` gains
+`plan_annotations: tuple[PlanAnnotationSummary, ...]` (owner-confirmed
+placements only, per §3.4), `EvidenceSource` gains
 `PLAN_ANNOTATION = "plan_annotation"`, and the dict gains a fourth entry keyed
 by annotation ID. Two validations are then required, and the second is new:
 
@@ -557,12 +574,12 @@ second interaction channel:
 transcript segment mentions a location
   -> location-candidate extraction (a port, no provider in domain)
   -> candidate matched against labels on the pinned annotatable sheets
-       high confidence + unique match -> INFERRED annotation
-       ambiguous / no match           -> a follow-up question
+       high confidence + unique match -> CANDIDATE + a yes/no confirmation
+       ambiguous / no match           -> CANDIDATE(s) + an open question
   -> the question is a normal FollowUpQuestionRecord in the same review
   -> asked one at a time, through the same OwnerReplyPort and outbox
   -> the answer is a CorrelatedAnswer, and becomes the annotation's evidence
-  -> annotation recorded with confidence = OWNER_CONFIRMED
+  -> confirmed -> OWNER_CONFIRMED and reportable; declined -> REJECTED
 ```
 
 The important property: **a location question is not a new mechanism.** It is a
@@ -648,7 +665,123 @@ Four properties matter and each is there for a reason:
   schema v2 introduces (§3.6). A template set whose asset declares an
   incompatible schema version must fail resolution loudly.
 
-### 4.2 Proposed neutral renderer contracts
+### 4.2 Template binding manifest
+
+The asset alone is not implementable: a renderer has to know *what the template
+expects*. That contract is a **binding manifest** — a provider-neutral,
+versioned description of the template's slots, stored alongside the asset and
+validated once at registration rather than discovered at render time.
+
+The manifest names slots; it does **not** define marker syntax. Whether a slot
+appears in the DOCX as `{{field.site_label}}`, a content control, a bookmark, or
+a merge field is an adapter concern, and no library or vendor is chosen here.
+The manifest is the interface between the two.
+
+```python
+# PROPOSED — not implemented, not wired.
+PlaceholderId = NewType("PlaceholderId", str)   # dotted, stable, e.g. "case.completed_at"
+
+class ValueKind(StrEnum):
+    TEXT = "text"
+    DATE = "date"
+    NUMBER = "number"
+    BOOLEAN = "boolean"
+
+class SingleValueSlot(TemplateModel):
+    """One scalar substitution."""
+
+    placeholder_id: PlaceholderId
+    source_path: str = Field(min_length=1)   # read path into snapshot/document
+    kind: ValueKind = ValueKind.TEXT
+    required: bool = True
+    fallback_text: str | None = None         # allowed only when required is False
+
+class RepeatKind(StrEnum):
+    REPORT_SECTIONS = "report_sections"      # document.sections
+    SECTION_BLOCKS = "section_blocks"        # blocks within a section
+    CHECKLIST_EVIDENCE = "checklist_evidence"
+    CORRELATED_ANSWERS = "correlated_answers"
+    PLAN_ANNOTATIONS = "plan_annotations"    # owner-confirmed only (§3.4)
+
+class RepeatingSlot(TemplateModel):
+    """A region repeated once per item of a collection."""
+
+    placeholder_id: PlaceholderId
+    repeat: RepeatKind
+    required: bool = True                    # False tolerates an empty collection
+    item_slots: tuple[SingleValueSlot, ...] = Field(min_length=1)
+    nested: tuple["RepeatingSlot", ...] = ()  # e.g. sections -> blocks
+
+class UnsupportedBlockPolicy(StrEnum):
+    FAIL = "fail"             # refuse to render an unrenderable block kind
+    FALLBACK_TEXT = "fallback_text"  # emit the block's plain-text projection
+
+class EvidencePresentation(StrEnum):
+    OMIT = "omit"
+    INLINE_MARKERS = "inline_markers"   # citation markers next to the text
+    APPENDIX = "appendix"               # a repeated evidence region at the end
+
+class PlanReferencePresentation(StrEnum):
+    OMIT = "omit"
+    TEXT_ONLY = "text_only"      # sheet number/title + annotation captions
+    IMAGE = "image"              # requires a rendered plan artifact (D8/P8)
+
+class TemplateBindingManifest(TemplateModel):
+    manifest_version: int = Field(ge=1)
+    report_schema_version: str = Field(min_length=1)
+    single_slots: tuple[SingleValueSlot, ...] = ()
+    repeating_slots: tuple[RepeatingSlot, ...] = ()
+    evidence: EvidencePresentation = EvidencePresentation.OMIT
+    plan_references: PlanReferencePresentation = PlanReferencePresentation.TEXT_ONLY
+    unsupported_block_policy: UnsupportedBlockPolicy = UnsupportedBlockPolicy.FAIL
+```
+
+How each concern lands:
+
+- **Placeholder identity.** `PlaceholderId` is stable and dotted; it is the only
+  name shared between the DOCX file and this system. Renaming a source field
+  therefore changes a manifest, not every template.
+- **Required vs. optional single values.** `required=True` means registration
+  fails if the source path is unresolvable *and* rendering fails if the value is
+  missing at render time. Optional slots must declare what to emit instead;
+  `fallback_text` on a required slot is a registration error, because a required
+  field that silently prints "N/A" is how a wrong report reaches a client.
+- **Repeatable sections and blocks.** Report sections and their blocks are the
+  primary repetition, expressed as a `RepeatingSlot` with `nested` children
+  rather than as flattened prose. Checklist evidence, correlated answers, and
+  confirmed plan annotations are the other collections a template may repeat
+  over.
+- **Evidence and plan references.** `EvidencePresentation` decides whether
+  `ReportEvidenceReference`s appear as inline citation markers, as an appendix,
+  or not at all. `PlanReferencePresentation` decides how a `PlanReferenceBlock`
+  renders — and `IMAGE` is rejected at registration until a rendered plan
+  artifact exists (D8 defers it to P8), so a template cannot promise a picture
+  the system cannot produce.
+- **Unknown block kinds.** A report schema may add block kinds. The manifest
+  states the policy up front: `FAIL` (safe, loud) or `FALLBACK_TEXT`. There is
+  no third, silent option — dropping content is never a default.
+
+**Registration-time validation.** Registering an asset+manifest pair validates
+before anything is renderable, and every failure below is a refusal to register,
+not a render-time surprise:
+
+1. `media_type` and `format` match the actual bytes; digest recomputed and
+   matched.
+2. `manifest.report_schema_version` equals the asset's, and both are a schema
+   version this system can produce. A template written for
+   `field-notes-report/v1` cannot be registered against v2 (§3.6).
+3. Every `source_path` resolves against the declared schema version, and every
+   `RepeatKind` exists in it.
+4. `placeholder_id`s are unique within the manifest, and every placeholder the
+   *file* contains is declared — an undeclared marker in the document is an
+   error, since it would otherwise render as literal text to the owner.
+5. Optional-slot and presentation rules above (`fallback_text`, `IMAGE`) hold.
+
+A template set whose pinned asset fails compatibility must fail **resolution**
+loudly (`IncompatibleTemplateAssetError`), never fall back to a generic
+document — the same reasoning as §2.6.
+
+### 4.3 Proposed neutral renderer contracts
 
 ```python
 # PROPOSED — not implemented, not wired.
@@ -663,6 +796,7 @@ class RenderedDocument(DomainModel):
 class DocumentRenderRequest(DomainModel):
     business_id: BusinessId
     template: TemplateAsset
+    manifest: TemplateBindingManifest
     snapshot: FieldNoteCaseSnapshot
     document: FieldNotesReportDocument
 
@@ -678,6 +812,9 @@ Constraints on any implementation behind that port:
   domain values and returns a reference; `python-docx`, an OOXML writer, or a
   hosted service are all valid adapters in `infrastructure`, and none of them
   may be imported from `domain` or `application`.
+- The adapter's only freedom is *how* it finds a slot in the file (marker
+  syntax, content controls, bookmarks). What the slots are, and what happens
+  when one is missing, is fixed by the manifest.
 - The renderer is a pure projection. It may not query repositories, re-derive
   evidence, or reach a channel; everything it needs arrives in the request. Both
   the snapshot and the document are passed because the document carries the
@@ -686,7 +823,7 @@ Constraints on any implementation behind that port:
 - Output must remain *editable*: a real DOCX, not a PDF and not a
   DOCX-wrapped image.
 
-### 4.3 Delivery through the existing owner path
+### 4.4 Delivery through the existing owner path
 
 Rendering is long-running (binary assembly plus two media round trips), so it is
 not inlined into the report command:
@@ -754,10 +891,16 @@ this is not a one-way door.
 | Model-inferred, owner-confirmed | moderate | costs conversational round trips; matches the existing follow-up loop exactly |
 | Manual only | needs a UI (D7/D5 interplay) | not available before a web UI exists |
 
-**Accepted: inferred with owner confirmation**, with `INFERRED` allowed
-only above a configured confidence threshold and everything else routed through
-a follow-up question. The `AnnotationConfidence` field exists so the report can
-be honest about which is which.
+**Accepted: inferred with owner confirmation.** Inference proposes; the owner
+disposes. There is no confidence high enough to skip confirmation — a wrong mark
+on a plan the owner forwards to a client is the failure this decision exists to
+prevent — so a model-inferred placement is persisted as
+`PlacementState.CANDIDATE` and only an owner confirmation promotes it to
+`OWNER_CONFIRMED`. Only confirmed placements are reportable (§3.4); candidates
+and rejections are retained for audit and never appear in a report. Confidence
+is kept on the annotation, but it only decides how the question is *asked*
+(yes/no confirmation above the threshold, open question below), not whether one
+is asked.
 
 ### D7 — Plan file storage and retention
 
@@ -862,14 +1005,18 @@ Each phase is independently shippable and leaves the system working.
 | **P4b — sheet discovery** | `PlanSheet` rows; `PlanSheetExtractionPort` + `PlanSheetClassificationPort` adapters; leased `plan_set.extract` command; owner confirmation for uncertain pages | P4 |
 | **P5 — annotation model** | `PlanAnnotation` with evidence refs; snapshot carries annotations; `EvidenceSource.PLAN_ANNOTATION`; report schema v2 with `PlanReferenceBlock` | P4b |
 | **P6 — location disambiguation** | location slots as optional checklist items; extraction port; follow-up questions for ambiguous locations | P1, P5 |
-| **P7 — DOCX output** | `TemplateAsset` rows pinned by the template set; `DocumentRendererPort` adapter; leased `report.render_docx` command; delivery as an attachment on the existing owner-reply path | P2 (P5 only if plan blocks must render) |
+| **P7 — DOCX output** | `TemplateAsset` + `TemplateBindingManifest` rows pinned by the template set, with registration-time validation; `DocumentRendererPort` adapter; leased `report.render_docx` command; delivery as an attachment on the existing owner-reply path | P2 (P5 only if plan blocks must render) |
 | **P8 — plan rendering** | annotated-plan image artifact as its own leased outbox command | P5 |
 
-No phase is blocked on a product decision. P4 and P7 both carry the storage
-dependency that D7b accepts — a managed object store and its adapter — so the
-vendor choice has to be made before P4 starts, but it is an infrastructure
-choice, not an owner decision. P1 is the highest-value, lowest-risk phase and
-closes half of composition gap 7 on its own. P5 is the phase that breaks a
+**P4 and P7 are blocked on an owner decision.** D7b commits GVAS to holding the
+bytes, but not to *where*: the object-storage vendor, deployment shape,
+encryption-at-rest, per-tenant key isolation, and any data-residency requirement
+are still open, and both phases need them settled before they start. This is not
+a purely internal choice — it introduces a third-party service and a recurring
+cost, constrains what can be promised to customers about their building plans,
+and is difficult to reverse once tenant data is written. P1 is the
+highest-value, lowest-risk phase and closes half of composition gap 7 on its
+own. P5 is the phase that breaks a
 published contract, so its contract shapes need review before it starts.
 
 ## 8. Where this touches existing contracts
@@ -911,13 +1058,17 @@ Seven of the eight are accepted by the owner in full; D7 is split.
 
 ### Still unresolved
 
-- The object-storage vendor and deployment shape under D7b, plus
-  encryption-at-rest, per-tenant key prefixing, and residency. An infrastructure
-  choice for P4, not a product decision.
+- **The object-storage vendor and deployment shape under D7b**, plus
+  encryption-at-rest, per-tenant key isolation, and data residency. An owner
+  decision, not an internal one: it adds a third-party service and a recurring
+  cost, and it is what backs any promise made to a customer about their plans.
+  Blocks P4 and P7.
 - What happens to plan files, transcripts, and report documents *after* a
   business account closes. The owner's direction is an **export**; the grace
   period, export scope and deadline, and any deletion or purge afterwards are
   undecided, and D7a fixes only the lower bound while the account is open.
-- Pre-existing open questions this design does not resolve: case closure, report
-  distribution, transcript/report retention, and permanent transcription failure
-  handling — all recorded in [`docs/composition.md`](composition.md).
+- Pre-existing open questions this design does not resolve: transcript/report
+  retention and permanent transcription failure handling, recorded in
+  [`docs/composition.md`](composition.md). Case closure (`close notes` only) and
+  report distribution (the report returns to the owner in the same conversation)
+  are settled and are assumed by this design.
