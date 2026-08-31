@@ -1,0 +1,46 @@
+{
+  "industry_key": "environmental_testing",
+  "template_set_key": "field_notes",
+  "checklist_key": "field_notes",
+  "version": 1,
+  "report_template_key": "field_notes_report",
+  "report_template_version": 1,
+  "items": [
+    {
+      "key": "site",
+      "prompt": "Which site was visited?",
+      "requirement": "required",
+      "evidence_markers": ["site:", "address:"]
+    },
+    {
+      "key": "work",
+      "prompt": "What work was performed?",
+      "requirement": "required",
+      "evidence_markers": ["work:", "performed:"]
+    },
+    {
+      "key": "sample_locations",
+      "prompt": "Where were samples collected?",
+      "requirement": "required",
+      "evidence_markers": ["sample:", "location:"]
+    },
+    {
+      "key": "instruments",
+      "prompt": "Which instruments were used, and were they calibrated?",
+      "requirement": "required",
+      "evidence_markers": ["instrument:", "calibration:"]
+    },
+    {
+      "key": "findings",
+      "prompt": "What were the observed conditions and readings?",
+      "requirement": "required",
+      "evidence_markers": ["finding:", "reading:"]
+    },
+    {
+      "key": "follow_up",
+      "prompt": "What follow-up work or retesting is recommended?",
+      "requirement": "optional",
+      "evidence_markers": ["follow-up:", "recommend:"]
+    }
+  ]
+}

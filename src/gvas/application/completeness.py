@@ -4,7 +4,6 @@ from typing import Protocol
 
 from gvas.domain.completeness import (
     ChecklistItemKey,
-    ChecklistKey,
     CompletenessChecklist,
     CompletenessReviewOutcome,
     CompletenessReviewPort,
@@ -31,6 +30,7 @@ from gvas.domain.messages import (
     TextPart,
 )
 from gvas.domain.outbox import owner_reply_command
+from gvas.domain.templates import TemplateResolutionPort
 
 
 class CompletenessStatus(StrEnum):
@@ -71,15 +71,21 @@ class FieldNoteCompletenessService:
     The review port is invoked with no unit of work open. Follow-up messages and
     owner-reply outbox commands are persisted atomically with deterministic
     correlation IDs, and replies follow the review's persisted thread state.
+
+    The template set is resolved once, when the review row is created, and pinned
+    on it. Every later round reads the pinned checklist, so publishing a new
+    template version cannot change a case already under review.
     """
 
     def __init__(
         self,
         unit_of_work_factory: CompletenessUnitOfWorkFactory,
         review_port: CompletenessReviewPort,
+        templates: TemplateResolutionPort,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._review_port = review_port
+        self._templates = templates
 
     async def start_review(
         self,
@@ -88,26 +94,27 @@ class FieldNoteCompletenessService:
         external_conversation_id: str,
         inbound_message_id: MessageId,
         transcript_text: str,
-        checklist_key: ChecklistKey,
-        checklist_version: int | None = None,
     ) -> CompletenessOutcome:
+        resolved = await self._templates.resolve_for_new_case(business_id, conversation_id)
+        template_set = await self._templates.load(resolved)
         async with self._unit_of_work_factory() as unit_of_work:
-            checklist = await unit_of_work.checklists.get(
-                business_id, checklist_key, checklist_version
-            )
-            if checklist is None:
-                await unit_of_work.rollback()
-                raise UnknownChecklistError(f"{checklist_key} is not configured")
             review = await unit_of_work.field_note_reviews.get_or_create(
                 business_id,
                 conversation_id,
                 external_conversation_id,
                 inbound_message_id,
-                checklist.checklist_key,
-                checklist.version,
+                template_set.checklist_key,
+                template_set.checklist_version,
+                resolved,
                 transcript_text,
                 field_note_thread_correlation_id(inbound_message_id),
             )
+            checklist = await unit_of_work.checklists.get(
+                business_id, review.checklist_key, review.checklist_version
+            )
+            if checklist is None:
+                await unit_of_work.rollback()
+                raise UnknownChecklistError(f"{review.checklist_key} is not configured")
             questions = await unit_of_work.follow_up_questions.list_for_review(
                 business_id, review.review_id
             )

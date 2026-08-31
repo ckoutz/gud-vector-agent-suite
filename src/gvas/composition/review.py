@@ -9,7 +9,7 @@ from gvas.application.completeness import (
     FieldNoteCompletenessService,
 )
 from gvas.application.field_note_transcription import FieldNoteTranscriptService
-from gvas.domain.completeness import ChecklistKey, FieldNoteReviewId
+from gvas.domain.completeness import FieldNoteReviewId
 from gvas.domain.field_note_repositories import FieldNoteUnitOfWork
 from gvas.domain.field_notes import (
     FieldNoteCaseId,
@@ -84,13 +84,11 @@ class CoordinateFieldNoteReviewService:
         message_unit_of_work_factory: MessageUnitOfWorkFactory,
         transcripts: FieldNoteTranscriptService,
         completeness: FieldNoteCompletenessService,
-        checklist_key: ChecklistKey,
     ) -> None:
         self._field_notes = field_note_unit_of_work_factory
         self._messages = message_unit_of_work_factory
         self._transcripts = transcripts
         self._completeness = completeness
-        self._checklist_key = checklist_key
 
     async def coordinate(
         self,
@@ -131,7 +129,6 @@ class CoordinateFieldNoteReviewService:
                 case.conversation_ref.external_conversation_id,
                 case.origin_inbound_message_id,
                 transcript.text,
-                self._checklist_key,
             )
 
         report_requested = False

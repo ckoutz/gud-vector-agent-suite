@@ -14,6 +14,7 @@ from composition_fakes import (
     application_ports,
 )
 from gvas.application.field_notes import CLOSED_CASE_REPLY, NO_OPEN_CASE_REPLY
+from gvas.application.templates import IndustryTemplateDefinition
 from gvas.application.workflow_conflicts import (
     FIELD_NOTE_CONFLICT_REPLY,
     QUOTE_CONFLICT_REPLY,
@@ -51,6 +52,7 @@ from gvas.domain.messages import (
 )
 from gvas.domain.outbox import OutboxCommand, OutboxRecord
 from gvas.domain.repositories import UnitOfWork
+from gvas.domain.templates import IndustryKey, TemplateSetKey
 from gvas.infrastructure.completeness_models import FieldNoteFollowUpQuestion
 from gvas.infrastructure.field_note_models import FieldNoteCase as FieldNoteCaseRow
 from gvas.infrastructure.field_note_models import FieldNotePartRow
@@ -151,9 +153,18 @@ def checklist(business_id: BusinessId) -> CompletenessChecklist:
 
 
 async def configure_checklist(application: Application, business_id: BusinessId) -> None:
-    async with application.completeness_unit_of_work_factory() as unit_of_work:
-        await unit_of_work.checklists.upsert(checklist(business_id))
-        await unit_of_work.commit()
+    definition = checklist(business_id)
+    await application.template_publisher.seed_industry(
+        business_id,
+        IndustryTemplateDefinition(
+            industry_key=IndustryKey("environmental_testing"),
+            template_set_key=TemplateSetKey(CHECKLIST_KEY),
+            checklist_key=CHECKLIST_KEY,
+            version=definition.version,
+            items=definition.items,
+            report_template_key="field_notes_report",
+        ),
+    )
 
 
 def build(
@@ -174,7 +185,6 @@ def build(
             report_generation=report_generation,
         ),
         session_factory=session_factory,
-        checklist_key=CHECKLIST_KEY,
         now=Clock(),
     )
 
@@ -335,7 +345,6 @@ async def test_completed_review_recovers_a_lost_report_request(
         CrashingUnitOfWorkFactory(),
         application.transcript_service,
         application.completeness_service,
-        CHECKLIST_KEY,
     )
     with pytest.raises(RuntimeError):
         await crashing.coordinate(

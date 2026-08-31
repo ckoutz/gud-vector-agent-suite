@@ -76,6 +76,16 @@ class FieldNoteReview(Base):
             name="fk_field_note_reviews_checklist",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            ["business_id", "template_set_key", "template_set_version"],
+            [
+                "field_note_template_sets.business_id",
+                "field_note_template_sets.template_set_key",
+                "field_note_template_sets.version",
+            ],
+            name="fk_field_note_reviews_template_set",
+            ondelete="RESTRICT",
+        ),
         UniqueConstraint("business_id", "id", name="uq_field_note_reviews_business_id_id"),
         UniqueConstraint(
             "business_id",
@@ -107,6 +117,8 @@ class FieldNoteReview(Base):
     inbound_message_id: Mapped[UUID] = mapped_column(nullable=False)
     checklist_key: Mapped[str] = mapped_column(String(255), nullable=False)
     checklist_version: Mapped[int] = mapped_column(nullable=False)
+    template_set_key: Mapped[str | None] = mapped_column(String(255))
+    template_set_version: Mapped[int | None] = mapped_column()
     transcript_text: Mapped[str] = mapped_column(Text, nullable=False)
     transcript_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     revision: Mapped[int] = mapped_column(nullable=False, default=1)

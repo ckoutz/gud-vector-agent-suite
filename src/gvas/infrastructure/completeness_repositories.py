@@ -25,6 +25,7 @@ from gvas.domain.completeness_repositories import (
     FollowUpQuestionRecord,
 )
 from gvas.domain.identifiers import BusinessId, ConversationId, JsonValue, MessageId
+from gvas.domain.templates import TemplateSetKey, TemplateSetRef
 from gvas.infrastructure.completeness_models import (
     FieldNoteChecklist,
     FieldNoteFollowUpQuestion,
@@ -46,6 +47,10 @@ def _review_record(row: FieldNoteReview) -> FieldNoteReviewRecord:
         inbound_message_id=MessageId(row.inbound_message_id),
         checklist_key=ChecklistKey(row.checklist_key),
         checklist_version=row.checklist_version,
+        template_set_key=(
+            None if row.template_set_key is None else TemplateSetKey(row.template_set_key)
+        ),
+        template_set_version=row.template_set_version,
         transcript_text=row.transcript_text,
         transcript_fingerprint=row.transcript_fingerprint,
         revision=row.revision,
@@ -132,6 +137,7 @@ class SqlFieldNoteReviewRepository:
         inbound_message_id: MessageId,
         checklist_key: ChecklistKey,
         checklist_version: int,
+        template_set: TemplateSetRef,
         transcript_text: str,
         thread_correlation_id: str,
     ) -> FieldNoteReviewRecord:
@@ -176,6 +182,8 @@ class SqlFieldNoteReviewRepository:
             inbound_message_id=inbound_message_id,
             checklist_key=checklist_key,
             checklist_version=checklist_version,
+            template_set_key=template_set.template_set_key,
+            template_set_version=template_set.version,
             transcript_text=transcript_text,
             transcript_fingerprint=fingerprint,
             revision=1 if latest is None else latest.revision + 1,

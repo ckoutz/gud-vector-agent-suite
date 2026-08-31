@@ -79,6 +79,8 @@ class FieldNoteCaseSnapshot(ReportDomainModel):
     canonical_transcript: str = Field(min_length=1)
     checklist_evidence: tuple[ChecklistEvidence, ...] = Field(default_factory=tuple)
     correlated_answers: tuple[CorrelatedAnswer, ...] = Field(default_factory=tuple)
+    report_template_key: str | None = Field(default=None, min_length=1)
+    report_template_version: int | None = Field(default=None, ge=1)
 
     @field_validator("completed_at")
     @classmethod
@@ -95,6 +97,8 @@ class FieldNoteCaseSnapshot(ReportDomainModel):
             raise ValueError("answer question keys must be unique")
         if self.status is FieldNoteCaseStatus.COMPLETED and self.completed_at is None:
             raise ValueError("completed field-note cases require completed_at")
+        if (self.report_template_key is None) != (self.report_template_version is None):
+            raise ValueError("report template pins need both a key and a version")
         return self
 
 

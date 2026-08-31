@@ -312,3 +312,4 @@ class QuoteRecord(Base):
 from gvas.infrastructure import completeness_models as completeness_models  # noqa: E402, F401
 from gvas.infrastructure import field_note_models as field_note_models  # noqa: E402, F401
 from gvas.infrastructure import plan_models as plan_models  # noqa: E402, F401
+from gvas.infrastructure import template_models as template_models  # noqa: E402, F401

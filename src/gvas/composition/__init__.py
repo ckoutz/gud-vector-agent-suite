@@ -28,6 +28,7 @@ from gvas.application.quotes import (
     QuoteWorkflowHandler,
 )
 from gvas.application.report_generation import GenerateFieldNotesReportService
+from gvas.application.templates import PublishTemplateSetService, TemplateResolver
 from gvas.application.workflow_conflicts import WorkflowConflictHandler
 from gvas.composition.dispatcher import OutboxCommandDispatcher, OutboxWorker
 from gvas.composition.field_note_workflow import FieldNoteWorkflowHandler
@@ -35,7 +36,7 @@ from gvas.composition.intents import DeterministicIntentResolver
 from gvas.composition.review import CoordinateFieldNoteReviewService
 from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.config import Settings
-from gvas.domain.completeness import ChecklistKey, CompletenessReviewPort
+from gvas.domain.completeness import CompletenessReviewPort
 from gvas.domain.ports import (
     AttachmentAccessPort,
     ChecklistEvidencePort,
@@ -56,8 +57,6 @@ from gvas.infrastructure.unit_of_work import (
     SqlCompletenessUnitOfWorkFactory,
     SqlUnitOfWorkFactory,
 )
-
-DEFAULT_CHECKLIST_KEY = ChecklistKey("field_notes")
 
 
 @dataclass(frozen=True)
@@ -96,6 +95,8 @@ class Application:
     quote_delivery_service: DeliverApprovedQuoteService
     transcription_service: TranscribeFieldNoteAudioService
     transcript_service: FieldNoteTranscriptService
+    template_resolver: TemplateResolver
+    template_publisher: PublishTemplateSetService
     completeness_service: FieldNoteCompletenessService
     review_service: CoordinateFieldNoteReviewService
     snapshot_service: BuildFieldNoteCaseSnapshotService
@@ -116,7 +117,6 @@ def build_application(
     settings: Settings | None = None,
     *,
     intent_resolver: IntentResolutionPort | None = None,
-    checklist_key: ChecklistKey = DEFAULT_CHECKLIST_KEY,
     now: Callable[[], datetime] = _utcnow,
     lease_ttl: timedelta = timedelta(minutes=5),
     engine: AsyncEngine | None = None,
@@ -154,18 +154,19 @@ def build_application(
     )
 
     transcripts = FieldNoteTranscriptService(field_note_unit_of_work_factory)
+    template_resolver = TemplateResolver(completeness_unit_of_work_factory)
+    template_publisher = PublishTemplateSetService(completeness_unit_of_work_factory)
     completeness = FieldNoteCompletenessService(
-        completeness_unit_of_work_factory, ports.completeness_review
+        completeness_unit_of_work_factory, ports.completeness_review, template_resolver
     )
     review = CoordinateFieldNoteReviewService(
         field_note_unit_of_work_factory,
         unit_of_work_factory,
         transcripts,
         completeness,
-        checklist_key,
     )
     snapshots = BuildFieldNoteCaseSnapshotService(
-        completeness_unit_of_work_factory, ports.checklist_evidence
+        completeness_unit_of_work_factory, ports.checklist_evidence, template_resolver
     )
     reports = GenerateFieldNotesReportService(report_unit_of_work_factory, ports.report_generation)
     processing = ProcessOwnerMessageService(unit_of_work_factory, router, resolver)
@@ -212,6 +213,8 @@ def build_application(
         quote_delivery_service=quote_delivery,
         transcription_service=transcription,
         transcript_service=transcripts,
+        template_resolver=template_resolver,
+        template_publisher=template_publisher,
         completeness_service=completeness,
         review_service=review,
         snapshot_service=snapshots,
