@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from gvas.domain.completeness import CompletenessChecklist
 from gvas.domain.identifiers import BusinessId, JsonValue, OutboxCommandId
 from gvas.domain.outbox import OutboxCommand
+from gvas.domain.templates import ReportTemplateDefinition
 
 REPORT_SCHEMA_VERSION: Literal["field-notes-report/v1"] = "field-notes-report/v1"
 _REPORT_NAMESPACE = UUID("7281d38a-7bbb-5d4b-bbf7-adb9de54dcf8")
@@ -79,6 +80,8 @@ class FieldNoteCaseSnapshot(ReportDomainModel):
     canonical_transcript: str = Field(min_length=1)
     checklist_evidence: tuple[ChecklistEvidence, ...] = Field(default_factory=tuple)
     correlated_answers: tuple[CorrelatedAnswer, ...] = Field(default_factory=tuple)
+    report_template_key: str | None = Field(default=None, min_length=1)
+    report_template_version: int | None = Field(default=None, ge=1)
 
     @field_validator("completed_at")
     @classmethod
@@ -95,6 +98,8 @@ class FieldNoteCaseSnapshot(ReportDomainModel):
             raise ValueError("answer question keys must be unique")
         if self.status is FieldNoteCaseStatus.COMPLETED and self.completed_at is None:
             raise ValueError("completed field-note cases require completed_at")
+        if (self.report_template_key is None) != (self.report_template_version is None):
+            raise ValueError("report template pins need both a key and a version")
         return self
 
 
@@ -141,6 +146,42 @@ class FieldNotesReportDocument(ReportDomainModel):
                             f"unknown {reference.source.value} evidence key: {reference.key}"
                         )
 
+    def validate_against_template(self, template: ReportTemplateDefinition) -> None:
+        """Reject a document whose structure is not the one the business configured.
+
+        Without this the pinned definition would be advisory: a generator could
+        invent headings or file an item's evidence under a section that does not
+        bind it, and the report would stop being reproducible from the template.
+        """
+        if self.title != template.title:
+            raise ValueError(
+                f"report title {self.title!r} does not match the configured "
+                f"title {template.title!r}"
+            )
+        expected_keys = [section.section_key for section in template.sections]
+        actual_keys = [section.section_key for section in self.sections]
+        if actual_keys != expected_keys:
+            raise ValueError(
+                f"report sections {actual_keys} do not match the configured "
+                f"sections {expected_keys}"
+            )
+        for section, configured in zip(self.sections, template.sections, strict=True):
+            if section.heading != configured.heading:
+                raise ValueError(
+                    f"section {section.section_key} heading {section.heading!r} does not "
+                    f"match the configured heading {configured.heading!r}"
+                )
+            bound = set(configured.checklist_item_keys)
+            for block in section.blocks:
+                for reference in block.evidence_refs:
+                    if reference.source is EvidenceSource.TRANSCRIPT:
+                        continue
+                    if reference.key not in bound:
+                        raise ValueError(
+                            f"section {section.section_key} cites {reference.source.value} "
+                            f"evidence {reference.key} it does not bind"
+                        )
+
 
 class ChecklistEvidenceRequest(ReportDomainModel):
     """Inputs for attributing a completed review's checklist items to evidence."""
@@ -157,6 +198,23 @@ class ReportGenerationRequest(ReportDomainModel):
     report_version: int = Field(ge=1)
     source_fingerprint: str = Field(min_length=64, max_length=64)
     source: FieldNoteCaseSnapshot
+    report_template: ReportTemplateDefinition
+
+    @model_validator(mode="after")
+    def report_template_matches_pin(self) -> "ReportGenerationRequest":
+        """The generator renders the case's pinned schema, never the active one."""
+        if self.report_template.business_id != self.source.business_id:
+            raise ValueError("report template must belong to the case's business")
+        pinned_key = self.source.report_template_key
+        pinned_version = self.source.report_template_version
+        if pinned_key is None or pinned_version is None:
+            return self
+        if (
+            self.report_template.report_template_key != pinned_key
+            or self.report_template.version != pinned_version
+        ):
+            raise ValueError("report template does not match the case's pinned version")
+        return self
 
 
 class FieldNotesReportVersion(ReportDomainModel):

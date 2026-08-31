@@ -1,0 +1,69 @@
+{
+  "industry_key": "environmental_testing",
+  "template_set_key": "field_notes",
+  "checklist_key": "field_notes",
+  "version": 1,
+  "report_template_key": "field_notes_report",
+  "report_template_version": 1,
+  "report_title": "Environmental Testing Field Report",
+  "report_sections": [
+    {
+      "section_key": "site_and_scope",
+      "heading": "Site and Scope of Work",
+      "checklist_item_keys": ["site", "work"]
+    },
+    {
+      "section_key": "sampling",
+      "heading": "Sampling Locations and Instrumentation",
+      "checklist_item_keys": ["sample_locations", "instruments"]
+    },
+    {
+      "section_key": "findings",
+      "heading": "Observed Conditions and Readings",
+      "checklist_item_keys": ["findings"]
+    },
+    {
+      "section_key": "recommendations",
+      "heading": "Recommended Follow-Up",
+      "checklist_item_keys": ["follow_up"]
+    }
+  ],
+  "items": [
+    {
+      "key": "site",
+      "prompt": "Which site was visited?",
+      "requirement": "required",
+      "evidence_markers": ["site:", "address:"]
+    },
+    {
+      "key": "work",
+      "prompt": "What work was performed?",
+      "requirement": "required",
+      "evidence_markers": ["work:", "performed:"]
+    },
+    {
+      "key": "sample_locations",
+      "prompt": "Where were samples collected?",
+      "requirement": "required",
+      "evidence_markers": ["sample:", "location:"]
+    },
+    {
+      "key": "instruments",
+      "prompt": "Which instruments were used, and were they calibrated?",
+      "requirement": "required",
+      "evidence_markers": ["instrument:", "calibration:"]
+    },
+    {
+      "key": "findings",
+      "prompt": "What were the observed conditions and readings?",
+      "requirement": "required",
+      "evidence_markers": ["finding:", "reading:"]
+    },
+    {
+      "key": "follow_up",
+      "prompt": "What follow-up work or retesting is recommended?",
+      "requirement": "optional",
+      "evidence_markers": ["follow-up:", "recommend:"]
+    }
+  ]
+}

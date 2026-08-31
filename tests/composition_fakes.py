@@ -114,14 +114,15 @@ class ReportGenerationFake:
         self.requests: list[ReportGenerationRequest] = []
 
     async def generate(self, request: ReportGenerationRequest) -> dict[str, JsonValue]:
+        """Renders the structure of the pinned template, as a real generator must."""
         self.requests.append(request)
         return {
             "schema_version": "field-notes-report/v1",
-            "title": "Field notes",
+            "title": request.report_template.title,
             "sections": [
                 {
-                    "section_key": "transcript",
-                    "heading": "Transcript",
+                    "section_key": section.section_key,
+                    "heading": section.heading,
                     "blocks": [
                         {
                             "kind": "text",
@@ -130,6 +131,7 @@ class ReportGenerationFake:
                         }
                     ],
                 }
+                for section in request.report_template.sections
             ],
         }
 

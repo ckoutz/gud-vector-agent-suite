@@ -1,0 +1,69 @@
+{
+  "industry_key": "landscape_construction",
+  "template_set_key": "landscape_field_notes",
+  "checklist_key": "landscape_field_notes",
+  "version": 1,
+  "report_template_key": "landscape_field_notes_report",
+  "report_template_version": 1,
+  "report_title": "Landscape Installation Visit Report",
+  "report_sections": [
+    {
+      "section_key": "property_and_crew",
+      "heading": "Property, Work Zone and Crew",
+      "checklist_item_keys": ["property", "crew"]
+    },
+    {
+      "section_key": "installed_work",
+      "heading": "Plantings and Materials Installed",
+      "checklist_item_keys": ["plantings", "materials"]
+    },
+    {
+      "section_key": "irrigation",
+      "heading": "Irrigation Status",
+      "checklist_item_keys": ["irrigation"]
+    },
+    {
+      "section_key": "schedule_impact",
+      "heading": "Weather and Access Delays",
+      "checklist_item_keys": ["weather_delay"]
+    }
+  ],
+  "items": [
+    {
+      "key": "property",
+      "prompt": "Which property and work zone were worked on?",
+      "requirement": "required",
+      "evidence_markers": ["property:", "zone:"]
+    },
+    {
+      "key": "crew",
+      "prompt": "Which crew was on site, and for how long?",
+      "requirement": "required",
+      "evidence_markers": ["crew:", "hours:"]
+    },
+    {
+      "key": "plantings",
+      "prompt": "What was planted or installed, including quantities?",
+      "requirement": "required",
+      "evidence_markers": ["planted:", "installed:"]
+    },
+    {
+      "key": "materials",
+      "prompt": "What materials were delivered or consumed?",
+      "requirement": "required",
+      "evidence_markers": ["material:", "delivered:"]
+    },
+    {
+      "key": "irrigation",
+      "prompt": "What is the irrigation status after the visit?",
+      "requirement": "required",
+      "evidence_markers": ["irrigation:", "zone valve:"]
+    },
+    {
+      "key": "weather_delay",
+      "prompt": "Did weather or site access delay the work?",
+      "requirement": "optional",
+      "evidence_markers": ["weather:", "delay:"]
+    }
+  ]
+}

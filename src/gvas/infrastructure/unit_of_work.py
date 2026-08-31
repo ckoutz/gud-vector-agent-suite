@@ -17,6 +17,11 @@ from gvas.domain.repositories import (
     UnitOfWork,
     WorkflowRunRepository,
 )
+from gvas.domain.template_repositories import (
+    BusinessTemplateProfileRepository,
+    ReportTemplateDefinitionRepository,
+    TemplateSetRepository,
+)
 from gvas.infrastructure.completeness_repositories import (
     SqlChecklistDefinitionRepository,
     SqlFieldNoteReviewRepository,
@@ -31,6 +36,11 @@ from gvas.infrastructure.repositories import (
     SqlOwnerChannelEndpointRepository,
     SqlQuoteRepository,
     SqlWorkflowRunRepository,
+)
+from gvas.infrastructure.template_repositories import (
+    SqlBusinessTemplateProfileRepository,
+    SqlReportTemplateDefinitionRepository,
+    SqlTemplateSetRepository,
 )
 
 
@@ -93,6 +103,9 @@ class SqlUnitOfWorkFactory:
 
 class SqlCompletenessUnitOfWork:
     checklists: ChecklistDefinitionRepository
+    template_sets: TemplateSetRepository
+    report_templates: ReportTemplateDefinitionRepository
+    business_template_profiles: BusinessTemplateProfileRepository
     field_note_reviews: FieldNoteReviewRepository
     follow_up_questions: FollowUpQuestionRepository
     outbound_messages: OutboundMessageRepository
@@ -105,6 +118,9 @@ class SqlCompletenessUnitOfWork:
     async def __aenter__(self) -> "SqlCompletenessUnitOfWork":
         self._session = self._session_factory()
         self.checklists = SqlChecklistDefinitionRepository(self._session)
+        self.template_sets = SqlTemplateSetRepository(self._session)
+        self.report_templates = SqlReportTemplateDefinitionRepository(self._session)
+        self.business_template_profiles = SqlBusinessTemplateProfileRepository(self._session)
         self.field_note_reviews = SqlFieldNoteReviewRepository(self._session)
         self.follow_up_questions = SqlFollowUpQuestionRepository(self._session)
         self.outbound_messages = SqlOutboundMessageRepository(self._session)

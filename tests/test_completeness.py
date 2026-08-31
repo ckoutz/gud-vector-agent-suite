@@ -10,6 +10,11 @@ from gvas.application.completeness import (
     FieldNoteCompletenessService,
 )
 from gvas.application.completeness_review import MarkerCompletenessReviewer
+from gvas.application.templates import (
+    IndustryTemplateDefinition,
+    PublishTemplateSetService,
+    TemplateResolver,
+)
 from gvas.domain.completeness import (
     ChecklistItem,
     ChecklistItemKey,
@@ -31,6 +36,7 @@ from gvas.domain.messages import (
     SenderRef,
     TextPart,
 )
+from gvas.domain.templates import IndustryKey, ReportTemplateSection, TemplateSetKey
 from gvas.infrastructure.completeness_models import (
     FieldNoteFollowUpQuestion,
     FieldNoteReview,
@@ -185,9 +191,28 @@ def checklist(business_id: BusinessId, version: int = 1) -> CompletenessChecklis
 async def configure(
     session_factory: async_sessionmaker[AsyncSession], definition: CompletenessChecklist
 ) -> None:
-    async with SqlCompletenessUnitOfWorkFactory(session_factory)() as uow:
-        await uow.checklists.upsert(definition)
-        await uow.commit()
+    await PublishTemplateSetService(
+        SqlCompletenessUnitOfWorkFactory(session_factory)
+    ).seed_industry(definition.business_id, industry(definition))
+
+
+def industry(definition: CompletenessChecklist) -> IndustryTemplateDefinition:
+    return IndustryTemplateDefinition(
+        industry_key=IndustryKey("configured"),
+        template_set_key=TemplateSetKey(definition.checklist_key),
+        checklist_key=definition.checklist_key,
+        version=definition.version,
+        items=definition.items,
+        report_template_key="configured-report",
+        report_title="Configured report",
+        report_sections=(
+            ReportTemplateSection(
+                section_key="findings",
+                heading="Findings",
+                checklist_item_keys=tuple(item.key for item in definition.items),
+            ),
+        ),
+    )
 
 
 def owner_reply(
@@ -213,6 +238,7 @@ def service(
     return FieldNoteCompletenessService(
         SqlCompletenessUnitOfWorkFactory(session_factory),
         reviewer or MarkerCompletenessReviewer(),
+        TemplateResolver(SqlCompletenessUnitOfWorkFactory(session_factory)),
     )
 
 
@@ -243,7 +269,6 @@ async def test_no_missing_items_completes_without_questions(
         f"conversation-{business_id}",
         inbound_id,
         "site: north work: inspection",
-        definition.checklist_key,
     )
 
     assert result.status is CompletenessStatus.COMPLETE
@@ -268,7 +293,6 @@ async def test_multiple_rounds_complete_only_after_all_requirements_are_satisfie
         f"conversation-{business_id}",
         inbound_id,
         "No configured evidence markers are present.",
-        definition.checklist_key,
     )
     assert started.status is CompletenessStatus.QUESTIONS_SENT
     assert started.round_index == 1
@@ -320,7 +344,6 @@ async def test_duplicate_start_and_duplicate_reply_do_not_duplicate_questions_or
         f"conversation-{business_id}",
         inbound_id,
         "missing",
-        definition.checklist_key,
     )
     repeated = await completeness.start_review(
         business_id,
@@ -328,7 +351,6 @@ async def test_duplicate_start_and_duplicate_reply_do_not_duplicate_questions_or
         f"conversation-{business_id}",
         inbound_id,
         "missing",
-        definition.checklist_key,
     )
     assert first.questions_sent == 1
     assert repeated.questions_sent == 0
@@ -376,7 +398,6 @@ async def test_retry_after_review_failure_resumes_from_persisted_answer(
         f"conversation-{business_id}",
         inbound_id,
         "missing",
-        definition.checklist_key,
     )
     first = (await outgoing_messages(session_factory))[0]
     reply_id = await seed_reply(session_factory, business_id, conversation_id, "retry-reply")
@@ -409,7 +430,6 @@ async def test_thread_root_reply_advances_questions_sequentially(
         f"conversation-{business_id}",
         inbound_id,
         "missing",
-        definition.checklist_key,
     )
     messages = await outgoing_messages(session_factory)
     assert len(messages) == 1
@@ -469,7 +489,6 @@ async def test_reply_is_rejected_when_no_question_is_currently_asked(
         f"conversation-{business_id}",
         inbound_id,
         "missing",
-        definition.checklist_key,
     )
     answered_id = await seed_reply(session_factory, business_id, conversation_id, "answered")
     with pytest.raises(RuntimeError, match="review failed"):
@@ -510,7 +529,6 @@ async def test_tenant_isolation_prevents_cross_business_correlation(
         f"conversation-{first_business}",
         first_inbound,
         "missing",
-        definition.checklist_key,
     )
     first_question = (await outgoing_messages(session_factory))[0]
     second_reply_id = await seed_reply(
@@ -642,6 +660,5 @@ async def test_unknown_review_item_is_rejected(
             f"conversation-{business_id}",
             inbound_id,
             "missing",
-            definition.checklist_key,
         )
     assert await outgoing_messages(session_factory) == []

@@ -19,6 +19,12 @@ from gvas.domain.reporting import (
     ReportUnitOfWork,
     field_note_source_fingerprint,
 )
+from gvas.domain.templates import (
+    ReportTemplateDefinition,
+    ReportTemplateRef,
+    TemplateResolutionPort,
+    UnknownReportTemplateError,
+)
 
 
 class ReportUnitOfWorkFactory(Protocol):
@@ -30,9 +36,11 @@ class GenerateFieldNotesReportService:
         self,
         unit_of_work_factory: ReportUnitOfWorkFactory,
         generator: ReportGenerationPort,
+        templates: TemplateResolutionPort,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._generator = generator
+        self._templates = templates
 
     async def generate(
         self,
@@ -44,6 +52,7 @@ class GenerateFieldNotesReportService:
         if source.status is not FieldNoteCaseStatus.COMPLETED:
             raise IncompleteFieldNoteCaseError("only completed field-note cases are eligible")
 
+        report_template = await self._pinned_report_template(source)
         source_fingerprint = field_note_source_fingerprint(source)
         async with self._unit_of_work_factory() as unit_of_work:
             claim = await unit_of_work.reports.claim(
@@ -67,6 +76,7 @@ class GenerateFieldNotesReportService:
             report_version=claim.report_version,
             source_fingerprint=claim.source_fingerprint,
             source=source,
+            report_template=report_template,
         )
         try:
             generated = await self._generator.generate(request)
@@ -77,6 +87,7 @@ class GenerateFieldNotesReportService:
         try:
             document = FieldNotesReportDocument.model_validate(generated)
             document.validate_evidence_against(source)
+            document.validate_against_template(report_template)
         except (ValidationError, ValueError) as error:
             await self._record_failure(claim, str(error), failed_at=now)
             raise MalformedGeneratedReportError("generated report content is invalid") from error
@@ -89,6 +100,22 @@ class GenerateFieldNotesReportService:
             )
             await unit_of_work.commit()
         return completed
+
+    async def _pinned_report_template(
+        self, source: FieldNoteCaseSnapshot
+    ) -> ReportTemplateDefinition:
+        """The section schema pinned to the case, so revisions keep their structure."""
+        key = source.report_template_key
+        version = source.report_template_version
+        if key is None or version is None:
+            raise UnknownReportTemplateError("field-note case has no pinned report template")
+        return await self._templates.load_report_template(
+            ReportTemplateRef(
+                business_id=source.business_id,
+                report_template_key=key,
+                report_template_version=version,
+            )
+        )
 
     async def _record_failure(
         self, claim: ReportGenerationClaim, error: str, *, failed_at: datetime
