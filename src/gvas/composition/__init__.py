@@ -1,0 +1,193 @@
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+
+from gvas.application.completeness import FieldNoteCompletenessService
+from gvas.application.field_note_transcription import (
+    FieldNoteTranscriptService,
+    TranscribeFieldNoteAudioService,
+)
+from gvas.application.field_notes import FieldNoteIntakeHandler, FieldNoteIntentContribution
+from gvas.application.ingestion import IngestOwnerMessageService
+from gvas.application.outbox_service import OutboxService
+from gvas.application.owner_reply_delivery import DeliverOwnerReplyService
+from gvas.application.processing import ProcessOwnerMessageService
+from gvas.application.quotes import (
+    DeliverApprovedQuoteService,
+    QuoteIntentSelector,
+    QuoteWorkflowHandler,
+)
+from gvas.application.report_generation import GenerateFieldNotesReportService
+from gvas.composition.dispatcher import OutboxCommandDispatcher, OutboxWorker
+from gvas.composition.field_note_workflow import FieldNoteWorkflowHandler
+from gvas.composition.intents import DeterministicIntentResolver
+from gvas.composition.review import CoordinateFieldNoteReviewService
+from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
+from gvas.config import Settings
+from gvas.domain.completeness import ChecklistKey, CompletenessReviewPort
+from gvas.domain.ports import (
+    ChecklistEvidencePort,
+    CustomerQuoteDeliveryPort,
+    IntentResolutionPort,
+    OwnerReplyPort,
+    QuoteDraftingPort,
+    TranscriptionPort,
+)
+from gvas.domain.reporting import ReportGenerationPort
+from gvas.domain.workflows import WorkflowRouter
+from gvas.infrastructure.db import create_engine, create_session_factory
+from gvas.infrastructure.field_note_repositories import SqlFieldNoteUnitOfWorkFactory
+from gvas.infrastructure.reporting_unit_of_work import SqlReportUnitOfWorkFactory
+from gvas.infrastructure.unit_of_work import (
+    SqlCompletenessUnitOfWorkFactory,
+    SqlUnitOfWorkFactory,
+)
+
+DEFAULT_CHECKLIST_KEY = ChecklistKey("field_notes")
+
+
+@dataclass(frozen=True)
+class ApplicationPorts:
+    """Provider-neutral ports the composition root requires.
+
+    Production adapters are injected here; the repository ships no provider
+    implementation, so tests and local runs supply deterministic fakes.
+    """
+
+    owner_replies: OwnerReplyPort
+    quote_drafting: QuoteDraftingPort
+    quote_delivery: CustomerQuoteDeliveryPort
+    transcription: TranscriptionPort
+    completeness_review: CompletenessReviewPort
+    checklist_evidence: ChecklistEvidencePort
+    report_generation: ReportGenerationPort
+
+
+@dataclass(frozen=True)
+class Application:
+    engine: AsyncEngine | None
+    session_factory: async_sessionmaker[AsyncSession]
+    unit_of_work_factory: SqlUnitOfWorkFactory
+    field_note_unit_of_work_factory: SqlFieldNoteUnitOfWorkFactory
+    completeness_unit_of_work_factory: SqlCompletenessUnitOfWorkFactory
+    report_unit_of_work_factory: SqlReportUnitOfWorkFactory
+    router: WorkflowRouter
+    intent_resolver: IntentResolutionPort
+    ingest_service: IngestOwnerMessageService
+    processing_service: ProcessOwnerMessageService
+    owner_reply_service: DeliverOwnerReplyService
+    quote_delivery_service: DeliverApprovedQuoteService
+    transcription_service: TranscribeFieldNoteAudioService
+    transcript_service: FieldNoteTranscriptService
+    completeness_service: FieldNoteCompletenessService
+    review_service: CoordinateFieldNoteReviewService
+    snapshot_service: BuildFieldNoteCaseSnapshotService
+    report_service: GenerateFieldNotesReportService
+    outbox: OutboxService
+    dispatcher: OutboxCommandDispatcher
+    worker: OutboxWorker
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def build_application(
+    ports: ApplicationPorts,
+    settings: Settings | None = None,
+    *,
+    intent_resolver: IntentResolutionPort | None = None,
+    checklist_key: ChecklistKey = DEFAULT_CHECKLIST_KEY,
+    now: Callable[[], datetime] = _utcnow,
+    lease_ttl: timedelta = timedelta(minutes=5),
+    engine: AsyncEngine | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> Application:
+    resolved_engine = engine
+    if resolved_engine is None and session_factory is None:
+        resolved_engine = create_engine((settings or Settings()).database_url)
+    if session_factory is not None:
+        sessions = session_factory
+    elif resolved_engine is not None:
+        sessions = create_session_factory(resolved_engine)
+    else:
+        raise ValueError("an engine or session factory is required")
+
+    unit_of_work_factory = SqlUnitOfWorkFactory(sessions)
+    field_note_unit_of_work_factory = SqlFieldNoteUnitOfWorkFactory(sessions)
+    completeness_unit_of_work_factory = SqlCompletenessUnitOfWorkFactory(sessions)
+    report_unit_of_work_factory = SqlReportUnitOfWorkFactory(sessions)
+
+    intake = FieldNoteIntakeHandler(field_note_unit_of_work_factory, now=now)
+    field_note_handler = FieldNoteWorkflowHandler(
+        intake, field_note_unit_of_work_factory, completeness_unit_of_work_factory
+    )
+    quote_handler = QuoteWorkflowHandler(unit_of_work_factory, ports.quote_drafting)
+    router = WorkflowRouter([quote_handler, field_note_handler])
+
+    resolver = intent_resolver or DeterministicIntentResolver(
+        FieldNoteIntentContribution(field_note_unit_of_work_factory),
+        QuoteIntentSelector(),
+        field_note_unit_of_work_factory,
+        unit_of_work_factory,
+    )
+
+    transcripts = FieldNoteTranscriptService(field_note_unit_of_work_factory)
+    completeness = FieldNoteCompletenessService(
+        completeness_unit_of_work_factory, ports.completeness_review
+    )
+    review = CoordinateFieldNoteReviewService(
+        field_note_unit_of_work_factory,
+        unit_of_work_factory,
+        transcripts,
+        completeness,
+        checklist_key,
+    )
+    snapshots = BuildFieldNoteCaseSnapshotService(
+        completeness_unit_of_work_factory, transcripts, ports.checklist_evidence
+    )
+    reports = GenerateFieldNotesReportService(report_unit_of_work_factory, ports.report_generation)
+    processing = ProcessOwnerMessageService(unit_of_work_factory, router, resolver)
+    owner_replies = DeliverOwnerReplyService(unit_of_work_factory, ports.owner_replies)
+    quote_delivery = DeliverApprovedQuoteService(unit_of_work_factory, ports.quote_delivery)
+    transcription = TranscribeFieldNoteAudioService(
+        field_note_unit_of_work_factory, ports.transcription
+    )
+    outbox = OutboxService(unit_of_work_factory)
+    dispatcher = OutboxCommandDispatcher(
+        processing=processing,
+        owner_replies=owner_replies,
+        quote_delivery=quote_delivery,
+        transcription=transcription,
+        review=review,
+        snapshots=snapshots,
+        reports=reports,
+        outbox=outbox,
+        now=now,
+        lease_ttl=lease_ttl,
+    )
+    return Application(
+        engine=resolved_engine,
+        session_factory=sessions,
+        unit_of_work_factory=unit_of_work_factory,
+        field_note_unit_of_work_factory=field_note_unit_of_work_factory,
+        completeness_unit_of_work_factory=completeness_unit_of_work_factory,
+        report_unit_of_work_factory=report_unit_of_work_factory,
+        router=router,
+        intent_resolver=resolver,
+        ingest_service=IngestOwnerMessageService(unit_of_work_factory),
+        processing_service=processing,
+        owner_reply_service=owner_replies,
+        quote_delivery_service=quote_delivery,
+        transcription_service=transcription,
+        transcript_service=transcripts,
+        completeness_service=completeness,
+        review_service=review,
+        snapshot_service=snapshots,
+        report_service=reports,
+        outbox=outbox,
+        dispatcher=dispatcher,
+        worker=OutboxWorker(outbox, dispatcher, now=now, lease_ttl=lease_ttl),
+    )

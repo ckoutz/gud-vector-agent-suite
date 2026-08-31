@@ -149,7 +149,7 @@ class FieldNoteIntakeHandler:
             status=WorkflowRunStatus.SUCCEEDED,
             replies=(reply,),
             commands=tuple(
-                field_note_transcribe_command(message.business_id, part_id)
+                field_note_transcribe_command(message.business_id, part_id, result.case.case_id)
                 for part_id in result.audio_part_ids
             ),
         )

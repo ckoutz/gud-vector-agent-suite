@@ -7,7 +7,13 @@ from uuid import UUID, uuid5
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gvas.domain.enums import MediaKind
-from gvas.domain.identifiers import BusinessId, MessageId, OutboxCommandId, WorkflowIntent
+from gvas.domain.identifiers import (
+    BusinessId,
+    JsonValue,
+    MessageId,
+    OutboxCommandId,
+    WorkflowIntent,
+)
 from gvas.domain.messages import (
     AttachmentReference,
     AudioReference,
@@ -26,6 +32,8 @@ FIELD_NOTE_INTENT = WorkflowIntent("field_note.capture")
 FIELD_NOTE_TRIGGER_PREFIX = "field notes:"
 FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE = "field_note.transcribe"
 FIELD_NOTE_TRANSCRIBE_COMMAND_NAMESPACE = UUID("b4a7fb38-8c21-4cb9-9de1-4ec9f0c2c7e6")
+FIELD_NOTE_REVIEW_COMMAND_TYPE = "field_note.review"
+FIELD_NOTE_REVIEW_COMMAND_NAMESPACE = UUID("6f2c9d0e-1a4b-5c68-9f3d-7b8e2c5a1d40")
 
 
 class FieldNoteModel(BaseModel):
@@ -227,14 +235,55 @@ def build_canonical_transcript(case: FieldNoteCase) -> CanonicalFieldNoteTranscr
 
 
 def field_note_transcribe_command(
-    business_id: BusinessId, part_id: FieldNotePartId
+    business_id: BusinessId, part_id: FieldNotePartId, case_id: FieldNoteCaseId
 ) -> OutboxCommand:
     return OutboxCommand(
         command_id=OutboxCommandId(uuid5(FIELD_NOTE_TRANSCRIBE_COMMAND_NAMESPACE, str(part_id))),
         business_id=business_id,
         command_type=FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE,
-        payload={"field_note_part_id": str(part_id)},
+        payload={"field_note_part_id": str(part_id), "field_note_case_id": str(case_id)},
         dedup_key=f"field_note_transcribe:{part_id}",
+    )
+
+
+class FieldNoteReviewTrigger(StrEnum):
+    INTAKE = "intake"
+    REPLY = "reply"
+    TRANSCRIPTION = "transcription"
+
+
+def field_note_review_command(
+    business_id: BusinessId,
+    case_id: FieldNoteCaseId,
+    trigger: FieldNoteReviewTrigger,
+    trigger_key: str,
+    owner_reply_message_id: MessageId | None = None,
+) -> OutboxCommand:
+    """Hands a field-note case to completeness review once, per distinct trigger.
+
+    ``owner_reply_message_id`` carries the persisted inbound message whose text
+    answers the outstanding follow-up question; it is payload data rather than a
+    framework linkage because the command is dispatched to the review path.
+    """
+
+    if not trigger_key:
+        raise ValueError("field-note review commands require a trigger key")
+    if (trigger is FieldNoteReviewTrigger.REPLY) != (owner_reply_message_id is not None):
+        raise ValueError("only reply-triggered review commands carry an owner reply message")
+    key = f"{case_id}:{trigger.value}:{trigger_key}"
+    payload: dict[str, JsonValue] = {
+        "field_note_case_id": str(case_id),
+        "trigger": trigger.value,
+        "trigger_key": trigger_key,
+    }
+    if owner_reply_message_id is not None:
+        payload["owner_reply_message_id"] = str(owner_reply_message_id)
+    return OutboxCommand(
+        command_id=OutboxCommandId(uuid5(FIELD_NOTE_REVIEW_COMMAND_NAMESPACE, key)),
+        business_id=business_id,
+        command_type=FIELD_NOTE_REVIEW_COMMAND_TYPE,
+        payload=payload,
+        dedup_key=f"field_note_review:{key}",
     )
 
 

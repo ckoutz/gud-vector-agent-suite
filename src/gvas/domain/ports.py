@@ -13,6 +13,7 @@ from gvas.domain.messages import (
     TranscriptResult,
 )
 from gvas.domain.quotes import QuoteDraftProposal, QuoteDraftRequest
+from gvas.domain.reporting import ChecklistEvidence, ChecklistEvidenceRequest
 
 
 class IntentResolutionPort(Protocol):
@@ -35,6 +36,19 @@ class TranscriptionPort(Protocol):
 
 class CustomerQuoteDeliveryPort(Protocol):
     async def deliver(self, request: CustomerDeliveryRequest) -> DeliveryReceipt: ...
+
+
+class ChecklistEvidencePort(Protocol):
+    """Attributes a completed review's checklist items to transcript evidence.
+
+    Completeness review reports only the items still missing, so evidence for
+    the satisfied items is attributed through this port before a report snapshot
+    is assembled.
+    """
+
+    async def attribute(
+        self, request: ChecklistEvidenceRequest
+    ) -> tuple[ChecklistEvidence, ...]: ...
 
 
 class QuoteDraftingPort(Protocol):

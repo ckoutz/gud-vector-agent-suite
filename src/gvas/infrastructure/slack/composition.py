@@ -1,11 +1,11 @@
 from datetime import timedelta
 
+from fastapi import APIRouter
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.application.ingestion import IngestOwnerMessageService
 from gvas.infrastructure.slack.config import SlackSettings
 from gvas.infrastructure.slack.delivery import (
-    InMemorySlackDeliveryLedger,
     SlackChatPoster,
     SlackDeliveryLedger,
     SlackOwnerReplyAdapter,
@@ -13,6 +13,7 @@ from gvas.infrastructure.slack.delivery import (
 from gvas.infrastructure.slack.ingress import SlackEventIngress
 from gvas.infrastructure.slack.installations import StaticSlackInstallationDirectory
 from gvas.infrastructure.slack.routing import SqlSlackRoutingResolver
+from gvas.interfaces.http.slack import create_slack_router
 
 
 def build_slack_ingress(
@@ -27,13 +28,29 @@ def build_slack_ingress(
     )
 
 
+def build_slack_event_router(
+    ingest_service: IngestOwnerMessageService, settings: SlackSettings | None = None
+) -> APIRouter:
+    """HTTP route that verifies, normalizes, ingests and enqueues only."""
+
+    return create_slack_router(build_slack_ingress(ingest_service, settings))
+
+
 def build_slack_owner_reply_adapter(
     poster: SlackChatPoster,
     session_factory: async_sessionmaker[AsyncSession],
-    ledger: SlackDeliveryLedger | None = None,
+    ledger: SlackDeliveryLedger,
 ) -> SlackOwnerReplyAdapter:
+    """Composes Slack owner-reply delivery over an explicitly supplied ledger.
+
+    The ledger is required rather than defaulted: retries are claimed by any
+    worker process, so a delivery ledger that is not shared across processes
+    cannot suppress a duplicate post. Deployments inject a durable shared
+    ledger; tests may inject ``InMemorySlackDeliveryLedger``.
+    """
+
     return SlackOwnerReplyAdapter(
         poster,
         SqlSlackRoutingResolver(session_factory),
-        ledger if ledger is not None else InMemorySlackDeliveryLedger(),
+        ledger,
     )

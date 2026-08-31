@@ -185,6 +185,7 @@ async def test_text_intake_and_audio_command(
     assert result.commands[0] == field_note_transcribe_command(
         business_id,
         FieldNotePartId(UUID(str(result.commands[0].payload["field_note_part_id"]))),
+        FieldNoteCaseId(UUID(str(result.commands[0].payload["field_note_case_id"]))),
     )
 
 

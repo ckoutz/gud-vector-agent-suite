@@ -7,11 +7,15 @@ from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from gvas.domain.identifiers import BusinessId, JsonValue
+from gvas.domain.completeness import CompletenessChecklist
+from gvas.domain.identifiers import BusinessId, JsonValue, OutboxCommandId
+from gvas.domain.outbox import OutboxCommand
 
 REPORT_SCHEMA_VERSION: Literal["field-notes-report/v1"] = "field-notes-report/v1"
 _REPORT_NAMESPACE = UUID("7281d38a-7bbb-5d4b-bbf7-adb9de54dcf8")
 _REPORT_VERSION_NAMESPACE = UUID("58c1274a-bf3f-5b52-926b-abd5d4113cd3")
+FIELD_NOTES_REPORT_COMMAND_TYPE = "field_notes_report.generate"
+FIELD_NOTES_REPORT_COMMAND_NAMESPACE = UUID("c1d9a6f2-3b47-5e81-9a2c-6d4f8b0e7315")
 
 
 class ReportDomainModel(BaseModel):
@@ -138,6 +142,16 @@ class FieldNotesReportDocument(ReportDomainModel):
                         )
 
 
+class ChecklistEvidenceRequest(ReportDomainModel):
+    """Inputs for attributing a completed review's checklist items to evidence."""
+
+    business_id: BusinessId
+    case_id: UUID
+    checklist: CompletenessChecklist
+    canonical_transcript: str = Field(min_length=1)
+    correlated_answers: tuple[CorrelatedAnswer, ...] = Field(default_factory=tuple)
+
+
 class ReportGenerationRequest(ReportDomainModel):
     report_id: UUID
     report_version: int = Field(ge=1)
@@ -253,6 +267,33 @@ def field_notes_report_id(business_id: BusinessId, case_id: UUID) -> UUID:
 
 def field_notes_report_version_id(report_id: UUID, version: int, source_fingerprint: str) -> UUID:
     return uuid5(_REPORT_VERSION_NAMESPACE, f"{report_id}:{version}:{source_fingerprint}")
+
+
+def field_notes_report_command(
+    business_id: BusinessId,
+    case_id: UUID,
+    review_id: UUID,
+    completed_at: datetime,
+) -> OutboxCommand:
+    """Requests one report per completed field-note case.
+
+    ``completed_at`` is persisted in the command payload so retries reuse the
+    same snapshot fingerprint instead of generating a second report version.
+    """
+
+    return OutboxCommand(
+        command_id=OutboxCommandId(
+            uuid5(FIELD_NOTES_REPORT_COMMAND_NAMESPACE, f"{business_id}:{case_id}")
+        ),
+        business_id=business_id,
+        command_type=FIELD_NOTES_REPORT_COMMAND_TYPE,
+        payload={
+            "field_note_case_id": str(case_id),
+            "field_note_review_id": str(review_id),
+            "completed_at": _aware(completed_at).isoformat(),
+        },
+        dedup_key=f"field_notes_report:{case_id}",
+    )
 
 
 def field_note_source_fingerprint(source: FieldNoteCaseSnapshot) -> str:

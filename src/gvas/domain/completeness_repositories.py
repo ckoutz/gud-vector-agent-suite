@@ -75,6 +75,10 @@ class FieldNoteReviewRepository(Protocol):
         thread_correlation_id: str,
     ) -> FieldNoteReviewRecord: ...
 
+    async def get(
+        self, business_id: BusinessId, review_id: FieldNoteReviewId
+    ) -> FieldNoteReviewRecord | None: ...
+
     async def get_active_for_conversation(
         self, business_id: BusinessId, conversation_id: ConversationId
     ) -> FieldNoteReviewRecord | None: ...

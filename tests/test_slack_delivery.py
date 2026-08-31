@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from inspect import Parameter, signature
 from uuid import uuid4
 
 import pytest
@@ -16,6 +17,7 @@ from gvas.domain.messages import (
     TextPart,
 )
 from gvas.domain.ports import OwnerReplyPort
+from gvas.infrastructure.slack.composition import build_slack_owner_reply_adapter
 from gvas.infrastructure.slack.delivery import (
     InMemorySlackDeliveryLedger,
     SlackChatPostRequest,
@@ -167,6 +169,30 @@ def test_routing_requires_a_channel() -> None:
         SlackConversationRouting.from_routing({"thread_ts": ROOT_TS})
     with pytest.raises(SlackRoutingError):
         SlackConversationRouting.from_routing({"channel": CHANNEL, "thread_ts": 17})
+
+
+@pytest.mark.asyncio
+async def test_owner_reply_adapter_composition_requires_an_explicit_ledger(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    parameter = signature(build_slack_owner_reply_adapter).parameters["ledger"]
+    assert parameter.default is Parameter.empty
+
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    inbound = normalize(message_payload(), business_id)
+    await IngestOwnerMessageService(SqlUnitOfWorkFactory(session_factory)).ingest(inbound)
+    poster = RecordingPoster()
+    ledger = InMemorySlackDeliveryLedger()
+    adapter = build_slack_owner_reply_adapter(poster, session_factory, ledger)
+    message = reply(business_id)
+
+    first = await adapter.send(inbound.message.conversation_ref, message)
+    second = await adapter.send(inbound.message.conversation_ref, message)
+
+    assert first == second
+    assert len(poster.requests) == 1
+    assert await ledger.find(poster.requests[0].idempotency_key) == first
 
 
 @pytest.mark.asyncio
