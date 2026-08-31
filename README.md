@@ -36,13 +36,43 @@ GVAS_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/gva
 ```
 
 ```bash
-uv run alembic upgrade head
+uv run alembic upgrade heads
 uv run alembic downgrade base
 uv run uvicorn gvas.interfaces.http.app:app --reload
 docker compose up --build
 ```
 
 The health endpoint is available at `http://localhost:8000/healthz`.
+
+## Slack Request URL adapter
+
+`gvas.infrastructure.slack` and `gvas.interfaces.http.slack` hold every
+Slack-specific type; domain and application code stay channel-neutral. The
+router verifies the signing secret over the raw body, rejects stale timestamps,
+answers the `url_verification` challenge, normalizes message events into
+`InboundOwnerMessage`, and returns as soon as ingestion has persisted the
+inbound message and its outbox command. Slack retries of an already-ingested
+event are reported as duplicates without new work. Owner replies go out through
+`OwnerReplyPort` using persisted routing plus a deterministic delivery key, so
+posting is skipped only after a recorded success.
+
+Mount it explicitly (it is not part of the default app):
+
+```python
+create_app(routers=(create_slack_router(ingress, path=settings.events_path),))
+```
+
+Settings use the `GVAS_SLACK_` prefix; see [`.env.example`](.env.example).
+`GVAS_SLACK_INSTALLATIONS` maps Slack team IDs to a business and its authorized
+owner users (`T0000000000=<business-uuid>:U0000000000|U0000000001,...`).
+Unmapped workspaces are rejected, and workspace membership alone grants nothing:
+a message from a human who is not a configured owner of that business is
+acknowledged but never ingested. Each entry must list at least one owner user,
+so a misconfiguration cannot silently authorize a whole workspace.
+
+Reply correlation follows persisted conversation/thread state — the adapter
+resolves the Slack channel and thread from stored routing and never expects
+Slack to echo internal outbound correlation IDs back to us.
 
 The default composition uses `UnconfiguredIntentResolver`. Ingress persists the
 inbound message and one `owner_message.process` command; processing remains

@@ -24,6 +24,7 @@ from gvas.domain.messages import (
     OutboundOwnerMessage,
 )
 from gvas.domain.outbox import OutboxCommand, OutboxRecord
+from gvas.domain.quotes import QuoteRepository
 
 
 class BusinessRecord(BaseModel):
@@ -190,6 +191,7 @@ class UnitOfWork(Protocol):
     outbound_messages: OutboundMessageRepository
     workflow_runs: WorkflowRunRepository
     outbox: OutboxRepository
+    quotes: QuoteRepository
 
     async def __aenter__(self) -> "UnitOfWork": ...
 

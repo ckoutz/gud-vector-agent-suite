@@ -40,3 +40,23 @@ class OutboxStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     DEAD = "dead"
+
+
+class QuoteStatus(StrEnum):
+    DRAFTING = "drafting"
+    AWAITING_APPROVAL = "awaiting_approval"
+    REJECTED = "rejected"
+    APPROVED = "approved"
+    DELIVERY_PENDING = "delivery_pending"
+    DELIVERED = "delivered"
+
+
+class QuoteSendAction(StrEnum):
+    REQUIRE_APPROVAL = "require_approval"
+    AUTO_SEND = "auto_send"
+    ESCALATE = "escalate"
+
+
+class HostedLinkKind(StrEnum):
+    SIGNUP = "signup"
+    PAYMENT = "payment"

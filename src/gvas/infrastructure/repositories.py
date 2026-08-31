@@ -14,6 +14,8 @@ from gvas.domain.identifiers import (
     ConversationId,
     EndpointId,
     MessageId,
+    MessageKey,
+    QuoteId,
     RoutingData,
     WorkflowIntent,
     WorkflowRunId,
@@ -32,6 +34,7 @@ from gvas.domain.outbox import (
     OutboxCommand,
     OutboxRecord,
 )
+from gvas.domain.quotes import Quote, QuoteConcurrencyError
 from gvas.domain.repositories import (
     BusinessRecord,
     CrossBusinessReferenceError,
@@ -50,6 +53,7 @@ from gvas.infrastructure.models import (
     OutboundMessage,
     OutboxMessage,
     OwnerChannelEndpoint,
+    QuoteRecord,
     WorkflowRun,
 )
 
@@ -516,6 +520,147 @@ class SqlWorkflowRunRepository:
         )
         if _rowcount(result) != 1:
             raise LostWorkflowLeaseError("workflow claim is no longer active")
+
+
+class SqlQuoteRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    @staticmethod
+    def _quote(row: QuoteRecord) -> Quote:
+        created_at = row.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        updated_at = row.updated_at
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=UTC)
+        return Quote.model_validate(
+            {
+                "quote_id": row.id,
+                "business_id": row.business_id,
+                "conversation_id": row.conversation_id,
+                "conversation_ref": {
+                    "business_id": row.business_id,
+                    "external_conversation_id": row.external_conversation_id,
+                },
+                "status": row.status,
+                "revision": row.revision,
+                "source_message_key": row.source_message_key,
+                "last_message_key": row.last_message_key,
+                "pending_request_text": row.pending_request_text,
+                "draft": row.draft,
+                "approval_correlation_id": row.approval_correlation_id,
+                "delivery_receipt": row.delivery_receipt,
+                "version": row.version,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
+        )
+
+    async def get(self, business_id: BusinessId, quote_id: QuoteId) -> Quote | None:
+        row = await self.session.scalar(
+            select(QuoteRecord).where(
+                QuoteRecord.business_id == business_id,
+                QuoteRecord.id == quote_id,
+            )
+        )
+        return None if row is None else self._quote(row)
+
+    async def get_active(
+        self, business_id: BusinessId, conversation_id: ConversationId
+    ) -> Quote | None:
+        row = await self.session.scalar(
+            select(QuoteRecord).where(
+                QuoteRecord.business_id == business_id,
+                QuoteRecord.active_conversation_id == conversation_id,
+            )
+        )
+        return None if row is None else self._quote(row)
+
+    async def get_by_message(
+        self,
+        business_id: BusinessId,
+        conversation_id: ConversationId,
+        message_key: MessageKey,
+    ) -> Quote | None:
+        row = await self.session.scalar(
+            select(QuoteRecord).where(
+                QuoteRecord.business_id == business_id,
+                QuoteRecord.conversation_id == conversation_id,
+                QuoteRecord.last_message_key == message_key,
+            )
+        )
+        return None if row is None else self._quote(row)
+
+    async def add(self, quote: Quote) -> None:
+        conversation = await self.session.scalar(
+            select(Conversation).where(Conversation.id == quote.conversation_id)
+        )
+        if (
+            conversation is None
+            or conversation.business_id != quote.business_id
+            or conversation.external_conversation_id
+            != quote.conversation_ref.external_conversation_id
+        ):
+            raise CrossBusinessReferenceError(
+                "quote references a conversation from another business"
+            )
+        row = QuoteRecord(
+            id=quote.quote_id,
+            business_id=quote.business_id,
+            conversation_id=quote.conversation_id,
+            active_conversation_id=(quote.conversation_id if quote.is_active else None),
+            external_conversation_id=quote.conversation_ref.external_conversation_id,
+            status=quote.status.value,
+            revision=quote.revision,
+            source_message_key=quote.source_message_key,
+            last_message_key=quote.last_message_key,
+            pending_request_text=quote.pending_request_text,
+            draft=(quote.draft.model_dump(mode="json") if quote.draft is not None else None),
+            approval_correlation_id=quote.approval_correlation_id,
+            delivery_receipt=(
+                quote.delivery_receipt.model_dump(mode="json")
+                if quote.delivery_receipt is not None
+                else None
+            ),
+            version=quote.version,
+            created_at=quote.created_at,
+            updated_at=quote.updated_at,
+        )
+        try:
+            async with self.session.begin_nested():
+                self.session.add(row)
+                await self.session.flush()
+        except IntegrityError as error:
+            raise QuoteConcurrencyError("quote already exists or conversation is active") from error
+
+    async def save(self, quote: Quote, *, expected_version: int) -> None:
+        result = await self.session.execute(
+            update(QuoteRecord)
+            .where(
+                QuoteRecord.id == quote.quote_id,
+                QuoteRecord.business_id == quote.business_id,
+                QuoteRecord.version == expected_version,
+            )
+            .values(
+                active_conversation_id=(quote.conversation_id if quote.is_active else None),
+                status=quote.status.value,
+                revision=quote.revision,
+                last_message_key=quote.last_message_key,
+                pending_request_text=quote.pending_request_text,
+                draft=(quote.draft.model_dump(mode="json") if quote.draft is not None else None),
+                approval_correlation_id=quote.approval_correlation_id,
+                delivery_receipt=(
+                    quote.delivery_receipt.model_dump(mode="json")
+                    if quote.delivery_receipt is not None
+                    else None
+                ),
+                version=quote.version,
+                updated_at=quote.updated_at,
+            )
+        )
+        if _rowcount(result) != 1:
+            raise QuoteConcurrencyError("quote version is no longer current")
 
 
 class SqlOutboxRepository:

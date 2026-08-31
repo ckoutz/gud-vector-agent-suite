@@ -1,7 +1,7 @@
 """field note completeness state
 
-Revision ID: 0002_field_note_completeness
-Revises: 0001_initial_shared_records
+Revision ID: 0003_field_note_completeness
+Revises: 0002_field_note_cases
 """
 # ruff: noqa: E501
 
@@ -10,8 +10,8 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 # fmt: off
-revision = "0002_field_note_completeness"
-down_revision = "0001_initial_shared_records"
+revision = "0003_field_note_completeness"
+down_revision = "0002_field_note_cases"
 branch_labels = None
 depends_on = None
 
