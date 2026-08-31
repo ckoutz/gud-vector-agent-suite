@@ -36,7 +36,7 @@ GVAS_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/gva
 ```
 
 ```bash
-uv run alembic upgrade head
+uv run alembic upgrade heads
 uv run alembic downgrade base
 uv run uvicorn gvas.interfaces.http.app:app --reload
 docker compose up --build

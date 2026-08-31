@@ -247,3 +247,8 @@ class QuoteRecord(Base):
     version: Mapped[int] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+# Workstream models are imported after Base is defined to register metadata.
+from gvas.infrastructure import completeness_models as completeness_models  # noqa: E402, F401
+from gvas.infrastructure import field_note_models as field_note_models  # noqa: E402, F401
