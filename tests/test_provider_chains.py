@@ -13,7 +13,7 @@ import hashlib
 import hmac
 import json
 from datetime import UTC, datetime
-from typing import Any
+from typing import TypedDict
 from uuid import uuid4
 
 import httpx
@@ -85,21 +85,50 @@ CHECKLIST_ITEMS = (
 )
 AUDIO = b"voice-note-bytes"
 
+type JsonValue = str | int | float | bool | None | list[JsonValue] | dict[str, JsonValue]
+type JsonObject = dict[str, JsonValue]
+
+
+class SlackFilePayload(TypedDict):
+    id: str
+    name: str
+    mimetype: str
+    size: int
+
+
+class SlackEventFields(TypedDict):
+    ts: str
+    event_ts: str
+
+
+class SlackEventPayload(SlackEventFields, total=False):
+    """The parts of a Slack message event a chain test varies."""
+
+    text: str
+    thread_ts: str
+    subtype: str
+    files: list[SlackFilePayload]
+
+
+def _json_object(raw: bytes) -> JsonObject:
+    payload: object = json.loads(raw)
+    assert isinstance(payload, dict)
+    return payload
+
 
 class SlackWorkspace:
     """Records the Slack posts and serves every provider this chain touches."""
 
     def __init__(self) -> None:
-        self.posts: list[dict[str, Any]] = []
-        self.emails: list[dict[str, Any]] = []
+        self.posts: list[JsonObject] = []
+        self.emails: list[JsonObject] = []
         self.transcribed: list[bytes] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if path.endswith("/chat.postMessage"):
             assert request.headers["Authorization"] == "Bearer xoxb-chain"
-            payload = json.loads(request.read())
-            self.posts.append(payload)
+            self.posts.append(_json_object(request.read()))
             return httpx.Response(200, json={"ok": True, "ts": f"17356{len(self.posts):05d}.0001"})
         if path.endswith("/files.info"):
             file_id = request.url.params["file"]
@@ -124,14 +153,14 @@ class SlackWorkspace:
             self.transcribed.append(AUDIO)
             return httpx.Response(200, json={"text": DICTATED_NOTE})
         if path.endswith("/emails"):
-            self.emails.append(json.loads(request.read()))
+            self.emails.append(_json_object(request.read()))
             return httpx.Response(200, json={"id": "email-1"})
         raise AssertionError(f"unexpected request to {request.url}")
 
     def texts(self) -> list[str]:
         return [str(post["text"]) for post in self.posts]
 
-    def replies_in_thread(self) -> list[dict[str, Any]]:
+    def replies_in_thread(self) -> list[JsonObject]:
         return [
             post
             for post in self.posts
@@ -176,7 +205,7 @@ def build_chain(
     return application, TestClient(app)
 
 
-def post_event(http: TestClient, event: dict[str, Any]) -> None:
+def post_event(http: TestClient, event: SlackEventPayload) -> None:
     """Send a genuinely signed Slack event to the mounted Request URL."""
 
     payload = {
