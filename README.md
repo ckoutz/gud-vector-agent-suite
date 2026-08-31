@@ -140,7 +140,9 @@ note: on-site visit scheduled for Tuesday
 
 `customer`, `currency` and at least one `item` are required; keys and
 surrounding whitespace are case- and space-insensitive; amounts are read as
-exact minor units. A missing or unparsable field is rejected with an
+exact minor units and rendered with integer arithmetic only. The pilot prices
+in USD; another currency is refused rather than priced with a guessed
+minor-unit exponent. A missing or unparsable field is rejected with an
 owner-facing message rather than guessed, and corrections are sent in the same
 format. The owner still approves before anything is emailed; approved quotes go
 out through Resend and link to the customer portal.

@@ -12,6 +12,7 @@ from gvas.domain.messages import (
     OutboundOwnerMessage,
     TextPart,
 )
+from gvas.domain.money import format_money
 from gvas.domain.ports import CustomerQuoteDeliveryPort, QuoteDraftingPort
 from gvas.domain.quotes import (
     QUOTE_INTENT,
@@ -390,24 +391,20 @@ def _owner_quote_body(quote: Quote) -> str:
     if draft is None:
         raise ValueError("quote draft is missing")
     lines = [
-        f"{item.quantity} × {item.description}: {_money(item.total_minor, draft.currency)}"
+        f"{item.quantity} × {item.description}: {format_money(item.total_minor, draft.currency)}"
         for item in draft.line_items
     ]
-    lines.append(f"Total: {_money(draft.total_minor, draft.currency)}")
+    lines.append(f"Total: {format_money(draft.total_minor, draft.currency)}")
     lines.append("Reply with approve, reject, or correct: <changes>.")
     return "\n".join(lines)
 
 
 def _customer_quote_body(draft: QuoteDraftProposal) -> str:
     lines = [
-        f"{item.quantity} × {item.description}: {_money(item.total_minor, draft.currency)}"
+        f"{item.quantity} × {item.description}: {format_money(item.total_minor, draft.currency)}"
         for item in draft.line_items
     ]
-    lines.append(f"Total: {_money(draft.total_minor, draft.currency)}")
+    lines.append(f"Total: {format_money(draft.total_minor, draft.currency)}")
     if draft.owner_note:
         lines.append(draft.owner_note)
     return "\n".join(lines)
-
-
-def _money(amount_minor: int, currency: str) -> str:
-    return f"{currency} {amount_minor / 100:.2f}"

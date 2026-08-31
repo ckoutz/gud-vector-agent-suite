@@ -76,6 +76,19 @@ async def test_draft_refuses_incomplete_or_ambiguous_requests(text: str) -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("code", ["JPY", "EUR", "jpy"])
+async def test_draft_refuses_a_currency_it_cannot_price_truthfully(code: str) -> None:
+    """JPY has no minor units, so pricing it as if it did would multiply by 100."""
+
+    text = f"quote:\ncustomer: person@example.com\ncurrency: {code}\nitem: 1 | Report | 200"
+
+    with pytest.raises(QuoteDraftRejectedError) as error:
+        await DeterministicQuoteDrafter().draft(request_of(text))
+
+    assert "USD" in str(error.value)
+
+
+@pytest.mark.asyncio
 async def test_draft_tolerates_case_and_whitespace_variation() -> None:
     text = "\n".join(
         (

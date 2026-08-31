@@ -15,6 +15,11 @@ owner-facing message.
 ``customer``, ``currency`` and at least one ``item`` are required. Keys and
 surrounding whitespace are case- and space-insensitive; amounts are not. Amounts
 are read as exact minor units, so no floating point value is ever involved.
+
+The pilot prices in USD only. A currency is not a formatting detail: its
+minor-unit exponent decides what ``125`` means, so accepting any three-letter
+code while assuming two decimals would misprice JPY by a factor of a hundred.
+Anything outside :data:`gvas.domain.money.MINOR_UNIT_DIGITS` is refused.
 """
 
 import re
@@ -22,6 +27,7 @@ from typing import Final
 
 from gvas.domain.enums import HostedLinkKind, RecipientAddressKind
 from gvas.domain.messages import CustomerRecipient
+from gvas.domain.money import UnsupportedCurrencyError, minor_unit_digits, supported_currencies
 from gvas.domain.quotes import (
     HostedLinkReference,
     QuoteDraftProposal,
@@ -31,8 +37,10 @@ from gvas.domain.quotes import (
 )
 from gvas.infrastructure.hosted_links import PORTAL_LOGIN_LINK_REFERENCE
 
-MINOR_UNIT_DIGITS: Final = 2
-AMOUNT_PATTERN: Final = re.compile(r"^\d{1,12}(\.\d{1,2})?$")
+#: Every accepted amount is written in this currency; see ``_parse_currency``.
+QUOTED_CURRENCY: Final = "USD"
+QUOTED_CURRENCY_DIGITS: Final = minor_unit_digits(QUOTED_CURRENCY)
+AMOUNT_PATTERN: Final = re.compile(rf"^\d{{1,12}}(\.\d{{1,{QUOTED_CURRENCY_DIGITS}}})?$")
 EMAIL_PATTERN: Final = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 CURRENCY_PATTERN: Final = re.compile(r"^[A-Za-z]{3}$")
 
@@ -50,7 +58,9 @@ def parse_amount_minor(value: str) -> int:
             f"'{text}' is not a valid amount. Write amounts like 125 or 125.00."
         )
     whole, _, fraction = text.partition(".")
-    return int(whole) * 10**MINOR_UNIT_DIGITS + int(fraction.ljust(MINOR_UNIT_DIGITS, "0") or 0)
+    return int(whole) * 10**QUOTED_CURRENCY_DIGITS + int(
+        fraction.ljust(QUOTED_CURRENCY_DIGITS, "0") or 0
+    )
 
 
 def _parse_item(value: str) -> QuoteLineItem:
@@ -152,4 +162,12 @@ def _parse_currency(value: str) -> str:
         raise QuoteDraftRejectedError(
             f"'{value}' is not a valid currency. Use a three-letter code such as USD."
         )
-    return value.upper()
+    code = value.upper()
+    try:
+        minor_unit_digits(code)
+    except UnsupportedCurrencyError as error:
+        raise QuoteDraftRejectedError(
+            f"Quotes cannot be priced in {code}. "
+            f"Supported currencies: {', '.join(supported_currencies())}."
+        ) from error
+    return code
