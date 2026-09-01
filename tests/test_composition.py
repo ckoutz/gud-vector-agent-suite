@@ -403,7 +403,13 @@ async def test_audio_field_note_transcribes_outside_the_claim_transaction(
             )
             return None if part is None else part.transcription_status
 
-    transcription = TranscriptionFake({"audio-1": "site: north work: inspection"}, observe)
+    transcription = TranscriptionFake(
+        {
+            "audio-1": "site: north work: inspection",
+            "audio-2": "finding: dry reading: 12%",
+        },
+        observe,
+    )
     application = build(
         session_factory,
         owner_replies=OwnerReplyFake(),
@@ -422,19 +428,37 @@ async def test_audio_field_note_transcribes_outside_the_claim_transaction(
     )
     await application.ingest_service.ingest(intake)
     await drain(application)
+    await application.ingest_service.ingest(
+        inbound(
+            business_id,
+            None,
+            message_key="audio-notes-2",
+            attachments=(audio_part("audio-2"),),
+        )
+    )
+    await drain(application)
 
-    assert transcription.calls == ["audio-1"]
-    assert transcription.observed_states == [TranscriptionStatus.IN_PROGRESS.value]
+    assert transcription.calls == ["audio-1", "audio-2"]
+    assert transcription.observed_states == [
+        TranscriptionStatus.IN_PROGRESS.value,
+        TranscriptionStatus.SUCCEEDED.value,
+    ]
     transcribe_commands = await outbox_rows(session_factory, "field_note.transcribe")
-    assert [row.status for row in transcribe_commands] == [OutboxStatus.SUCCEEDED.value]
+    assert [row.status for row in transcribe_commands] == [
+        OutboxStatus.SUCCEEDED.value,
+        OutboxStatus.SUCCEEDED.value,
+    ]
     async with session_factory() as session:
-        case = await session.scalar(select(FieldNoteCaseRow))
+        cases = (await session.scalars(select(FieldNoteCaseRow))).all()
+    assert len(cases) == 1
+    case = cases[0]
     assert case is not None
     transcript = await application.transcript_service.canonical_transcript(
         business_id, FieldNoteCaseId(case.id)
     )
     assert transcript.is_complete
     assert "site: north work: inspection" in transcript.text
+    assert "finding: dry reading: 12%" in transcript.text
 
 
 @pytest.mark.asyncio

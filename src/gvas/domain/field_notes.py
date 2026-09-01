@@ -71,7 +71,7 @@ def match_field_note_trigger(message: NormalizedOwnerMessage) -> FieldNoteTrigge
         isinstance(part, AttachmentPart) and part.attachment.media_kind is MediaKind.AUDIO
         for part in message.parts
     ):
-        return FieldNoteTriggerMatch(is_new_case=True, parts=message.parts)
+        return FieldNoteTriggerMatch(is_new_case=False, parts=message.parts)
     if not message.parts or not isinstance(message.parts[0], TextPart):
         return None
     text = message.parts[0].text

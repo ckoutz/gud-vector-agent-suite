@@ -122,6 +122,7 @@ async def test_trigger_matching() -> None:
         make_message(business_id, message_key="audio-only", parts=(audio,)).message
     )
     assert audio_only_match is not None
+    assert not audio_only_match.is_new_case
     assert audio_only_match.parts == (audio,)
     assert (
         match_field_note_trigger(
@@ -192,6 +193,43 @@ async def test_text_intake_and_audio_command(
         FieldNotePartId(UUID(str(result.commands[0].payload["field_note_part_id"]))),
         FieldNoteCaseId(UUID(str(result.commands[0].payload["field_note_case_id"]))),
     )
+
+
+@pytest.mark.asyncio
+async def test_audio_only_message_extends_the_active_case(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    ingest = IngestOwnerMessageService(SqlUnitOfWorkFactory(session_factory))
+    handler = FieldNoteIntakeHandler(
+        SqlFieldNoteUnitOfWorkFactory(session_factory),
+        now=lambda: datetime(2025, 1, 1, tzinfo=UTC),
+    )
+
+    for key in ("audio-1", "audio-2"):
+        message = make_message(
+            business_id,
+            message_key=key,
+            parts=(
+                AttachmentPart(
+                    attachment=AttachmentReference(
+                        attachment_id=uuid4(),
+                        media_kind=MediaKind.AUDIO,
+                        locator=key,
+                    )
+                ),
+            ),
+        )
+        assert (await ingest.ingest(message)).message_id is not None
+        result = await handler.handle(
+            WorkflowContext(run_id=uuid4(), intent=FIELD_NOTE_INTENT, message=message.message)
+        )
+        assert result.status is WorkflowRunStatus.SUCCEEDED
+
+    async with session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(FieldNoteCaseRow)) == 1
+        assert await session.scalar(select(func.count()).select_from(FieldNotePartRow)) == 2
 
 
 @pytest.mark.asyncio
