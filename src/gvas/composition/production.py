@@ -6,10 +6,10 @@ also refuses to start when a required setting is absent, because a half
 configured process would accept Slack events and then fail every command in the
 worker instead of failing the deploy.
 
-Review and reporting are deterministic here. No inference model is selected for
-them, so the marker reviewer, the marker evidence attributor and the template
-report generator are wired in place of a provider. Swapping in a model later is
-a change to this module and the ports it fills, not to the application.
+Completeness review stays deterministic (marker reviewer), but a review may
+only complete once the OpenAI contradiction pass has cleared it. Evidence
+attribution and report generation remain deterministic. Swapping a model in or
+out is a change to this module and the ports it fills, not to the application.
 """
 
 import os
@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from gvas.application.checklist_evidence import MarkerChecklistEvidenceAttributor
 from gvas.application.completeness_review import MarkerCompletenessReviewer
+from gvas.application.contradiction_guard import GuardedCompletenessReviewer
 from gvas.application.deterministic_report import DeterministicReportGenerator
 from gvas.composition import Application, ApplicationPorts, build_application
 from gvas.config import (
@@ -34,6 +35,7 @@ from gvas.config import (
 )
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.delivery_ledger import SqlChannelDeliveryLedger
+from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGuard
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
 from gvas.infrastructure.quote_drafting import DeterministicQuoteDrafter
 from gvas.infrastructure.resend import ResendQuoteDeliveryAdapter
@@ -162,7 +164,9 @@ def build_production_ports(
         quote_drafting=DeterministicQuoteDrafter(),
         quote_delivery=ResendQuoteDeliveryAdapter(settings.resend, client),
         transcription=OpenAITranscriber(settings.openai, client, attachments),
-        completeness_review=MarkerCompletenessReviewer(),
+        completeness_review=GuardedCompletenessReviewer(
+            MarkerCompletenessReviewer(), OpenAIContradictionGuard(settings.openai, client)
+        ),
         checklist_evidence=MarkerChecklistEvidenceAttributor(),
         report_generation=DeterministicReportGenerator(),
     )
