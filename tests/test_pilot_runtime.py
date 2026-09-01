@@ -161,8 +161,10 @@ async def test_completed_report_is_delivered_to_the_case_thread_once(
         "",
         "Site and Work",
     ]
-    assert "Which site was visited? — observed." in reports[0]
+    assert "Which site was visited?" in reports[0]
+    assert "observed" not in reports[0]
     assert "Replaced the gutter run" in reports[0]
+    assert reports[0].count("Replaced the gutter run") == 1
     assert {ref.external_conversation_id for ref, _ in owner_replies.sent} == {"conversation"}
 
 
