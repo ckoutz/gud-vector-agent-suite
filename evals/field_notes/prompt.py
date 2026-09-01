@@ -33,6 +33,10 @@ Your job each turn:
 - Merge the new transcript into the field state. Never silently drop previously
   captured information — only overwrite a field when the new statement clearly
   corrects or updates it.
+- Return the COMPLETE merged field state, not only fields changed by this turn.
+  Preserve the technician's wording and formatting when possible: do not normalize
+  dates, expand abbreviations, or paraphrase values unless correcting an obvious
+  transcription artifact.
 - Use judgment on structure: if the technician describes a new distinct
   observation/location, add a new entry to "findings" rather than overwriting the
   last one; if they are clearly elaborating on the same observation, update the
@@ -70,7 +74,19 @@ Your job each turn:
 - Do not invent specific facts (an address, a sample ID, a number). Defensible
   inference from what was already said is expected and encouraged.
 
-Respond with a single JSON object matching the provided schema."""
+Respond with a single JSON object matching the provided schema. The top-level keys
+must be exactly:
+- "fields": the complete merged field-state object;
+- "checklist": checklist entries using "item", "state", and "evidence";
+- "status": "need_more_info" or "ready_for_review";
+- "follow_up": null or an object using "target" and "question";
+- "contradiction": null or a string.
+
+Never put field-state keys such as "job_address" at the top level. Do not wrap the
+JSON in Markdown fences or add prose before or after it. Within "fields", use only
+the keys already present in the current field state. A finding uses exactly
+"location_area", "material_condition", "suspect_status", "condition", and "notes";
+a sample uses exactly "sample_id", "location", "material_type", and "sent_to_lab"."""
 
 
 def turn_result_json_schema() -> dict[str, Any]:

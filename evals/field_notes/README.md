@@ -2,8 +2,9 @@
 
 Standalone, provider-neutral evaluation tooling for choosing the model behind field-note
 extraction. It is **not** product code: nothing here imports `gvas`, and no product module
-imports anything here. Nothing in this directory calls a network endpoint or reads a
-credential.
+imports anything here. Only `transports/` speaks HTTP, and it is constructed only by an
+explicit `--live` run; loading a manifest or scoring a record can never reach an endpoint,
+and no credential value lives in this directory.
 
 Published provider benchmarks do not measure the behavior this product depends on, so a
 candidate is judged here instead — over synthetic, redacted, GVAS-shaped field-note turns.
@@ -23,6 +24,7 @@ scorecards; the decision is a separate, human step taken after real candidate ru
 | `adapters/` | The runner contract, deterministic local fakes, and the schema-output adapter shell. |
 | `runner.py` | Replays each case turn by turn, threading the candidate's own state forward. |
 | `scoring.py` | Metrics, per-category breakdowns, and per-turn violations. |
+| `transports/` | Live endpoint clients, injected explicitly for real runs. |
 | `manifests/` | Run configurations. Secret-free by construction. |
 | `tests/` | Fixture-integrity and scoring tests, run by the normal `pytest` invocation. |
 
@@ -95,6 +97,21 @@ customer or otherwise sensitive data belongs in this corpus.
 Fixtures are validated on load, so a contradictory case (a gap also asserted as filled, an
 unresolved gap marked ready for review, a question expected where nothing blocks review)
 fails loudly rather than silently mis-scoring a candidate.
+
+## Running the live comparison
+
+`manifests/openrouter.yaml` names the managed and open-weight candidates behind one
+OpenRouter key. It is inert until `--live` injects a transport:
+
+```bash
+OPENROUTER_API_KEY=<key> PYTHONPATH=evals uv run python -m field_notes.cli \
+  --manifest evals/field_notes/manifests/openrouter.yaml \
+  --live openai-compatible --json-out /tmp/scorecards.json
+```
+
+That spends money: one call per case turn per candidate. Keep `--split holdout` for the
+final comparison only, after prompt work on `dev` is finished. The key is read from the
+environment variable the manifest names; it is never written to the repo or the scorecards.
 
 ## Adding a real candidate later
 

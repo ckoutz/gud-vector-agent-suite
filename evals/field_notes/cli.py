@@ -1,11 +1,13 @@
-"""Command line entry point for the fake smoke evaluation.
+"""Command line entry point for the evaluation.
 
 Usage::
 
     uv run python -m field_notes.cli --manifest evals/field_notes/manifests/fake_smoke.yaml
 
-Only deterministic local adapters can be run from the CLI; ``schema_output``
-candidates need a transport injected in code, so no CLI invocation can spend money.
+Deterministic local adapters run by default and never touch the network.
+``schema_output`` candidates stay inert unless ``--live`` names a transport, so no
+default invocation can spend money; with ``--live`` the named transport reads the
+API key from the environment variable the manifest names.
 """
 
 from __future__ import annotations
@@ -20,6 +22,9 @@ from field_notes.cases import Split, load_cases
 from field_notes.manifest import MANIFEST_ROOT, build_adapter, load_manifest
 from field_notes.runner import run_suite
 from field_notes.scoring import Scorecard, format_scorecard, score_run
+from field_notes.transports import OpenAICompatibleTransport
+
+LIVE_TRANSPORTS = {"openai-compatible": OpenAICompatibleTransport}
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -43,6 +48,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="write the full scorecards, including violations, to this JSON file",
     )
     parser.add_argument(
+        "--live",
+        choices=sorted(LIVE_TRANSPORTS),
+        default=None,
+        help="run schema_output candidates against a live endpoint (spends money)",
+    )
+    parser.add_argument(
+        "--strict-schema",
+        action="store_true",
+        help="ask the endpoint to enforce the JSON Schema strictly",
+    )
+    parser.add_argument(
         "--max-violations",
         type=int,
         default=10,
@@ -61,9 +77,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no cases found for splits {[split.value for split in splits]}", file=sys.stderr)
         return 1
 
+    transport = None
+    if args.live is not None:
+        transport = LIVE_TRANSPORTS[args.live](strict_schema=args.strict_schema)
+        print(f"live transport {args.live!r} enabled; this run calls a paid endpoint")
+
     scorecards: list[Scorecard] = []
     for spec in manifest.candidates:
-        adapter = build_adapter(spec, cases)
+        adapter = build_adapter(spec, cases, transport=transport)
         try:
             record = run_suite(adapter, cases, splits=splits)
         except AdapterUnavailableError as exc:
