@@ -118,6 +118,11 @@ async def test_trigger_matching() -> None:
     match = match_field_note_trigger(message.message)
     assert match is not None
     assert match.parts == (audio,)
+    audio_only_match = match_field_note_trigger(
+        make_message(business_id, message_key="audio-only", parts=(audio,)).message
+    )
+    assert audio_only_match is not None
+    assert audio_only_match.parts == (audio,)
     assert (
         match_field_note_trigger(
             make_message(business_id, message_key="none", parts=(TextPart(text="notes:"),)).message

@@ -81,7 +81,7 @@ class Clock:
 
 def inbound(
     business_id: BusinessId,
-    text: str,
+    text: str | None,
     *,
     message_key: str,
     conversation: str = "conversation",
@@ -95,7 +95,7 @@ def inbound(
         ),
         sender=SenderRef(external_id="owner", role="owner"),
         received_at=NOW,
-        parts=(TextPart(text=text), *attachments),
+        parts=(() if text is None else (TextPart(text=text),)) + attachments,
     )
     return InboundOwnerMessage(
         message=normalized,
@@ -416,7 +416,7 @@ async def test_audio_field_note_transcribes_outside_the_claim_transaction(
 
     intake = inbound(
         business_id,
-        "field notes: voice memo",
+        None,
         message_key="audio-notes",
         attachments=(audio_part("audio-1"),),
     )
