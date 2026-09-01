@@ -29,9 +29,11 @@ from gvas.domain.templates import ReportTemplateSection
 
 EMPTY_SECTION_TEXT: Final = "No evidence was recorded for this section."
 
+#: An item backed by quoted evidence needs no status word; the evidence is the
+#: statement. Only the absence of evidence has to be said out loud, so the
+#: reader can tell a gap from an item that does not apply to the job.
 OUTCOME_LABELS: Final[dict[ChecklistOutcome, str]] = {
-    ChecklistOutcome.OBSERVED: "observed",
-    ChecklistOutcome.NOT_OBSERVED: "not observed",
+    ChecklistOutcome.NOT_OBSERVED: "not recorded",
     ChecklistOutcome.NOT_APPLICABLE: "not applicable",
 }
 
@@ -76,17 +78,19 @@ def _item_blocks(
 ) -> list[ReportBlock]:
     blocks: list[ReportBlock] = []
     item = evidence.get(key)
+    quoted: tuple[str, ...] = ()
     if item is not None:
-        lines = [f"{item.prompt} — {OUTCOME_LABELS[item.outcome]}."]
-        lines.extend(item.evidence)
+        quoted = item.evidence
+        label = OUTCOME_LABELS.get(item.outcome)
+        heading = item.prompt if label is None else f"{item.prompt} — {label}."
         blocks.append(
             ReportBlock(
-                text="\n".join(lines),
+                text="\n".join((heading, *quoted)),
                 evidence_refs=(ReportEvidenceReference(source=EvidenceSource.CHECKLIST, key=key),),
             )
         )
     answer = answers.get(key)
-    if answer is not None:
+    if answer is not None and not _already_quoted(answer.answer, quoted):
         blocks.append(
             ReportBlock(
                 text=f"{answer.question} {answer.answer}",
@@ -94,6 +98,18 @@ def _item_blocks(
             )
         )
     return blocks
+
+
+def _already_quoted(answer: str, quoted: tuple[str, ...]) -> bool:
+    """Whether the checklist evidence already carries the owner's answer.
+
+    Evidence is quoted from the canonical transcript, which contains the owner's
+    replies, so an answer usually appears verbatim under its own checklist item.
+    Repeating it as a second block reads as if the owner said it twice.
+    """
+
+    folded = answer.casefold().strip()
+    return any(folded in segment.casefold() for segment in quoted)
 
 
 def render_report_text(version: FieldNotesReportVersion) -> str:

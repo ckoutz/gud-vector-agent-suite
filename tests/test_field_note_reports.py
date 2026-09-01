@@ -6,10 +6,14 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.application.deterministic_report import DeterministicReportGenerator
 from gvas.application.report_generation import GenerateFieldNotesReportService
 from gvas.domain.completeness import ChecklistItemKey
 from gvas.domain.identifiers import BusinessId, ConversationId, JsonValue
 from gvas.domain.reporting import (
+    ChecklistEvidence,
+    ChecklistOutcome,
+    CorrelatedAnswer,
     FieldNoteCaseSnapshot,
     FieldNoteCaseStatus,
     FieldNotesReportDocument,
@@ -653,6 +657,80 @@ async def test_stale_report_claim_cannot_complete_after_reclaim(
         )
         await session.commit()
     assert completed.version == 1
+
+
+@pytest.mark.asyncio
+async def test_deterministic_report_quotes_evidence_without_status_words() -> None:
+    business_id = BusinessId(uuid4())
+    case = source(business_id)
+    document = FieldNotesReportDocument.model_validate(
+        await DeterministicReportGenerator().generate(
+            ReportGenerationRequest(
+                report_id=uuid4(),
+                report_version=1,
+                source_fingerprint=field_note_source_fingerprint(case),
+                source=case,
+                report_template=report_template(business_id),
+            )
+        )
+    )
+
+    blocks = [block.text for block in document.sections[0].blocks]
+    assert blocks == [
+        "Inspect the safety panel\nPanel was secured.",
+        "Was access restricted? No.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deterministic_report_labels_gaps_and_drops_duplicated_answers() -> None:
+    business_id = BusinessId(uuid4())
+    case = FieldNoteCaseSnapshot(
+        business_id=business_id,
+        case_id=uuid4(),
+        status=FieldNoteCaseStatus.COMPLETED,
+        completed_at=NOW,
+        canonical_transcript="Access was restricted to the roof hatch.",
+        checklist_evidence=(
+            ChecklistEvidence(
+                item_key="safety.panel",
+                prompt="Inspect the safety panel",
+                outcome=ChecklistOutcome.NOT_OBSERVED,
+            ),
+            ChecklistEvidence(
+                item_key="access.condition",
+                prompt="Was access restricted?",
+                outcome=ChecklistOutcome.OBSERVED,
+                evidence=("Access was restricted to the roof hatch.",),
+            ),
+        ),
+        correlated_answers=(
+            CorrelatedAnswer(
+                question_key="access.condition",
+                question="Was access restricted?",
+                answer="restricted to the roof hatch",
+            ),
+        ),
+        report_template_key=REPORT_TEMPLATE_KEY,
+        report_template_version=1,
+    )
+    document = FieldNotesReportDocument.model_validate(
+        await DeterministicReportGenerator().generate(
+            ReportGenerationRequest(
+                report_id=uuid4(),
+                report_version=1,
+                source_fingerprint=field_note_source_fingerprint(case),
+                source=case,
+                report_template=report_template(business_id),
+            )
+        )
+    )
+
+    blocks = [block.text for block in document.sections[0].blocks]
+    assert blocks == [
+        "Inspect the safety panel — not recorded.",
+        "Was access restricted?\nAccess was restricted to the roof hatch.",
+    ]
 
 
 def test_report_core_has_no_transport_or_provider_sdk_leakage() -> None:
