@@ -83,7 +83,10 @@ must be exactly:
 - "contradiction": null or a string.
 
 Never put field-state keys such as "job_address" at the top level. Do not wrap the
-JSON in Markdown fences or add prose before or after it."""
+JSON in Markdown fences or add prose before or after it. Within "fields", use only
+the keys already present in the current field state. A finding uses exactly
+"location_area", "material_condition", "suspect_status", "condition", and "notes";
+a sample uses exactly "sample_id", "location", "material_type", and "sent_to_lab"."""
 
 
 def turn_result_json_schema() -> dict[str, Any]:
