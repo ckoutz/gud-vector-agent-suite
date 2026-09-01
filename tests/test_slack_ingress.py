@@ -100,6 +100,29 @@ def test_normalization_maps_slack_message_to_inbound_envelope() -> None:
     assert inbound.routing["event_id"] == "Ev00000FAKE"
 
 
+def test_normalization_unwraps_slack_mailto_links() -> None:
+    business_id = BusinessId(uuid4())
+    inbound = normalize(
+        message_payload(
+            text=(
+                "quote:\n"
+                "customer: <mailto:person@example.com|person@example.com>\n"
+                "currency: USD\n"
+                "item: 1 | Inspection | 125.00"
+            )
+        ),
+        business_id,
+    )
+
+    assert inbound.message.parts == (
+        TextPart(
+            text=(
+                "quote:\ncustomer: person@example.com\ncurrency: USD\nitem: 1 | Inspection | 125.00"
+            )
+        ),
+    )
+
+
 def test_thread_replies_share_the_root_conversation_and_carry_reply_correlation() -> None:
     business_id = BusinessId(uuid4())
     root = normalize(message_payload(), business_id)
