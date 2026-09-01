@@ -173,11 +173,11 @@ class FieldNoteIntakeHandler:
                         detail="field note message is not persisted",
                     )
                 case_id = None
-                if match is None:
+                if match is None or not match.is_new_case:
                     case_id = await unit_of_work.field_note_conversation_states.get_active_case_id(
                         location.business_id, location.conversation_id
                     )
-                    if case_id is None:
+                    if case_id is None and match is None:
                         await unit_of_work.rollback()
                         return WorkflowResult(
                             status=WorkflowRunStatus.FAILED,
