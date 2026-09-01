@@ -15,6 +15,7 @@ from gvas.domain.identifiers import (
     WorkflowIntent,
 )
 from gvas.domain.messages import (
+    AttachmentPart,
     AttachmentReference,
     AudioReference,
     ContentPart,
@@ -66,6 +67,11 @@ class FieldNoteTriggerMatch(FieldNoteModel):
 
 
 def match_field_note_trigger(message: NormalizedOwnerMessage) -> FieldNoteTriggerMatch | None:
+    if all(
+        isinstance(part, AttachmentPart) and part.attachment.media_kind is MediaKind.AUDIO
+        for part in message.parts
+    ):
+        return FieldNoteTriggerMatch(is_new_case=True, parts=message.parts)
     if not message.parts or not isinstance(message.parts[0], TextPart):
         return None
     text = message.parts[0].text
