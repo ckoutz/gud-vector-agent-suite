@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime
 from uuid import UUID, uuid5
 
@@ -21,6 +22,7 @@ from gvas.infrastructure.slack.installations import SLACK_SOURCE_NAMESPACE, Slac
 ATTACHMENT_NAMESPACE = UUID("2b4c7f1e-0f45-4f4e-9c0a-6f5b1d3a8e21")
 ATTACHMENT_LOCATOR_PREFIX = "slack-file"
 VOICE_MEMO_SUBTYPE = "slack_audio"
+MAILTO_LINK_PATTERN = re.compile(r"<mailto:([^>|]+)(?:\|[^>]*)?>")
 
 
 class SlackNormalizationError(ValueError):
@@ -67,7 +69,7 @@ def _content_parts(
     parts: list[ContentPart] = []
     text = (event.text or "").strip()
     if text:
-        parts.append(TextPart(text=text))
+        parts.append(TextPart(text=MAILTO_LINK_PATTERN.sub(r"\1", text)))
     for file in event.files:
         parts.append(AttachmentPart(attachment=_attachment(callback, event, file)))
     return tuple(parts)
