@@ -1,0 +1,83 @@
+# Live comparison run for the field-note review model. Configuration only: the
+# key is read at run time from the environment variable named below, and nothing
+# here selects a model — selection is an outcome of the scorecards.
+#
+#   OPENROUTER_API_KEY=<key>  PYTHONPATH=evals uv run python -m field_notes.cli \
+#     --manifest evals/field_notes/manifests/openrouter.yaml --live openai-compatible
+#
+# Decoding settings are identical across candidates so differences reflect model
+# behavior rather than sampling. Every candidate is inert without --live.
+name: openrouter-comparison
+description: Managed and open-weight candidates reachable through one OpenRouter key.
+splits:
+  - dev
+candidates:
+  - name: managed-claude-sonnet-5
+    kind: schema_output
+    model: anthropic/claude-sonnet-5
+    endpoint:
+      api_key_env: OPENROUTER_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 4096
+    notes: strong managed baseline; the prompt was originally tuned on this family
+
+  - name: managed-gpt-5.6-luna
+    kind: schema_output
+    model: openai/gpt-5.6-luna
+    endpoint:
+      api_key_env: OPENROUTER_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 4096
+    notes: economical managed structured-output candidate
+
+  - name: managed-gemini-3.7-flash
+    kind: schema_output
+    model: google/gemini-3.7-flash
+    endpoint:
+      api_key_env: OPENROUTER_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 4096
+    notes: economical managed structured-output candidate
+
+  - name: openweight-qwen3.8-27b
+    kind: schema_output
+    model: qwen/qwen3.8-27b
+    endpoint:
+      api_key_env: OPENROUTER_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 4096
+    notes: dense open-weight candidate; self-hostable later
+
+  - name: openweight-qwen3.6-35b-a3b
+    kind: schema_output
+    model: qwen/qwen3.6-35b-a3b
+    endpoint:
+      api_key_env: OPENROUTER_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 4096
+    notes: MoE efficiency candidate; watch multi-turn merge behavior
+
+  - name: openweight-glm-5.3-flash
+    kind: schema_output
+    model: z-ai/glm-5.3-flash
+    endpoint:
+      api_key_env: OPENROUTER_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 4096
+    notes: open-weight candidate with structured-output support
+
+  - name: openweight-deepseek-v4-flash
+    kind: schema_output
+    model: deepseek/deepseek-v4-flash-0731
+    endpoint:
+      api_key_env: OPENROUTER_API_KEY
+    parameters:
+      temperature: 0.0
+      max_output_tokens: 4096
+    notes: cheapest open-weight candidate in the comparison
