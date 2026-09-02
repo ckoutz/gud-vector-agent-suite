@@ -23,6 +23,9 @@ from gvas.infrastructure.slack.delivery import (
     SlackChatPostRequest,
     SlackChatPostResult,
     SlackDeliveryError,
+    SlackFileUploadRequest,
+    SlackFileUploadResult,
+    SlackUploadFile,
 )
 from gvas.infrastructure.slack.normalization import ATTACHMENT_LOCATOR_PREFIX
 
@@ -63,6 +66,19 @@ class SlackFileObject(SlackResponseModel):
 class SlackFileInfoResponse(SlackResponseModel):
     ok: bool
     file: SlackFileObject | None = None
+    error: str | None = None
+
+
+class SlackUploadUrlResponse(SlackResponseModel):
+    ok: bool
+    upload_url: str | None = None
+    file_id: str | None = None
+    error: str | None = None
+
+
+class SlackCompleteUploadResponse(SlackResponseModel):
+    ok: bool
+    files: tuple[SlackFileObject, ...] = ()
     error: str | None = None
 
 
@@ -121,6 +137,101 @@ class SlackWebApiChatPoster:
         except httpx.HTTPError as error:
             raise SlackDeliveryError("slack was unreachable") from error
         return _chat_post_result(response)
+
+
+class SlackWebApiFileUploader:
+    """Shares files through Slack's external upload flow.
+
+    Each file is reserved with ``files.getUploadURLExternal``, its bytes are put
+    to the returned upload URL, and one ``files.completeUploadExternal`` call
+    shares every reserved file into the channel or thread with the comment. A
+    reserved-but-never-completed file is not visible to anyone, so a failure
+    before completion leaves nothing in the channel and the command retries.
+    """
+
+    def __init__(self, settings: SlackSettings, client: httpx.AsyncClient) -> None:
+        if not settings.bot_token:
+            raise SlackDeliveryError("slack bot token is not configured")
+        self._settings = settings
+        self._client = client
+
+    async def upload_files(self, request: SlackFileUploadRequest) -> SlackFileUploadResult:
+        reserved: list[dict[str, str]] = []
+        for file in request.files:
+            file_id = await self._reserve_and_put(file)
+            entry = {"id": file_id}
+            if file.title:
+                entry["title"] = file.title
+            reserved.append(entry)
+        payload: dict[str, object] = {"files": reserved, "channel_id": request.channel}
+        if request.thread_ts is not None:
+            payload["thread_ts"] = request.thread_ts
+        if request.initial_comment:
+            payload["initial_comment"] = request.initial_comment
+        response = await self._post_api("files.completeUploadExternal", json=payload)
+        try:
+            parsed = SlackCompleteUploadResponse.model_validate(response.json())
+        except (ValueError, ValidationError) as error:
+            raise SlackDeliveryError("slack returned an unreadable response") from error
+        if not parsed.ok:
+            return SlackFileUploadResult(
+                detail=f"slack rejected the file upload: {parsed.error or 'unknown'}"
+            )
+        file_ids = tuple(file.id for file in parsed.files) or tuple(
+            entry["id"] for entry in reserved
+        )
+        return SlackFileUploadResult(file_ids=file_ids)
+
+    async def _reserve_and_put(self, file: SlackUploadFile) -> str:
+        response = await self._post_api(
+            "files.getUploadURLExternal",
+            data={"filename": file.filename, "length": str(len(file.content))},
+        )
+        try:
+            parsed = SlackUploadUrlResponse.model_validate(response.json())
+        except (ValueError, ValidationError) as error:
+            raise SlackDeliveryError("slack returned an unreadable response") from error
+        if not parsed.ok or parsed.upload_url is None or parsed.file_id is None:
+            raise SlackDeliveryError(
+                f"slack refused an upload location: {parsed.error or 'unknown'}"
+            )
+        try:
+            _require_allowed_host(parsed.upload_url)
+        except SlackAttachmentError as error:
+            raise SlackDeliveryError("slack returned an upload location outside slack") from error
+        try:
+            put = await self._client.post(
+                parsed.upload_url,
+                content=file.content,
+                headers={"Content-Type": "application/octet-stream"},
+                timeout=self._settings.api_timeout_seconds,
+            )
+        except httpx.HTTPError as error:
+            raise SlackDeliveryError("slack upload location was unreachable") from error
+        if put.status_code >= 400:
+            raise SlackDeliveryError(f"slack upload returned http {put.status_code}")
+        return parsed.file_id
+
+    async def _post_api(
+        self,
+        method: str,
+        *,
+        json: dict[str, object] | None = None,
+        data: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        try:
+            response = await self._client.post(
+                f"{self._settings.api_base_url}/{method}",
+                json=json,
+                data=data,
+                headers=_authorization(self._settings.bot_token),
+                timeout=self._settings.api_timeout_seconds,
+            )
+        except httpx.HTTPError as error:
+            raise SlackDeliveryError("slack was unreachable") from error
+        if response.status_code >= 400:
+            raise SlackDeliveryError(f"slack returned http {response.status_code}")
+        return response
 
 
 def _chat_post_result(response: httpx.Response) -> SlackChatPostResult:

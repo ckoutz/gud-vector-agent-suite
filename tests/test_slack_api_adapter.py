@@ -9,9 +9,15 @@ from gvas.infrastructure.slack.api import (
     SlackAttachmentError,
     SlackFileAttachmentAccess,
     SlackWebApiChatPoster,
+    SlackWebApiFileUploader,
 )
 from gvas.infrastructure.slack.config import SlackSettings
-from gvas.infrastructure.slack.delivery import SlackChatPostRequest, SlackDeliveryError
+from gvas.infrastructure.slack.delivery import (
+    SlackChatPostRequest,
+    SlackDeliveryError,
+    SlackFileUploadRequest,
+    SlackUploadFile,
+)
 
 BOT_TOKEN = "xoxb-test-token"  # noqa: S105
 FILE_ID = "F123"
@@ -222,3 +228,111 @@ async def test_attachment_fetch_refuses_non_audio_metadata_for_an_audio_referenc
     async with client_for(httpx.MockTransport(handle)) as client:
         with pytest.raises(SlackAttachmentError):
             await SlackFileAttachmentAccess(settings(), client).fetch(audio_attachment())
+
+
+def upload_request(**overrides: object) -> SlackFileUploadRequest:
+    base: dict[str, object] = {
+        "channel": "C1",
+        "thread_ts": "1699999999.000100",
+        "files": (SlackUploadFile(filename="report-v1.docx", content=b"PK\x03\x04docx"),),
+        "initial_comment": "Approved report",
+        "idempotency_key": "business:C1:publish",
+    }
+    base.update(overrides)
+    return SlackFileUploadRequest.model_validate(base)
+
+
+@pytest.mark.asyncio
+async def test_file_upload_reserves_puts_and_completes_into_the_thread() -> None:
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path.endswith("/files.getUploadURLExternal"):
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "upload_url": "https://files.slack.com/upload/v1/abc",
+                    "file_id": FILE_ID,
+                },
+            )
+        if request.url.host == "files.slack.com":
+            return httpx.Response(200, text="OK - 8")
+        if request.url.path.endswith("/files.completeUploadExternal"):
+            return httpx.Response(200, json={"ok": True, "files": [{"id": FILE_ID}]})
+        raise AssertionError(request.url)
+
+    async with client_for(httpx.MockTransport(handle)) as client:
+        uploader = SlackWebApiFileUploader(settings(), client)
+        result = await uploader.upload_files(upload_request())
+
+    assert result.file_ids == (FILE_ID,)
+    reserve, put, complete = seen
+    assert reserve.headers["authorization"] == f"Bearer {BOT_TOKEN}"
+    reserve_body = reserve.read().decode()
+    assert "filename=report-v1.docx" in reserve_body
+    assert "length=8" in reserve_body
+    assert put.read() == b"PK\x03\x04docx"
+    assert "authorization" not in put.headers
+    assert complete.headers["authorization"] == f"Bearer {BOT_TOKEN}"
+    complete_body = complete.read().decode().replace(" ", "")
+    assert f'"files":[{{"id":"{FILE_ID}"}}]' in complete_body
+    assert '"channel_id":"C1"' in complete_body
+    assert '"thread_ts":"1699999999.000100"' in complete_body
+    assert '"initial_comment":"Approvedreport"' in complete_body
+
+
+@pytest.mark.asyncio
+async def test_file_upload_refuses_an_upload_location_outside_slack() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/files.getUploadURLExternal"):
+            return httpx.Response(
+                200,
+                json={"ok": True, "upload_url": "https://evil.example/upload", "file_id": FILE_ID},
+            )
+        raise AssertionError(request.url)
+
+    async with client_for(httpx.MockTransport(handle)) as client:
+        uploader = SlackWebApiFileUploader(settings(), client)
+        with pytest.raises(SlackDeliveryError, match="outside slack"):
+            await uploader.upload_files(upload_request())
+
+
+@pytest.mark.asyncio
+async def test_file_upload_reports_completion_rejection_without_provider_payload() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/files.getUploadURLExternal"):
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "upload_url": "https://files.slack.com/upload/v1/abc",
+                    "file_id": FILE_ID,
+                },
+            )
+        if request.url.host == "files.slack.com":
+            return httpx.Response(200)
+        return httpx.Response(
+            200, json={"ok": False, "error": "not_in_channel", "secret": "do-not-leak"}
+        )
+
+    async with client_for(httpx.MockTransport(handle)) as client:
+        uploader = SlackWebApiFileUploader(settings(), client)
+        result = await uploader.upload_files(upload_request())
+
+    assert result.file_ids == ()
+    assert result.detail == "slack rejected the file upload: not_in_channel"
+
+
+@pytest.mark.asyncio
+async def test_file_upload_transport_failure_is_retryable_and_redacted() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("token xoxb-secret leaked in connect error")
+
+    async with client_for(httpx.MockTransport(handle)) as client:
+        uploader = SlackWebApiFileUploader(settings(), client)
+        with pytest.raises(SlackDeliveryError) as error:
+            await uploader.upload_files(upload_request())
+
+    assert "xoxb" not in str(error.value)

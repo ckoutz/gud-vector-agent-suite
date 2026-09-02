@@ -33,7 +33,10 @@ The dispatcher path from intake through canonical transcript, completeness
 review, follow-up correlation, and report generation is documented in
 [`docs/composition.md`](composition.md), including the deterministic
 `field_note.review` and `field_notes_report.generate` commands and the gaps that
-remain at the neutral boundary.
+remain at the neutral boundary. The generated report is posted as text into the
+same thread for review; `approve report` then publishes that exact version as an
+editable DOCX into the channel (`field_notes_report.publish`), and `close notes`
+remains the only command that closes the case.
 
 ## Open questions
 

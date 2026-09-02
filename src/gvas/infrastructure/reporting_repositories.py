@@ -291,3 +291,22 @@ class SqlFieldNotesReportRepository:
             return None
         report, version = row
         return self._version_record(report, version)
+
+    async def get_version(
+        self,
+        business_id: BusinessId,
+        report_version_id: UUID,
+    ) -> FieldNotesReportVersion | None:
+        result = await self.session.execute(
+            select(FieldNoteReport, FieldNoteReportVersion)
+            .join(FieldNoteReportVersion, FieldNoteReportVersion.report_id == FieldNoteReport.id)
+            .where(
+                FieldNoteReport.business_id == business_id,
+                FieldNoteReportVersion.id == report_version_id,
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        report, version = row
+        return self._version_record(report, version)

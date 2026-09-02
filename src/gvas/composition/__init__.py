@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from gvas.application.completeness import FieldNoteCompletenessService
+from gvas.application.docx_report import DocxReportRenderer
 from gvas.application.field_note_transcription import (
     FieldNoteTranscriptService,
     TranscribeFieldNoteAudioService,
@@ -27,6 +28,7 @@ from gvas.application.quotes import (
     QuoteIntentSelector,
     QuoteWorkflowHandler,
 )
+from gvas.application.report_approval import ApproveFieldNoteReportHandler
 from gvas.application.report_generation import GenerateFieldNotesReportService
 from gvas.application.templates import PublishTemplateSetService, TemplateResolver
 from gvas.application.workflow_conflicts import WorkflowConflictHandler
@@ -35,6 +37,10 @@ from gvas.composition.failure_notices import NotifyExhaustedCommandService
 from gvas.composition.field_note_workflow import FieldNoteWorkflowHandler
 from gvas.composition.intents import DeterministicIntentResolver
 from gvas.composition.report_delivery import DeliverFieldNotesReportService
+from gvas.composition.report_publication import (
+    PublishFieldNotesReportService,
+    ReportArtifactAccess,
+)
 from gvas.composition.review import CoordinateFieldNoteReviewService
 from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.config import Settings
@@ -104,6 +110,8 @@ class Application:
     snapshot_service: BuildFieldNoteCaseSnapshotService
     report_service: GenerateFieldNotesReportService
     report_delivery_service: DeliverFieldNotesReportService
+    report_publication_service: PublishFieldNotesReportService
+    report_artifacts: ReportArtifactAccess
     failure_notice_service: NotifyExhaustedCommandService
     plan_set_upload_service: RegisterPlanSetUploadService
     plan_custody_service: CopyPlanSetIntoCustodyService | None
@@ -144,8 +152,15 @@ def build_application(
 
     intake = FieldNoteIntakeHandler(field_note_unit_of_work_factory, now=now)
     closure = CloseFieldNoteCaseHandler(field_note_unit_of_work_factory, now=now)
+    approval = ApproveFieldNoteReportHandler(
+        field_note_unit_of_work_factory, report_unit_of_work_factory
+    )
     field_note_handler = FieldNoteWorkflowHandler(
-        intake, closure, field_note_unit_of_work_factory, completeness_unit_of_work_factory
+        intake,
+        closure,
+        approval,
+        field_note_unit_of_work_factory,
+        completeness_unit_of_work_factory,
     )
     quote_handler = QuoteWorkflowHandler(unit_of_work_factory, ports.quote_drafting)
     router = WorkflowRouter([quote_handler, field_note_handler, WorkflowConflictHandler()])
@@ -192,6 +207,15 @@ def build_application(
     report_delivery = DeliverFieldNotesReportService(
         field_note_unit_of_work_factory, unit_of_work_factory
     )
+    report_renderer = DocxReportRenderer()
+    report_publication = PublishFieldNotesReportService(
+        report_renderer,
+        report_unit_of_work_factory,
+        field_note_unit_of_work_factory,
+        unit_of_work_factory,
+        ports.object_storage,
+    )
+    report_artifacts = ReportArtifactAccess(report_renderer, report_unit_of_work_factory)
     failure_notices = NotifyExhaustedCommandService(
         unit_of_work_factory, field_note_unit_of_work_factory
     )
@@ -205,6 +229,7 @@ def build_application(
         snapshots=snapshots,
         reports=reports,
         report_delivery=report_delivery,
+        report_publication=report_publication,
         outbox=outbox,
         now=now,
         plan_custody=plan_custody,
@@ -233,6 +258,8 @@ def build_application(
         snapshot_service=snapshots,
         report_service=reports,
         report_delivery_service=report_delivery,
+        report_publication_service=report_publication,
+        report_artifacts=report_artifacts,
         failure_notice_service=failure_notices,
         plan_set_upload_service=plan_set_uploads,
         plan_custody_service=plan_custody,
