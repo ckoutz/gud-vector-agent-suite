@@ -42,7 +42,12 @@ from gvas.config import (
     WorkerSettings,
     require_managed_postgres_url,
 )
-from gvas.domain.ports import OwnerReplyPort, QuoteDraftingPort
+from gvas.domain.ports import (
+    CustomerQuoteDeliveryPort,
+    CustomerTextDeliveryPort,
+    OwnerReplyPort,
+    QuoteDraftingPort,
+)
 from gvas.domain.usage import UsageCeilingGuard, UsageCeilings
 from gvas.infrastructure.calendly.api import CalendlyAppointmentLookup
 from gvas.infrastructure.calendly.config import (
@@ -58,6 +63,7 @@ from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGu
 from gvas.infrastructure.openai_quote_drafting import OpenAIFreeTextQuoteDrafter
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
 from gvas.infrastructure.owner_reply_routing import ChannelOwnerReplyRouter
+from gvas.infrastructure.portal import PortalQuoteDelivery, PortalSettings, SqlPortalHandoffLedger
 from gvas.infrastructure.quote_drafting import (
     DeterministicQuoteDrafter,
     ModelAssistedQuoteDrafter,
@@ -86,6 +92,7 @@ from gvas.infrastructure.telnyx.composition import (
     sms_quotes_only_policy,
 )
 from gvas.infrastructure.telnyx.config import TelnyxSettings
+from gvas.infrastructure.telnyx.customer_text import TelnyxCustomerTextAdapter
 from gvas.infrastructure.telnyx.installations import (
     TELNYX_SOURCE_NAMESPACE,
     TelnyxInstallationError,
@@ -122,6 +129,7 @@ class ProductionSettings:
     storage: ObjectStorageSettings = field(default_factory=ObjectStorageSettings)
     telnyx: TelnyxSettings = field(default_factory=TelnyxSettings)
     calendly: CalendlySettings = field(default_factory=CalendlySettings)
+    portal: PortalSettings = field(default_factory=PortalSettings)
     cost_ceilings: CostCeilingSettings = field(default_factory=CostCeilingSettings)
 
     def usage_ceilings(self) -> UsageCeilings:
@@ -141,6 +149,7 @@ def load_production_settings() -> ProductionSettings:
         storage=ObjectStorageSettings(),
         telnyx=TelnyxSettings(),
         calendly=CalendlySettings(),
+        portal=PortalSettings(),
         cost_ceilings=CostCeilingSettings(),
     )
     missing = [
@@ -168,6 +177,7 @@ def load_production_settings() -> ProductionSettings:
     _require_complete_object_storage(settings.storage)
     _require_complete_telnyx_channel(settings.telnyx)
     _require_complete_calendly_lookup(settings.calendly)
+    _require_complete_portal_handoff(settings.portal)
     return settings
 
 
@@ -207,6 +217,17 @@ def _require_complete_calendly_lookup(settings: CalendlySettings) -> None:
         parse_calendly_installations(settings.installations)
     except CalendlyInstallationError as error:
         raise ProductionConfigurationError(f"GVAS_CALENDLY_INSTALLATIONS: {error}") from error
+
+
+def _require_complete_portal_handoff(settings: PortalSettings) -> None:
+    """The portal is optional as a set: with neither variable set approved
+    quotes are emailed; with only one set the deployment must not start."""
+
+    if settings.is_partially_configured:
+        missing = [name for name, present in settings.required_settings.items() if not present]
+        raise ProductionConfigurationError(
+            f"portal handoff is partially configured; missing: {', '.join(missing)}"
+        )
 
 
 def _require_complete_telnyx_channel(settings: TelnyxSettings) -> None:
@@ -308,14 +329,32 @@ def build_production_ports(
         )
     }
     channel_policies: tuple[ChannelWorkflowPolicy, ...] = ()
+    customer_text: CustomerTextDeliveryPort | None = None
     if settings.telnyx.is_configured:
+        telnyx_sender = TelnyxMessagingApiSender(settings.telnyx, client)
         owner_replies[TELNYX_SOURCE_NAMESPACE] = build_telnyx_owner_reply_adapter(
-            TelnyxMessagingApiSender(settings.telnyx, client),
+            telnyx_sender,
             session_factory,
             ledger,
             messaging_profile_id=settings.telnyx.messaging_profile_id or None,
         )
         channel_policies = (sms_quotes_only_policy("Slack"),)
+        customer_text = TelnyxCustomerTextAdapter(
+            telnyx_sender,
+            parse_telnyx_installations(settings.telnyx.installations),
+            ledger,
+            messaging_profile_id=settings.telnyx.messaging_profile_id or None,
+        )
+    quote_delivery: CustomerQuoteDeliveryPort = ResendQuoteDeliveryAdapter(settings.resend, client)
+    if settings.portal.is_configured:
+        quote_delivery = PortalQuoteDelivery(
+            settings.portal, client, SqlPortalHandoffLedger(session_factory)
+        )
+        if customer_text is None:
+            logger.warning("portal configured without telnyx; quote links are emailed only")
+    else:
+        # Without the portal there is no link to text; the quote itself is emailed.
+        customer_text = None
     appointment_lookup = (
         CalendlyAppointmentLookup(settings.calendly, client)
         if settings.calendly.is_configured
@@ -334,7 +373,8 @@ def build_production_ports(
         owner_replies=ChannelOwnerReplyRouter(session_factory, owner_replies),
         quote_drafting=quote_drafting,
         appointment_lookup=appointment_lookup,
-        quote_delivery=ResendQuoteDeliveryAdapter(settings.resend, client),
+        quote_delivery=quote_delivery,
+        customer_text=customer_text,
         report_email=ResendReportEmailAdapter(settings.resend, client),
         transcription=OpenAITranscriber(
             settings.openai, client, attachments, usage_ledger=usage_ledger

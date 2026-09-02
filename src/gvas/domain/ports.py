@@ -9,6 +9,7 @@ from gvas.domain.messages import (
     AudioReference,
     ConversationRef,
     CustomerDeliveryRequest,
+    CustomerTextRequest,
     DeliveryReceipt,
     NormalizedOwnerMessage,
     OutboundOwnerMessage,
@@ -59,6 +60,13 @@ class TranscriptionPort(Protocol):
 
 class CustomerQuoteDeliveryPort(Protocol):
     async def deliver(self, request: CustomerDeliveryRequest) -> DeliveryReceipt: ...
+
+
+class CustomerTextDeliveryPort(Protocol):
+    """Texts a customer. A returned ``FAILED`` receipt or a raised error both
+    mean the text did not go; the caller decides whether to retry."""
+
+    async def send_text(self, request: CustomerTextRequest) -> DeliveryReceipt: ...
 
 
 class ChecklistEvidencePort(Protocol):

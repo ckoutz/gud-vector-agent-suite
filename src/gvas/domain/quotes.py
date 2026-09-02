@@ -36,8 +36,14 @@ QUOTE_TRIGGER_PATTERN = re.compile(r"^quote(?:\s+for\s+(?P<name>[^:\n]+?))?\s*:"
 CUSTOMER_LINE_KEYS = frozenset({"customer", "email"})
 CUSTOMER_NAME_LINE_KEY = "for"
 QUOTE_DELIVERY_COMMAND_TYPE = "customer_quote.deliver"
+QUOTE_TEXT_COMMAND_TYPE = "customer_quote.text"
 QUOTE_ID_NAMESPACE = UUID("391d4c69-e58a-4621-ad77-1f45ac243ae2")
 QUOTE_DELIVERY_COMMAND_NAMESPACE = UUID("e940a293-273c-4914-b17b-63ac10db4db4")
+QUOTE_TEXT_COMMAND_NAMESPACE = UUID("5c1f0b7e-2d84-4f6a-9b3e-8a7d6c5e4f30")
+#: One GSM-7 segment; the customer text must never need a second one.
+SMS_SEGMENT_LIMIT = 160
+CUSTOMER_TEXT_PREFIX = "Your Güd Vector quote for "
+CUSTOMER_TEXT_SUFFIX = " is ready: "
 
 
 class QuoteModel(BaseModel):
@@ -494,6 +500,37 @@ def requested_customer_name(request_text: str) -> str | None:
 
 def approval_correlation_id(quote_id: QuoteId, revision: int) -> str:
     return f"quote:{quote_id}:approval:{revision}"
+
+
+def quote_text_command(quote: Quote) -> OutboxCommand:
+    """Text the customer the link a delivery produced; only meaningful after
+    ``record_delivery`` left a ``customer_link`` on the quote."""
+
+    if quote.status not in {QuoteStatus.DELIVERY_PENDING, QuoteStatus.DELIVERED}:
+        raise InvalidQuoteTransitionError("only delivered quotes can be texted to the customer")
+    command_id = OutboxCommandId(uuid5(QUOTE_TEXT_COMMAND_NAMESPACE, str(quote.quote_id)))
+    return OutboxCommand(
+        command_id=command_id,
+        business_id=quote.business_id,
+        command_type=QUOTE_TEXT_COMMAND_TYPE,
+        payload={"quote_id": str(quote.quote_id)},
+        dedup_key=f"quote_text:{quote.quote_id}",
+    )
+
+
+def customer_quote_text(draft: QuoteDraftProposal, link: str) -> str:
+    """The one-segment text that carries the quote link to the customer.
+
+    The first item's description is shortened to fit; the link never is.
+    """
+
+    description = " ".join(draft.line_items[0].description.split())
+    room = SMS_SEGMENT_LIMIT - len(CUSTOMER_TEXT_PREFIX) - len(CUSTOMER_TEXT_SUFFIX) - len(link)
+    if room < 1:
+        return f"Your Güd Vector quote is ready: {link}"
+    if len(description) > room:
+        description = description[:room].rstrip()
+    return f"{CUSTOMER_TEXT_PREFIX}{description}{CUSTOMER_TEXT_SUFFIX}{link}"
 
 
 def quote_delivery_command(quote: Quote) -> OutboxCommand:

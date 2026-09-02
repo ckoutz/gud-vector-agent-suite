@@ -22,6 +22,8 @@ class Appointment(AppointmentModel):
     start_time: datetime
     invitee_name: str = Field(min_length=1)
     invitee_email: str = Field(min_length=1)
+    # E.164 when the booking captured one.
+    invitee_phone: str | None = None
     event_name: str = Field(min_length=1)
     address: str | None = None
     # What the invitee wrote when booking, as "question: answer" strings.

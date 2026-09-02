@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 CALENDLY_SOURCE_LABEL = "Calendly"
 ADDRESS_LOCATION_TYPES = frozenset({"physical", "custom"})
 ADDRESS_QUESTION_MARKER = "address"
+PHONE_QUESTION_MARKER = "phone"
 
 
 class CalendlyResponseModel(BaseModel):
@@ -66,6 +67,7 @@ class CalendlyInvitee(CalendlyResponseModel):
     email: str
     status: str
     timezone: str | None = None
+    text_reminder_number: str | None = None
     questions_and_answers: tuple[CalendlyQuestionAnswer, ...] = ()
 
 
@@ -117,6 +119,7 @@ class CalendlyAppointmentLookup:
                         invitee_name=invitee.name,
                         invitee_email=invitee.email,
                         event_name=event.name or "Appointment",
+                        invitee_phone=_invitee_phone(invitee),
                         address=location_address or _answered_address(invitee),
                         notes=booking_notes(invitee),
                         source_label=CALENDLY_SOURCE_LABEL,
@@ -206,6 +209,36 @@ def _answered_address(invitee: CalendlyInvitee) -> str | None:
     for entry in sorted(invitee.questions_and_answers, key=lambda item: item.position):
         if ADDRESS_QUESTION_MARKER in entry.question.casefold() and entry.answer.strip():
             return entry.answer.strip()
+    return None
+
+
+def _invitee_phone(invitee: CalendlyInvitee) -> str | None:
+    """The SMS reminder number when the invitee opted in, else the answer to a
+    question mentioning a phone; either way normalized to E.164 when possible."""
+
+    candidates = [invitee.text_reminder_number or ""]
+    candidates.extend(
+        entry.answer
+        for entry in sorted(invitee.questions_and_answers, key=lambda item: item.position)
+        if PHONE_QUESTION_MARKER in entry.question.casefold()
+    )
+    for candidate in candidates:
+        normalized = _e164(candidate)
+        if normalized is not None:
+            return normalized
+    return None
+
+
+def _e164(value: str) -> str | None:
+    digits = "".join(character for character in value if character.isdigit())
+    if not digits:
+        return None
+    if value.strip().startswith("+"):
+        return f"+{digits}" if 7 <= len(digits) <= 15 else None
+    if len(digits) == 10:
+        return f"+1{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
     return None
 
 

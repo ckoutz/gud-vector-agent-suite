@@ -133,6 +133,29 @@ whole days; businesses carry no timezone yet, so day boundaries are UTC.
   quote; the owner gets one reply asking to include `customer:` this time and
   the worker logs a sanitized warning.
 
+## Customer portal quote handoff (optional)
+
+With the portal configured an approved quote is created on gudvector.com
+instead of being emailed by Resend; the portal emails the customer its quote
+link, and GVAS texts the same link through Telnyx when the customer has a
+phone number and `GVAS_TELNYX_*` is set.
+
+- **Base URL**: `GVAS_PORTAL_BASE_URL`, e.g. `https://gudvector.com`; the
+  adapter posts to `{base}/api/quotes`.
+- **Token**: `GVAS_PORTAL_API_TOKEN` is sent only as a bearer header to the
+  portal. The portal must have `PORTAL_API_TOKEN` set to the same value, or
+  every create is refused with 401 and the quote dead-letters after retries.
+  It never appears in owner replies or startup errors.
+- **Optional as a set**: leave both unset to keep Resend email delivery.
+  Setting one but not the other fails startup, naming the missing variable
+  only.
+- **Migration**: `0012_portal_quote_handoffs` adds the table that records each
+  portal create per quote so retries do not create duplicates; the usual
+  `gvas-migrate` pre-deploy step applies it.
+- **Texts**: without `GVAS_TELNYX_*` the portal still emails the link and the
+  owner is told no text was sent; a failed text is reported to the owner with
+  the link to forward, never rolled back.
+
 ## Free-text quotes (uses the review model)
 
 A `quote:` the structured parser refuses (`quote: inspection 250`) is read by
@@ -182,6 +205,9 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_TELNYX_WEBHOOK_PATH` | Default `/telnyx/messaging` |
 | `GVAS_TELNYX_REQUEST_MAX_AGE_SECONDS` | Default 300 |
 | `GVAS_TELNYX_API_BASE_URL`, `GVAS_TELNYX_API_TIMEOUT_SECONDS` | Defaults suffice |
+| `GVAS_PORTAL_BASE_URL` | Optional set; customer portal origin, quotes are posted to `{base}/api/quotes` |
+| `GVAS_PORTAL_API_TOKEN` | Optional set; bearer header only; must equal the portal's `PORTAL_API_TOKEN` |
+| `GVAS_PORTAL_TIMEOUT_SECONDS` | Default 30 |
 | `GVAS_CALENDLY_TOKEN` | Optional set; personal access token, bearer header only |
 | `GVAS_CALENDLY_INSTALLATIONS` | Optional set; `business_uuid=https://api.calendly.com/users/<uuid>` |
 | `GVAS_CALENDLY_API_BASE_URL`, `GVAS_CALENDLY_API_TIMEOUT_SECONDS`, `GVAS_CALENDLY_PAGE_SIZE` | Defaults suffice |

@@ -145,6 +145,7 @@ until `max_attempts` is exhausted.
 | `owner_message.process` | `ProcessOwnerMessageService` | intent resolver |
 | `owner_reply.deliver` | `DeliverOwnerReplyService` | `OwnerReplyPort` |
 | `customer_quote.deliver` | `DeliverApprovedQuoteService` | `CustomerQuoteDeliveryPort` |
+| `customer_quote.text` | `TextDeliveredQuoteService` | `CustomerTextDeliveryPort` (only wired when a text port is configured) |
 | `field_note.transcribe` | `TranscribeFieldNoteAudioService` | `TranscriptionPort` |
 | `field_note.review` | `CoordinateFieldNoteReviewService` | `CompletenessReviewPort` |
 | `field_notes_report.generate` | snapshot builder + `GenerateFieldNotesReportService` | `ChecklistEvidencePort`, `ReportGenerationPort` |
@@ -312,8 +313,23 @@ application:
   worker process. When `GVAS_TELNYX_*` is set, `TelnyxMessagingApiSender` plus
   `build_telnyx_owner_reply_adapter` is added and `ChannelOwnerReplyRouter`
   fronts both adapters.
-- `CustomerQuoteDeliveryPort` — `ResendQuoteDeliveryAdapter` (email only);
-  `ReportEmailPort` — `ResendReportEmailAdapter` (DOCX as a base64 attachment
+- `CustomerQuoteDeliveryPort` — `ResendQuoteDeliveryAdapter` (email only) by
+  default; `PortalQuoteDelivery` (`gvas.infrastructure.portal`, `httpx` POST to
+  the portal's `/api/quotes` with a bearer token) when `GVAS_PORTAL_*` is set.
+  The portal adapter records each `claimToken`/`quoteUrl` in
+  `portal_quote_handoffs` (`SqlPortalHandoffLedger`) under the request's
+  idempotency key and returns the recorded receipt on replay, so at-least-once
+  dispatch never creates a second portal quote. The receipt carries the
+  customer-facing `customer_link` and the portal's `emailed` flag back into the
+  provider-neutral `DeliveryReceipt`.
+- `CustomerTextDeliveryPort` — `TelnyxCustomerTextAdapter` when both the portal
+  and `GVAS_TELNYX_*` are configured; it sends from the business's Telnyx
+  number (not the owner-reply routing) and shares the Telnyx delivery ledger.
+  `DeliverApprovedQuoteService` enqueues a `customer_quote.text` command after a
+  delivery whose receipt has a link and whose recipient has a phone; its
+  dead-letter notice (`quote_text_failure_notice`) tells the owner whether the
+  portal emailed the link and repeats the link.
+- `ReportEmailPort` — `ResendReportEmailAdapter` (DOCX as a base64 attachment
   on the same Resend endpoint).
 - `TranscriptionPort` — `OpenAITranscriber`; `AttachmentAccessPort` —
   `SlackFileAttachmentAccess` for voice notes, `ReportArtifactAccess` for the

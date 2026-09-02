@@ -125,6 +125,13 @@ class DeliveryReceipt(DomainModel):
     provider_message_id: str | None = None
     occurred_at: datetime
     detail: str | None = None
+    # Where the customer can view what was delivered, when the delivery created
+    # a hosted page rather than sending the content itself. Customer-facing, not
+    # secret, so the owner may be shown it.
+    customer_link: str | None = None
+    # Whether the delivery emailed the customer; ``None`` when the channel does
+    # not report it.
+    emailed: bool | None = None
 
     _occurred_at_aware = field_validator("occurred_at")(_aware)
 
@@ -161,6 +168,27 @@ class CustomerRecipient(DomainModel):
     address: str = Field(min_length=1)
     address_kind: RecipientAddressKind
     display_name: str | None = None
+    # A second way to reach the customer, E.164, when ``address`` is not a phone.
+    phone: str | None = None
+    # Where the work happens, when known (e.g. from the booking).
+    service_address: str | None = None
+
+    @property
+    def email_address(self) -> str | None:
+        return self.address if self.address_kind is RecipientAddressKind.EMAIL else None
+
+    @property
+    def phone_number(self) -> str | None:
+        if self.address_kind is RecipientAddressKind.PHONE:
+            return self.address
+        return self.phone
+
+
+class CustomerDeliveryLineItem(DomainModel):
+    description: str = Field(min_length=1)
+    quantity: int = Field(ge=1)
+    # Signed so a discount can travel as its own line.
+    unit_price_minor: int
 
 
 class CustomerDeliveryRequest(DomainModel):
@@ -171,3 +199,16 @@ class CustomerDeliveryRequest(DomainModel):
     body_text: str = Field(min_length=1)
     links: tuple[str, ...] = Field(default_factory=tuple)
     attachments: tuple[AttachmentReference, ...] = Field(default_factory=tuple)
+    # The same content as ``body_text``, structured, for channels that render
+    # the quote themselves rather than forwarding the text.
+    line_items: tuple[CustomerDeliveryLineItem, ...] = Field(default_factory=tuple)
+    currency: str | None = None
+
+
+class CustomerTextRequest(DomainModel):
+    """One short text message to a customer's phone."""
+
+    business_id: BusinessId
+    phone_number: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    idempotency_key: str = Field(min_length=1)
