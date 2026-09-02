@@ -17,14 +17,12 @@ waiting on the owner and are not built until answered.
 | Owner notice when a DOCX publish dead-letters; `approve report` retries it | #21 |
 | Worker and web log one line per command outcome to stderr at `GVAS_LOG_LEVEL` | #23 |
 | Unmatched messages get the available triggers once instead of retrying to dead-letter | #25 |
+| R2 object storage wired in production when `GVAS_R2_*` is set; published DOCX kept durably | #26 |
 
 ## In progress
 
-- Audit follow-ups (2026-09), in priority order (items 1 and 2 landed in #23
-  and #25):
-  3. Object storage (`GVAS_R2_*`) is configured and implemented but not wired in
-     `gvas.composition.production`, so the published DOCX has no durable copy
-     outside Slack. Wire it, or remove the settings and say so.
+- Audit follow-ups (2026-09), in priority order (items 1-3 landed in #23, #25,
+  #26):
   4. `plan_set.copy_into_custody` has no owner-facing failure guidance and is not reachable
      from any channel command yet.
 

@@ -112,7 +112,7 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_RESEND_PORTAL_URL` | Default `https://gudvector.com/portal/login` |
 | `GVAS_WORKER_BATCH_SIZE`, `_POLL_SECONDS`, `_RETRY_SECONDS`, `_LEASE_SECONDS` | Worker only |
 | `GVAS_WORKER_ID_PREFIX` | Worker only; hostname and pid are appended per replica |
-| `GVAS_R2_*` | Present in `.env.example` but not read by production wiring yet; the DOCX is not kept in object storage until it is |
+| `GVAS_R2_ACCOUNT_ID`, `GVAS_R2_BUCKET`, `GVAS_R2_ACCESS_KEY_ID`, `GVAS_R2_SECRET_ACCESS_KEY` | Optional as a set: all four on both services keeps every published DOCX in the bucket (an R2 API token with object read/write on that bucket only); none means Slack-only delivery; a partial set fails startup. `GVAS_R2_REGION` defaults to `auto` |
 
 Startup fails immediately when a required variable is missing, so a
 misconfigured deploy never accepts Slack traffic.

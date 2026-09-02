@@ -14,6 +14,7 @@ from gvas.composition.production import (
     worker_identity,
 )
 from gvas.config import OpenAISettings, ResendSettings, Settings, WorkerSettings
+from gvas.infrastructure.object_storage import R2ObjectStorage
 from gvas.infrastructure.slack.config import SlackSettings
 from gvas.interfaces.worker import build_worker, run_worker
 
@@ -143,6 +144,46 @@ def test_production_app_serves_the_slack_request_url_and_health_check() -> None:
 
     assert runtime.settings.slack.events_path in paths
     assert "/healthz" in paths
+
+
+@pytest.mark.usefixtures("production_environment")
+def test_without_r2_settings_reports_are_delivered_to_slack_only() -> None:
+    runtime = build_production_runtime(load_production_settings())
+
+    assert runtime.application.plan_custody_service is None
+    assert runtime.application.report_publication_service._storage is None
+
+
+@pytest.mark.usefixtures("production_environment")
+def test_complete_r2_settings_wire_object_storage_into_the_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GVAS_R2_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("GVAS_R2_BUCKET", "gvas-artifacts")
+    monkeypatch.setenv("GVAS_R2_ACCESS_KEY_ID", "r2-key-id")
+    monkeypatch.setenv("GVAS_R2_SECRET_ACCESS_KEY", "r2-not-a-real-secret")
+
+    runtime = build_production_runtime(load_production_settings())
+
+    assert isinstance(runtime.application.report_publication_service._storage, R2ObjectStorage)
+    assert runtime.application.plan_custody_service is not None
+
+
+@pytest.mark.usefixtures("production_environment")
+def test_startup_rejects_partial_r2_settings_without_leaking_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GVAS_R2_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("GVAS_R2_SECRET_ACCESS_KEY", "r2-not-a-real-secret")
+
+    with pytest.raises(ProductionConfigurationError) as error:
+        load_production_settings()
+
+    message = str(error.value)
+    assert "GVAS_R2_BUCKET" in message
+    assert "GVAS_R2_ACCESS_KEY_ID" in message
+    assert "GVAS_R2_ACCOUNT_ID" not in message
+    assert "r2-not-a-real-secret" not in message
 
 
 @pytest.mark.usefixtures("production_environment")
