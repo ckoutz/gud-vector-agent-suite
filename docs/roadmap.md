@@ -17,6 +17,8 @@ waiting on the owner and are not built until answered.
 | Owner notice when a DOCX publish dead-letters; `approve report` retries it | #21 |
 | Worker and web log one line per command outcome to stderr at `GVAS_LOG_LEVEL` | #23 |
 | Unmatched messages get the available triggers once instead of retrying to dead-letter | #25 |
+| Review model annotates marker-satisfied checklist items with verbatim note excerpts (deterministic-first) | #27 |
+| PDF/image uploads in an open case thread enter plan custody; dead-lettered copies notify the owner; "not enabled" replied once when custody is unwired | #28 |
 | Telnyx SMS as a second owner channel, quotes only (`quote:`, follow-ups, approve/send); other triggers get one "quotes only, field notes belong in Slack" reply | #PR_NUMBER |
 
 ## In progress
@@ -26,22 +28,17 @@ waiting on the owner and are not built until answered.
   3. Object storage (`GVAS_R2_*`) is configured and implemented but not wired in
      `gvas.composition.production`, so the published DOCX has no durable copy
      outside Slack. Wire it, or remove the settings and say so.
-  4. `plan_set.copy_into_custody` has no owner-facing failure guidance and is not reachable
-     from any channel command yet.
 
 ## Next (ordered)
 
-1. Checklist evidence attribution through the review model instead of markers.
-   **Needs decision:** keep it deterministic-first (model only annotates) or let
-   the model decide satisfied items.
-2. Letterhead DOCX templates per business (`docs/templates_and_site_plans.md`
+1. Letterhead DOCX templates per business (`docs/templates_and_site_plans.md`
    §4). **Needs decision:** who supplies the template and where the binding
    manifest lives.
-3. Opt-in email of a published report on request (`send report to <address>`).
+2. Opt-in email of a published report on request (`send report to <address>`).
    **Needs decision:** allowed recipients (typed address only, or a
    per-business office inbox too).
-4. Retention and redaction of transcripts, media, and reports.
-5. Cost ceilings per business for transcription and review calls.
+3. Retention and redaction of transcripts, media, and reports.
+4. Cost ceilings per business for transcription and review calls.
 
 ## Not planned for the pilot
 

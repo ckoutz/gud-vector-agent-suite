@@ -121,6 +121,20 @@ until `max_attempts` is exhausted.
 | `field_notes_report.publish` | `PublishFieldNotesReportService` | `ReportArtifactRendererPort`, `ObjectStoragePort` (optional), `OwnerReplyPort` |
 | `plan_set.copy_into_custody` | `CopyPlanSetIntoCustodyService` (only when `object_storage` and `source_attachments` are supplied) | `AttachmentAccessPort`, `ObjectStoragePort` |
 
+`plan_set.copy_into_custody` is reached from the field-note thread: a PDF or
+image uploaded into an open case registers a plan-set upload for the case's
+site (`field_note_case_site_id`, one deterministic site per case until cases
+carry a site of their own) and enqueues the copy in the same transaction. The
+upload id is UUIDv5 over tenant, plan set, attachment id and locator, and the
+command's id and `plan_set_copy:<upload>` dedup key derive from it, so a
+replayed upload yields one stored copy and one provider fetch. The command
+payload carries `field_note_case_id` only so a dead-lettered copy can be
+reported into the originating thread ("upload the plan set file again in this
+thread to retry"); it takes no part in the command's identity. When
+`object_storage` or `source_attachments` is not configured, the upload is
+acknowledged once with "plan custody is not enabled" and nothing is registered
+or enqueued, so there is nothing to retry or dead-letter.
+
 `field_note.review` and `field_notes_report.generate` are new composition
 commands with deterministic UUIDv5 IDs and business-scoped deduplication keys
 (`field_note_review:<case>:<trigger>:<key>`, `field_notes_report:<case>:<review>`),
@@ -247,9 +261,13 @@ application:
   `SlackFileAttachmentAccess` for voice notes, `ReportArtifactAccess` for the
   DOCX the owner-reply adapter attaches.
 - `CompletenessReviewPort` — `GuardedCompletenessReviewer` wrapping the marker
-  reviewer and `OpenAIContradictionGuard`. `ChecklistEvidencePort`,
-  `ReportGenerationPort`, `QuoteDraftingPort` — deterministic implementations;
-  a model replaces them here and nowhere else.
+  reviewer and `OpenAIContradictionGuard`. `ChecklistEvidencePort` —
+  `GuardedChecklistEvidenceAttributor` wrapping the marker attributor and
+  `OpenAIChecklistEvidenceAnnotator`: markers decide which items are satisfied,
+  the model only adds verbatim note excerpts to those items, and a model
+  failure logs and falls back to marker evidence. `ReportGenerationPort`,
+  `QuoteDraftingPort` — deterministic implementations; a model replaces them
+  here and nowhere else.
 - `ObjectStoragePort` — `R2ObjectStorage` exists but is **not wired** in
   `gvas.composition.production`, so published DOCX files currently live only in
   Slack and are re-rendered from the persisted report on demand.
@@ -265,8 +283,9 @@ These need a product or provider decision and are wired only up to the port:
 
 1. **Checklist evidence for satisfied items.** Completeness review reports only
    what is missing, so evidence for satisfied items is attributed through
-   `ChecklistEvidencePort`. The in-repo attributor is marker-based, mirroring
-   `MarkerCompletenessReviewer`; an AI provider decision is still open.
+   `ChecklistEvidencePort`. The decision taken is deterministic-first: the
+   marker attributor stays the source of truth for satisfied items and the
+   review model only annotates them with excerpts it can quote verbatim.
 2. **Report distribution beyond the channel.** The approved DOCX lands in the
    originating channel; email to a client or office inbox is opt-in and has no
    command or recipient contract yet. Owner-supplied letterhead templates are

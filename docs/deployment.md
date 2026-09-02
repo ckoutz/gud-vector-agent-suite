@@ -127,7 +127,7 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_SLACK_REQUEST_MAX_AGE_SECONDS` | Default 300 |
 | `GVAS_SLACK_ATTACHMENT_MAX_BYTES` | Default 25 MiB; caps voice note downloads |
 | `GVAS_SLACK_API_BASE_URL`, `GVAS_SLACK_API_TIMEOUT_SECONDS` | Defaults suffice |
-| `GVAS_OPENAI_API_KEY` | Required; transcription and contradiction review |
+| `GVAS_OPENAI_API_KEY` | Required; transcription, contradiction review, evidence annotation |
 | `GVAS_OPENAI_TRANSCRIPTION_MODEL` | Default `whisper-1` |
 | `GVAS_OPENAI_REVIEW_MODEL` | Default `gpt-5.6-luna` |
 | `GVAS_OPENAI_MAX_AUDIO_BYTES`, `GVAS_OPENAI_TIMEOUT_SECONDS` | Defaults suffice |
@@ -172,7 +172,10 @@ misconfigured deploy never accepts Slack traffic.
   once it reports the note complete, `OpenAIContradictionGuard` (chat
   completions, `GVAS_OPENAI_REVIEW_MODEL`, default `gpt-5.6-luna`) runs a
   focused hard-contradiction pass and a conflict becomes one follow-up
-  question. `MarkerChecklistEvidenceAttributor` and
-  `DeterministicReportGenerator` remain in place of an inference provider; a
-  model for those replaces the port implementations in
-  `gvas.composition.production` and nothing else.
+  question. `MarkerChecklistEvidenceAttributor` decides which checklist items
+  are satisfied; `OpenAIChecklistEvidenceAnnotator` (same model) then attaches
+  supporting note excerpts to those items only, every excerpt is checked to be
+  a verbatim substring of the note, and any model failure is logged and the
+  marker evidence stands alone. `DeterministicReportGenerator` remains in
+  place of an inference provider; a model for it replaces the port
+  implementation in `gvas.composition.production` and nothing else.

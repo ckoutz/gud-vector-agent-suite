@@ -38,6 +38,14 @@ same thread for review; `approve report` then publishes that exact version as an
 editable DOCX into the channel (`field_notes_report.publish`), and `close notes`
 remains the only command that closes the case.
 
+A PDF or image uploaded into an open case thread is still recorded as an
+unsupported note part, and additionally registered as a plan-set upload for
+that case and copied into object storage (`plan_set.copy_into_custody`) when
+plan custody is wired. Re-uploading the same file is idempotent. When custody is
+not wired the thread gets one "plan custody is not enabled" reply and nothing
+is enqueued; when a copy dead-letters the owner is told to upload the file again
+in the thread.
+
 ## Open questions
 
 - How long neutral attachment locators and payloads may be retained, and

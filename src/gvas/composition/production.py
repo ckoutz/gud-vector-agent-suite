@@ -8,7 +8,9 @@ worker instead of failing the deploy.
 
 Completeness review stays deterministic (marker reviewer), but a review may
 only complete once the OpenAI contradiction pass has cleared it. Evidence
-attribution and report generation remain deterministic. Swapping a model in or
+attribution stays deterministic (marker attributor); the OpenAI annotator only
+adds verbatim supporting excerpts to items the markers satisfied and is skipped
+on any failure. Report generation remains deterministic. Swapping a model in or
 out is a change to this module and the ports it fills, not to the application.
 """
 
@@ -26,6 +28,7 @@ from gvas.application.completeness_review import MarkerCompletenessReviewer
 from gvas.application.contradiction_guard import GuardedCompletenessReviewer
 from gvas.application.deterministic_report import DeterministicReportGenerator
 from gvas.application.docx_report import DocxReportRenderer
+from gvas.application.guarded_checklist_evidence import GuardedChecklistEvidenceAttributor
 from gvas.composition import Application, ApplicationPorts, build_application
 from gvas.composition.report_publication import ReportArtifactAccess
 from gvas.config import (
@@ -39,6 +42,7 @@ from gvas.config import (
 from gvas.domain.ports import OwnerReplyPort
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.delivery_ledger import SqlChannelDeliveryLedger
+from gvas.infrastructure.openai_checklist_evidence import OpenAIChecklistEvidenceAnnotator
 from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGuard
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
 from gvas.infrastructure.owner_reply_routing import ChannelOwnerReplyRouter
@@ -239,7 +243,10 @@ def build_production_ports(
         completeness_review=GuardedCompletenessReviewer(
             MarkerCompletenessReviewer(), OpenAIContradictionGuard(settings.openai, client)
         ),
-        checklist_evidence=MarkerChecklistEvidenceAttributor(),
+        checklist_evidence=GuardedChecklistEvidenceAttributor(
+            MarkerChecklistEvidenceAttributor(),
+            OpenAIChecklistEvidenceAnnotator(settings.openai, client),
+        ),
         report_generation=DeterministicReportGenerator(),
         channel_policies=channel_policies,
     )

@@ -162,12 +162,22 @@ def build_application(
     approval = ApproveFieldNoteReportHandler(
         field_note_unit_of_work_factory, report_unit_of_work_factory
     )
+    plan_set_uploads = RegisterPlanSetUploadService(plan_custody_unit_of_work_factory)
+    plan_custody = (
+        CopyPlanSetIntoCustodyService(
+            plan_custody_unit_of_work_factory, ports.source_attachments, ports.object_storage
+        )
+        if ports.source_attachments is not None and ports.object_storage is not None
+        else None
+    )
     field_note_handler = FieldNoteWorkflowHandler(
         intake,
         closure,
         approval,
         field_note_unit_of_work_factory,
         completeness_unit_of_work_factory,
+        now=now,
+        plan_set_uploads=plan_set_uploads if plan_custody is not None else None,
     )
     quote_handler = QuoteWorkflowHandler(unit_of_work_factory, ports.quote_drafting)
     router = WorkflowRouter(
@@ -214,14 +224,6 @@ def build_application(
     quote_delivery = DeliverApprovedQuoteService(unit_of_work_factory, ports.quote_delivery)
     transcription = TranscribeFieldNoteAudioService(
         field_note_unit_of_work_factory, ports.transcription
-    )
-    plan_set_uploads = RegisterPlanSetUploadService(plan_custody_unit_of_work_factory)
-    plan_custody = (
-        CopyPlanSetIntoCustodyService(
-            plan_custody_unit_of_work_factory, ports.source_attachments, ports.object_storage
-        )
-        if ports.source_attachments is not None and ports.object_storage is not None
-        else None
     )
     report_delivery = DeliverFieldNotesReportService(
         field_note_unit_of_work_factory, unit_of_work_factory
