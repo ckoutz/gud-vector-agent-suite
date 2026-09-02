@@ -27,7 +27,7 @@ waiting on the owner and are not built until answered.
   3. Object storage (`GVAS_R2_*`) is configured and implemented but not wired in
      `gvas.composition.production`, so the published DOCX has no durable copy
      outside Slack. Wire it, or remove the settings and say so.
-  4. `plan_set.copy` has no owner-facing failure guidance and is not reachable
+  4. `plan_set.copy_into_custody` has no owner-facing failure guidance and is not reachable
      from any channel command yet.
 
 ## Next (ordered)
