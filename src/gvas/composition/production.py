@@ -42,8 +42,8 @@ from gvas.config import (
     WorkerSettings,
     require_managed_postgres_url,
 )
-from gvas.domain.ports import OwnerReplyPort
-from gvas.domain.usage import UsageCeilings
+from gvas.domain.ports import OwnerReplyPort, QuoteDraftingPort
+from gvas.domain.usage import UsageCeilingGuard, UsageCeilings
 from gvas.infrastructure.calendly.api import CalendlyAppointmentLookup
 from gvas.infrastructure.calendly.config import (
     CalendlyInstallationError,
@@ -55,9 +55,13 @@ from gvas.infrastructure.delivery_ledger import SqlChannelDeliveryLedger
 from gvas.infrastructure.object_storage import R2ObjectStorage
 from gvas.infrastructure.openai_checklist_evidence import OpenAIChecklistEvidenceAnnotator
 from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGuard
+from gvas.infrastructure.openai_quote_drafting import OpenAIFreeTextQuoteDrafter
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
 from gvas.infrastructure.owner_reply_routing import ChannelOwnerReplyRouter
-from gvas.infrastructure.quote_drafting import DeterministicQuoteDrafter
+from gvas.infrastructure.quote_drafting import (
+    DeterministicQuoteDrafter,
+    ModelAssistedQuoteDrafter,
+)
 from gvas.infrastructure.reporting_unit_of_work import SqlReportUnitOfWorkFactory
 from gvas.infrastructure.resend import ResendQuoteDeliveryAdapter, ResendReportEmailAdapter
 from gvas.infrastructure.slack.api import (
@@ -317,9 +321,18 @@ def build_production_ports(
         if settings.calendly.is_configured
         else None
     )
+    quote_drafting: QuoteDraftingPort = DeterministicQuoteDrafter()
+    if settings.openai.is_configured:
+        quote_drafting = ModelAssistedQuoteDrafter(
+            quote_drafting,
+            OpenAIFreeTextQuoteDrafter(settings.openai, client, usage_ledger=usage_ledger),
+            ceilings=UsageCeilingGuard(usage_ledger, settings.usage_ceilings()),
+        )
+    else:
+        logger.warning("openai not configured; quotes accept the structured format only")
     return ApplicationPorts(
         owner_replies=ChannelOwnerReplyRouter(session_factory, owner_replies),
-        quote_drafting=DeterministicQuoteDrafter(),
+        quote_drafting=quote_drafting,
         appointment_lookup=appointment_lookup,
         quote_delivery=ResendQuoteDeliveryAdapter(settings.resend, client),
         report_email=ResendReportEmailAdapter(settings.resend, client),

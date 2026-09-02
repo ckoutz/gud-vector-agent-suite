@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID, uuid5
@@ -30,6 +31,8 @@ from gvas.domain.outbox import OutboxCommand
 
 QUOTE_INTENT = WorkflowIntent("quote")
 QUOTE_TRIGGER_PREFIX = "quote:"
+#: ``quote:`` or ``quote for <name>:``; the name becomes a ``for:`` line.
+QUOTE_TRIGGER_PATTERN = re.compile(r"^quote(?:\s+for\s+(?P<name>[^:\n]+?))?\s*:", re.IGNORECASE)
 CUSTOMER_LINE_KEYS = frozenset({"customer", "email"})
 CUSTOMER_NAME_LINE_KEY = "for"
 QUOTE_DELIVERY_COMMAND_TYPE = "customer_quote.deliver"
@@ -75,6 +78,9 @@ class QuoteDraftProposal(QuoteModel):
     hosted_links: tuple[HostedLinkReference, ...] = Field(default_factory=tuple)
     confidence: float | None = Field(default=None, ge=0, le=1)
     risk_flags: tuple[str, ...] = Field(default_factory=tuple)
+    # True when the items were read out of the owner's free text rather than
+    # the structured format; the approval reply then asks the owner to check them.
+    drafted_from_free_text: bool = False
 
     @field_validator("currency")
     @classmethod
@@ -98,6 +104,18 @@ class QuoteDraftProposal(QuoteModel):
         return self
 
 
+class QuoteAppointmentContext(QuoteModel):
+    """What the matched appointment says about the job, for a drafter that
+    reads free text. It informs descriptions and the note only, never prices."""
+
+    event_name: str = Field(min_length=1)
+    start_time: datetime
+    address: str | None = None
+    invitee_name: str = Field(min_length=1)
+    # The invitee's booking answers as "question: answer" strings.
+    notes: tuple[str, ...] = Field(default_factory=tuple)
+
+
 class QuoteDraftRequest(QuoteModel):
     quote_id: QuoteId
     business_id: BusinessId
@@ -108,6 +126,38 @@ class QuoteDraftRequest(QuoteModel):
     # Filled from an appointment when the request carries no customer line;
     # the drafter uses it only when the text names no customer itself.
     recipient: CustomerRecipient | None = None
+    appointment: QuoteAppointmentContext | None = None
+
+
+class FreeTextQuoteItem(QuoteModel):
+    """A line item as read out of free text; the unit price is the owner's
+    amount as written (e.g. ``"250"``, ``"1,250.00"``), not yet validated,
+    or ``None`` when the text names no price for the item."""
+
+    description: str = Field(min_length=1)
+    quantity: int = Field(default=1, ge=1)
+    unit_price: str | None = None
+
+
+class FreeTextQuoteDraft(QuoteModel):
+    line_items: tuple[FreeTextQuoteItem, ...] = Field(default_factory=tuple)
+    owner_note: str | None = None
+    ambiguities: tuple[str, ...] = Field(default_factory=tuple)
+
+
+class FreeTextQuoteDraftingPort(Protocol):
+    """Reads line items out of an owner's free-text request.
+
+    Raises :class:`FreeTextQuoteDraftingError` when the request could not be
+    read; the caller decides what the owner is told.
+    """
+
+    async def draft(self, request: QuoteDraftRequest) -> FreeTextQuoteDraft: ...
+
+
+class FreeTextQuoteDraftingError(RuntimeError):
+    """The free-text drafter failed. Adapters sanitize the message: no
+    credentials and no raw provider responses."""
 
 
 class QuoteSendAssessment(QuoteModel):
@@ -398,9 +448,26 @@ def new_quote(
     )
 
 
+def quote_trigger_request_text(text: str) -> str | None:
+    """The request after the ``quote:`` trigger, or ``None`` without a trigger.
+
+    ``quote for Jane: ...`` is the same as ``quote:\\nfor: Jane\\n...``; the
+    name filter is folded into the request text so one code path reads it.
+    """
+
+    match = QUOTE_TRIGGER_PATTERN.match(text.lstrip())
+    if match is None:
+        return None
+    request_text = text.lstrip()[match.end() :].strip()
+    name = match.group("name")
+    if name is not None and name.strip():
+        request_text = f"{CUSTOMER_NAME_LINE_KEY}: {name.strip()}\n{request_text}".strip()
+    return request_text
+
+
 def has_quote_trigger(message: NormalizedOwnerMessage) -> bool:
     text = "\n".join(part.text for part in message.parts if isinstance(part, TextPart))
-    return text.lstrip().lower().startswith(QUOTE_TRIGGER_PREFIX)
+    return quote_trigger_request_text(text) is not None
 
 
 def _request_lines(request_text: str) -> list[tuple[str, str]]:

@@ -109,8 +109,9 @@ Slack to echo internal outbound correlation IDs back to us.
 
 `gvas.composition.production` is the only module that chooses providers. It
 wires the Slack chat poster and private-file access, OpenAI transcription,
-Resend quote delivery, the deterministic quote parser, and — because no
-inference model has been selected for review or reporting — the marker reviewer,
+Resend quote delivery, the deterministic quote parser with the OpenAI free-text
+fallback, and — because no inference model has been selected for review or
+reporting — the marker reviewer,
 marker evidence attributor and deterministic report generator. It refuses to
 start when a required setting is missing. Entrypoints:
 
@@ -160,6 +161,33 @@ replies with the number; `reject` cancels. No match falls back to the
 candidates by a case-insensitive substring of the invitee name. If Calendly
 cannot be reached the quote is dropped with one reply asking for `customer:`
 this time. The same flow runs over Slack and SMS.
+
+### Free-text quotes
+
+When the structured parser refuses the text, and OpenAI is configured, the
+review model reads the request instead, so these all draft:
+
+```text
+quote: inspection 250
+quote: 2 air samples at 125 each plus the report 200, note we'll be there tuesday
+quote for jane: mold inspection 350
+```
+
+The model proposes line items (quantity, description, unit price as written),
+an optional customer note and a list of ambiguities; the matched appointment
+(event, time, address, invitee and their booking answers) is passed along so
+descriptions can reflect what the customer booked ("attic mold, 2 bedrooms").
+GVAS still never invents a price: every unit price the model returns must
+appear literally in the owner's text (`250`, `250.00`, `$250`, `1,250`), and
+the appointment never contributes one. An item without such a price, or a
+request the model finds no items in, drafts nothing — the owner gets one
+question naming the items that need a price. Quantities default to 1, the
+currency is USD. The draft reply lists items and total as usual plus
+`Drafted from your message — check items before approving.`; approval is
+unchanged. A request written entirely in `key: value` lines with a mistake in
+it keeps the parser's message and never reaches the model. A model or API
+failure, or a reached `GVAS_COST_CEILING_REVIEW_TOKENS`, gives one reply with
+the structured format; tokens count against that same review ceiling.
 
 Ingress persists the inbound message and one `owner_message.process` command;
 processing remains resumable across restarts. Outbox workers claim with an

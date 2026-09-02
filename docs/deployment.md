@@ -133,6 +133,20 @@ whole days; businesses carry no timezone yet, so day boundaries are UTC.
   quote; the owner gets one reply asking to include `customer:` this time and
   the worker logs a sanitized warning.
 
+## Free-text quotes (uses the review model)
+
+A `quote:` the structured parser refuses (`quote: inspection 250`) is read by
+the review model (`GVAS_OPENAI_REVIEW_MODEL`, same key and base URL as the
+other OpenAI adapters; chat completions with JSON-schema output, temperature 0,
+fixed seed). The model only proposes items, notes and ambiguities; every unit
+price must appear literally in the owner's text or nothing is drafted and the
+owner is asked for the missing price(s). The matched Calendly booking (event,
+time, address, invitee, question answers) is passed as context for
+descriptions only. Tokens are recorded as review tokens and refused at
+`GVAS_COST_CEILING_REVIEW_TOKENS` like the contradiction guard; a refusal,
+and any model or API failure, gives one sanitized reply with the structured
+format and no retry. Structured requests never call the model.
+
 ## Environment variables
 
 Set on both services unless noted. Values below are placeholders; see
@@ -151,7 +165,7 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_SLACK_API_BASE_URL`, `GVAS_SLACK_API_TIMEOUT_SECONDS` | Defaults suffice |
 | `GVAS_OPENAI_API_KEY` | Required; transcription, contradiction review, evidence annotation |
 | `GVAS_OPENAI_TRANSCRIPTION_MODEL` | Default `whisper-1` |
-| `GVAS_OPENAI_REVIEW_MODEL` | Default `gpt-5.6-luna` |
+| `GVAS_OPENAI_REVIEW_MODEL` | Default `gpt-5.6-luna`; also drafts free-text quotes |
 | `GVAS_OPENAI_MAX_AUDIO_BYTES`, `GVAS_OPENAI_TIMEOUT_SECONDS` | Defaults suffice |
 | `GVAS_RESEND_API_KEY` | Required; approved quote email and `send report to <address>` |
 | `GVAS_COST_CEILING_TRANSCRIPTION_SECONDS` | Per business per UTC calendar month, in audio seconds; `0` (default) is unlimited |

@@ -107,6 +107,15 @@ The next owner message in that conversation — a digit or `reject` — is route
 the existing active-quote lookup, so the selection works the same over Slack
 and SMS and replays via the quote's message key. `AppointmentLookupError`
 abandons the draft with one owner reply; nothing is dead-lettered.
+The single match also becomes a provider-neutral `QuoteAppointmentContext`
+(event name, start, address, invitee name, booking answers as strings) on the
+`QuoteDraftRequest`. `ModelAssistedQuoteDrafter` (infrastructure) runs the
+deterministic parser first and, only when it refuses, a
+`FreeTextQuoteDraftingPort` (`OpenAIFreeTextQuoteDrafter` in production, review
+model, JSON-schema output); it checks every returned unit price against the
+amounts written in the owner's text, asks for missing ones with a single
+`QuoteDraftRejectedError`, and consults the shared `UsageCeilingGuard` for
+review tokens before calling.
 `gvas.infrastructure.calendly` holds the only Calendly-aware code
 (`CalendlySettings`, `parse_calendly_installations`,
 `CalendlyAppointmentLookup` over `httpx`), and `production.py` wires it when the
@@ -314,8 +323,10 @@ application:
   `GuardedChecklistEvidenceAttributor` wrapping the marker attributor and
   `OpenAIChecklistEvidenceAnnotator`: markers decide which items are satisfied,
   the model only adds verbatim note excerpts to those items, and a model
-  failure logs and falls back to marker evidence. `ReportGenerationPort`,
-  `QuoteDraftingPort` — deterministic implementations; a model replaces them
+  failure logs and falls back to marker evidence. `QuoteDraftingPort` —
+  `ModelAssistedQuoteDrafter` wrapping `DeterministicQuoteDrafter` and
+  `OpenAIFreeTextQuoteDrafter` with the shared usage ledger and ceiling guard.
+  `ReportGenerationPort` — deterministic implementation; a model replaces it
   here and nowhere else.
 - `ObjectStoragePort` — `R2ObjectStorage`, wired by `gvas.composition.production`
   when all four `GVAS_R2_*` settings are present (a partial set fails startup).
