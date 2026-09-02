@@ -20,14 +20,22 @@ from gvas.domain.identifiers import BusinessId, ConversationId, MessageKey, Quot
 from gvas.domain.intents import IntentResolution
 from gvas.domain.messages import (
     ConversationRef,
+    CustomerDeliveryLineItem,
     CustomerDeliveryRequest,
     CustomerRecipient,
+    CustomerTextRequest,
+    DeliveryReceipt,
     NormalizedOwnerMessage,
     OutboundOwnerMessage,
     TextPart,
 )
 from gvas.domain.money import format_money
-from gvas.domain.ports import CustomerQuoteDeliveryPort, QuoteDraftingPort
+from gvas.domain.outbox import owner_reply_command
+from gvas.domain.ports import (
+    CustomerQuoteDeliveryPort,
+    CustomerTextDeliveryPort,
+    QuoteDraftingPort,
+)
 from gvas.domain.quotes import (
     QUOTE_INTENT,
     OwnerApprovalRequiredPolicy,
@@ -39,9 +47,11 @@ from gvas.domain.quotes import (
     QuoteDraftRequest,
     QuoteSendAssessment,
     QuoteSendPolicy,
+    customer_quote_text,
     has_customer_line,
     new_quote,
     quote_delivery_command,
+    quote_text_command,
     quote_trigger_request_text,
     requested_customer_name,
 )
@@ -63,6 +73,10 @@ class QuoteIntakeError(ValueError):
 
 class QuoteDeliveryError(RuntimeError):
     pass
+
+
+class QuoteTextError(RuntimeError):
+    """The customer text did not go; the command stays retryable."""
 
 
 class QuoteUnitOfWorkFactory(Protocol):
@@ -346,13 +360,25 @@ class QuoteDeliveryOutcome:
 
 
 class DeliverApprovedQuoteService:
+    """Hands the approved draft to the customer delivery port, then tells the
+    owner what happened.
+
+    When the receipt carries a ``customer_link`` and the recipient has a phone
+    number, and a text port is wired, a follow-up command texts the link; its
+    failure never undoes the delivery. The owner confirmation is written in
+    the same transaction as the delivered quote, so a replay neither repeats
+    the delivery nor the confirmation.
+    """
+
     def __init__(
         self,
         unit_of_work_factory: QuoteUnitOfWorkFactory,
         delivery_port: CustomerQuoteDeliveryPort,
+        text_port: CustomerTextDeliveryPort | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._delivery_port = delivery_port
+        self._texts_customers = text_port is not None
 
     async def deliver(self, business_id: BusinessId, quote_id: QuoteId) -> QuoteDeliveryOutcome:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -374,14 +400,20 @@ class DeliverApprovedQuoteService:
                 subject="Your quote",
                 body_text=_customer_quote_body(draft),
                 links=tuple(link.reference for link in draft.hosted_links),
+                line_items=_delivery_line_items(draft),
+                currency=draft.currency,
             )
         )
         if receipt.status is DeliveryStatus.FAILED:
             raise QuoteDeliveryError(receipt.detail or "quote delivery failed")
         delivered = quote.record_delivery(receipt)
+        texting = self._will_text(delivered)
         try:
             async with self._unit_of_work_factory() as unit_of_work:
                 await unit_of_work.quotes.save(delivered, expected_version=quote.version)
+                if texting:
+                    await unit_of_work.outbox.enqueue(quote_text_command(delivered))
+                await self._confirm_to_owner(unit_of_work, delivered, texting=texting)
                 await unit_of_work.commit()
         except QuoteConcurrencyError:
             async with self._unit_of_work_factory() as unit_of_work:
@@ -393,6 +425,101 @@ class DeliverApprovedQuoteService:
             }:
                 raise
         return QuoteDeliveryOutcome(QuoteDeliveryStatus.COMPLETED, quote_id)
+
+    def _will_text(self, quote: Quote) -> bool:
+        if not self._texts_customers or quote.draft is None or quote.delivery_receipt is None:
+            return False
+        return (
+            quote.delivery_receipt.customer_link is not None
+            and quote.draft.recipient.phone_number is not None
+        )
+
+    async def _confirm_to_owner(
+        self, unit_of_work: UnitOfWork, quote: Quote, *, texting: bool
+    ) -> None:
+        """Anchored on the message that started the quote; without one (nothing
+        was ingested through a channel) there is nowhere to reply."""
+
+        source = await unit_of_work.inbound_messages.find_by_key(
+            quote.business_id, quote.conversation_id, quote.source_message_key
+        )
+        if source is None or quote.draft is None or quote.delivery_receipt is None:
+            return
+        if quote.delivery_receipt.customer_link is None:
+            return
+        message = OutboundOwnerMessage(
+            business_id=quote.business_id,
+            conversation_ref=quote.conversation_ref,
+            parts=(
+                TextPart(
+                    text=quote_delivered_reply(quote.draft, quote.delivery_receipt, texting=texting)
+                ),
+            ),
+            correlation_id=f"quote:{quote.quote_id}:delivered",
+        )
+        outbound_message_id = await unit_of_work.outbound_messages.create(
+            message, quote.conversation_id, source.inbound_message_id
+        )
+        await unit_of_work.outbox.enqueue(
+            owner_reply_command(quote.business_id, outbound_message_id)
+        )
+
+
+class QuoteTextStatus(StrEnum):
+    SENT = "sent"
+    NOTHING_TO_TEXT = "nothing_to_text"
+    NOT_DELIVERED = "not_delivered"
+    MISSING = "missing"
+
+
+@dataclass(frozen=True)
+class QuoteTextOutcome:
+    status: QuoteTextStatus
+    quote_id: QuoteId
+
+
+class TextDeliveredQuoteService:
+    """Texts the customer the link a completed delivery produced.
+
+    Runs as its own command after delivery so that a text that keeps failing
+    dead-letters on its own, with the quote already delivered and the owner
+    told; the text port keys the send on the quote so a retry cannot text twice.
+    """
+
+    def __init__(
+        self,
+        unit_of_work_factory: QuoteUnitOfWorkFactory,
+        text_port: CustomerTextDeliveryPort,
+    ) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._text_port = text_port
+
+    async def text(self, business_id: BusinessId, quote_id: QuoteId) -> QuoteTextOutcome:
+        async with self._unit_of_work_factory() as unit_of_work:
+            quote = await unit_of_work.quotes.get(business_id, quote_id)
+            await unit_of_work.commit()
+        if quote is None:
+            return QuoteTextOutcome(QuoteTextStatus.MISSING, quote_id)
+        if quote.status not in {QuoteStatus.DELIVERY_PENDING, QuoteStatus.DELIVERED}:
+            return QuoteTextOutcome(QuoteTextStatus.NOT_DELIVERED, quote_id)
+        receipt = quote.delivery_receipt
+        draft = quote.draft
+        if draft is None or receipt is None or receipt.customer_link is None:
+            return QuoteTextOutcome(QuoteTextStatus.NOTHING_TO_TEXT, quote_id)
+        phone_number = draft.recipient.phone_number
+        if phone_number is None:
+            return QuoteTextOutcome(QuoteTextStatus.NOTHING_TO_TEXT, quote_id)
+        sent = await self._text_port.send_text(
+            CustomerTextRequest(
+                business_id=quote.business_id,
+                phone_number=phone_number,
+                text=customer_quote_text(draft, receipt.customer_link),
+                idempotency_key=f"quote-text:{quote.quote_id}",
+            )
+        )
+        if sent.status is DeliveryStatus.FAILED:
+            raise QuoteTextError(sent.detail or "customer text failed")
+        return QuoteTextOutcome(QuoteTextStatus.SENT, quote_id)
 
 
 def normalized_text(message: NormalizedOwnerMessage) -> str:
@@ -435,6 +562,8 @@ def _appointment_recipient(appointment: Appointment) -> CustomerRecipient:
         address=appointment.invitee_email,
         address_kind=RecipientAddressKind.EMAIL,
         display_name=appointment.invitee_name,
+        phone=appointment.invitee_phone,
+        service_address=appointment.address,
     )
 
 
@@ -525,6 +654,55 @@ def _owner_quote_body(quote: Quote) -> str:
     if draft.drafted_from_free_text:
         lines.append(FREE_TEXT_DRAFT_NOTICE)
     lines.append("Reply with approve, reject, or correct: <changes>.")
+    return "\n".join(lines)
+
+
+def _delivery_line_items(draft: QuoteDraftProposal) -> tuple[CustomerDeliveryLineItem, ...]:
+    """The draft's items, with tax and discount as lines of their own so the
+    structured total equals ``draft.total_minor``."""
+
+    items = [
+        CustomerDeliveryLineItem(
+            description=item.description,
+            quantity=item.quantity,
+            unit_price_minor=item.unit_price_minor,
+        )
+        for item in draft.line_items
+    ]
+    if draft.tax_minor:
+        items.append(
+            CustomerDeliveryLineItem(
+                description="Tax", quantity=1, unit_price_minor=draft.tax_minor
+            )
+        )
+    if draft.discount_minor:
+        items.append(
+            CustomerDeliveryLineItem(
+                description="Discount", quantity=1, unit_price_minor=-draft.discount_minor
+            )
+        )
+    return tuple(items)
+
+
+def quote_delivered_reply(
+    draft: QuoteDraftProposal, receipt: DeliveryReceipt, *, texting: bool
+) -> str:
+    """What the owner is told once the customer holds a hosted quote: the
+    link, and which channels carried it."""
+
+    recipient = draft.recipient
+    customer = recipient.display_name or recipient.address
+    lines = [f"Quote for {customer} is ready: {receipt.customer_link}"]
+    email = recipient.email_address if receipt.emailed else None
+    phone = recipient.phone_number if texting else None
+    if email and phone:
+        lines.append(f"Emailed to {email}; texting {phone}.")
+    elif email:
+        lines.append(f"Emailed to {email}. No phone on file, so no text.")
+    elif phone:
+        lines.append(f"Texting {phone}. No email was sent.")
+    else:
+        lines.append("Not emailed or texted; forward the link to the customer yourself.")
     return "\n".join(lines)
 
 

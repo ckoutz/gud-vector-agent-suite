@@ -149,6 +149,27 @@ owner-facing message rather than guessed, and corrections are sent in the same
 format. The owner still approves before anything is emailed; approved quotes go
 out through Resend and link to the customer portal.
 
+### Quote delivery
+
+When `GVAS_PORTAL_BASE_URL` and `GVAS_PORTAL_API_TOKEN` are set (see
+[deployment](docs/deployment.md)) an approved quote is created in the customer
+portal instead: `PortalQuoteDelivery` posts the line items (integer cents,
+USD), the customer's name, email, phone and service address to
+`POST /api/quotes` with a bearer token, and the portal emails the customer its
+`quoteUrl` when there is an email. The returned claim token and URL are kept
+against the quote's `quote-delivery:{quote_id}` key, so an outbox retry after a
+successful create short-circuits instead of creating a second portal quote.
+When the customer has a phone number and Telnyx is configured, one
+`customer_quote.text` command then texts
+`Your Güd Vector quote for <first item> is ready: <quoteUrl>` from the
+business's Telnyx number, trimmed to a single 160-character segment by
+shortening the description, never the link. The owner's confirmation carries
+the `quoteUrl` and which channels were used (emailed, texting, or neither). A
+failed text never undoes the portal quote; after retries the owner gets a
+notice saying the quote exists, whether the portal emailed it, and the link to
+forward. Without the portal variables delivery is unchanged: Resend emails the
+quote body with the generic portal login link, and nothing is texted.
+
 When Calendly is configured (`GVAS_CALENDLY_*`, see [deployment](docs/deployment.md))
 `customer:` may be omitted and the customer is taken from the owner's
 appointments in the surrounding three UTC days (yesterday, today, tomorrow).

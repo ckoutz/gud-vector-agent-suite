@@ -32,6 +32,7 @@ from gvas.application.quotes import (
     DeliverApprovedQuoteService,
     QuoteIntentSelector,
     QuoteWorkflowHandler,
+    TextDeliveredQuoteService,
 )
 from gvas.application.report_approval import ApproveFieldNoteReportHandler
 from gvas.application.report_email import SendFieldNoteReportHandler
@@ -58,6 +59,7 @@ from gvas.domain.ports import (
     AttachmentAccessPort,
     ChecklistEvidencePort,
     CustomerQuoteDeliveryPort,
+    CustomerTextDeliveryPort,
     IntentResolutionPort,
     ObjectStoragePort,
     OwnerReplyPort,
@@ -96,6 +98,9 @@ class ApplicationPorts:
     source_attachments: AttachmentAccessPort | None = None
     object_storage: ObjectStoragePort | None = None
     report_email: ReportEmailPort | None = None
+    # When present, a delivered quote whose receipt carries a customer link is
+    # also texted to the customer's phone; when absent nothing is texted.
+    customer_text: CustomerTextDeliveryPort | None = None
     # When absent a quote must carry ``customer:``; when present the quote
     # workflow may resolve the customer from the owner's appointments instead.
     appointment_lookup: AppointmentLookupPort | None = None
@@ -249,7 +254,14 @@ def build_application(
     )
     processing = ProcessOwnerMessageService(unit_of_work_factory, router, resolver)
     owner_replies = DeliverOwnerReplyService(unit_of_work_factory, ports.owner_replies)
-    quote_delivery = DeliverApprovedQuoteService(unit_of_work_factory, ports.quote_delivery)
+    quote_delivery = DeliverApprovedQuoteService(
+        unit_of_work_factory, ports.quote_delivery, ports.customer_text
+    )
+    quote_text = (
+        TextDeliveredQuoteService(unit_of_work_factory, ports.customer_text)
+        if ports.customer_text is not None
+        else None
+    )
     transcription = TranscribeFieldNoteAudioService(
         field_note_unit_of_work_factory, ports.transcription, ceilings=ceiling_guard
     )
@@ -292,6 +304,7 @@ def build_application(
         plan_custody=plan_custody,
         lease_ttl=lease_ttl,
         ceiling_notices=failure_notices,
+        quote_text=quote_text,
     )
     return Application(
         engine=resolved_engine,

@@ -36,7 +36,7 @@ from gvas.domain.outbox import (
     owner_reply_command,
 )
 from gvas.domain.plans import PLAN_SET_COPY_COMMAND_TYPE
-from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE
+from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE, QUOTE_TEXT_COMMAND_TYPE, Quote
 from gvas.domain.reporting import (
     FIELD_NOTES_REPORT_COMMAND_TYPE,
     FIELD_NOTES_REPORT_EMAIL_COMMAND_TYPE,
@@ -103,6 +103,12 @@ FAILURE_GUIDANCE: Final[dict[str, tuple[str, str]]] = {
         "The approved quote could not be emailed to the customer.",
         NEW_QUOTE_IN_NEW_THREAD,
     ),
+    # The text notice is composed from the quote (see ``quote_text_failure_notice``);
+    # this entry only marks the command type as one that gets a notice.
+    QUOTE_TEXT_COMMAND_TYPE: (
+        "The quote was created, but the text to the customer could not be sent.",
+        "Forward the quote link to the customer yourself.",
+    ),
     FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE: (
         "A voice note could not be transcribed.",
         RESTART_NOTES_IN_NEW_THREAD,
@@ -163,7 +169,12 @@ class NotifyExhaustedCommandService:
         if guidance is None or command.command_type == OWNER_REPLY_COMMAND_TYPE:
             return None
         summary, recovery = guidance
-        return await self._post(command, f"{summary}\n{recovery}", "failure_notice")
+        text = f"{summary}\n{recovery}"
+        if command.command_type == QUOTE_TEXT_COMMAND_TYPE:
+            quote = await self._quote(command)
+            if quote is not None:
+                text = quote_text_failure_notice(quote)
+        return await self._post(command, text, "failure_notice")
 
     async def notify_ceiling_reached(self, command: OutboxCommand) -> MessageId | None:
         """One notice per held-back command; replays reuse the same outbound message."""
@@ -196,9 +207,18 @@ class NotifyExhaustedCommandService:
     async def _anchor(self, command: OutboxCommand) -> ConversationAnchor | None:
         if command.command_type == OWNER_MESSAGE_PROCESS_COMMAND_TYPE:
             return await self._inbound_anchor(command)
-        if command.command_type == QUOTE_DELIVERY_COMMAND_TYPE:
+        if command.command_type in {QUOTE_DELIVERY_COMMAND_TYPE, QUOTE_TEXT_COMMAND_TYPE}:
             return await self._quote_anchor(command)
         return await self._field_note_anchor(command)
+
+    async def _quote(self, command: OutboxCommand) -> Quote | None:
+        quote_id = _uuid(command, "quote_id")
+        if quote_id is None:
+            return None
+        async with self._messages() as unit_of_work:
+            quote = await unit_of_work.quotes.get(command.business_id, QuoteId(quote_id))
+            await unit_of_work.commit()
+        return quote
 
     async def _inbound_anchor(self, command: OutboxCommand) -> ConversationAnchor | None:
         inbound_message_id = command.inbound_message_id
@@ -255,6 +275,26 @@ class NotifyExhaustedCommandService:
             conversation_ref=case.conversation_ref,
             inbound_message_id=case.origin_inbound_message_id,
         )
+
+
+def quote_text_failure_notice(quote: Quote) -> str:
+    """The quote exists and may already have been emailed; the owner needs the
+    link and whether the customer heard anything at all."""
+
+    summary, recovery = FAILURE_GUIDANCE[QUOTE_TEXT_COMMAND_TYPE]
+    receipt = quote.delivery_receipt
+    recipient = quote.draft.recipient if quote.draft is not None else None
+    lines = [summary]
+    email = recipient.email_address if recipient is not None else None
+    if receipt is not None and receipt.emailed and email:
+        lines.append(f"The customer was emailed the link at {email}.")
+    else:
+        lines.append("The customer was not emailed either, so nothing has reached them.")
+    if receipt is not None and receipt.customer_link:
+        lines.append(f"{recovery} {receipt.customer_link}")
+    else:
+        lines.append(recovery)
+    return "\n".join(lines)
 
 
 def _uuid(command: OutboxCommand, key: str) -> UUID | None:

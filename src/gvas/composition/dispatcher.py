@@ -18,7 +18,12 @@ from gvas.application.plan_custody import (
     PlanSetCustodyOutcome,
 )
 from gvas.application.processing import ProcessingStatus, ProcessOwnerMessageService
-from gvas.application.quotes import DeliverApprovedQuoteService, QuoteDeliveryStatus
+from gvas.application.quotes import (
+    DeliverApprovedQuoteService,
+    QuoteDeliveryStatus,
+    QuoteTextStatus,
+    TextDeliveredQuoteService,
+)
 from gvas.application.report_generation import GenerateFieldNotesReportService
 from gvas.composition.failure_notices import NotifyExhaustedCommandService
 from gvas.composition.report_delivery import DeliverFieldNotesReportService
@@ -47,7 +52,7 @@ from gvas.domain.outbox import (
     OutboxRecord,
 )
 from gvas.domain.plans import PLAN_SET_COPY_COMMAND_TYPE, PlanSetUploadId
-from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE
+from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE, QUOTE_TEXT_COMMAND_TYPE
 from gvas.domain.reporting import (
     FIELD_NOTES_REPORT_COMMAND_TYPE,
     FIELD_NOTES_REPORT_EMAIL_COMMAND_TYPE,
@@ -119,7 +124,9 @@ class OutboxCommandDispatcher:
         plan_custody: CopyPlanSetIntoCustodyService | None = None,
         lease_ttl: timedelta = timedelta(minutes=5),
         ceiling_notices: NotifyExhaustedCommandService | None = None,
+        quote_text: TextDeliveredQuoteService | None = None,
     ) -> None:
+        self._quote_text = quote_text
         self._processing = processing
         self._owner_replies = owner_replies
         self._quote_delivery = quote_delivery
@@ -144,6 +151,8 @@ class OutboxCommandDispatcher:
             return await self._deliver_owner_reply(command)
         if command.command_type == QUOTE_DELIVERY_COMMAND_TYPE:
             return await self._deliver_quote(command)
+        if command.command_type == QUOTE_TEXT_COMMAND_TYPE:
+            return await self._text_quote(command)
         if command.command_type == FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE:
             return await self._transcribe(command)
         if command.command_type == FIELD_NOTE_REVIEW_COMMAND_TYPE:
@@ -195,6 +204,15 @@ class OutboxCommandDispatcher:
         outcome = await self._quote_delivery.deliver(command.business_id, quote_id)
         if outcome.status in {QuoteDeliveryStatus.MISSING, QuoteDeliveryStatus.NOT_APPROVED}:
             raise RuntimeError(f"quote delivery is {outcome.status.value}")
+        return DispatchOutcome(command.command_type, outcome.status.value)
+
+    async def _text_quote(self, command: OutboxCommand) -> DispatchOutcome:
+        if self._quote_text is None:
+            raise UnknownCommandTypeError("customer texting is not wired")
+        quote_id = QuoteId(_uuid(command, "quote_id"))
+        outcome = await self._quote_text.text(command.business_id, quote_id)
+        if outcome.status in {QuoteTextStatus.MISSING, QuoteTextStatus.NOT_DELIVERED}:
+            raise RuntimeError(f"quote text is {outcome.status.value}")
         return DispatchOutcome(command.command_type, outcome.status.value)
 
     async def _transcribe(self, command: OutboxCommand) -> DispatchOutcome:
