@@ -12,6 +12,7 @@ from gvas.domain.completeness import (
     FieldNoteReviewStatus,
     FollowUpQuestionStatus,
     InvalidCompletenessReviewOutcomeError,
+    MissingItemReason,
     UnknownChecklistError,
     UnknownChecklistItemError,
     field_note_thread_correlation_id,
@@ -387,9 +388,9 @@ def _validate_outcome(outcome: CompletenessReviewOutcome, checklist: Completenes
     invalid: list[ChecklistItemKey] = []
     for item in outcome.missing_items:
         configured = checklist.item(item.item_key)
-        if configured is not None and (
-            item.item_key not in checklist.required_item_keys or item.prompt != configured.prompt
-        ):
+        if configured is None or item.reason is MissingItemReason.CONTRADICTION:
+            continue
+        if item.item_key not in checklist.required_item_keys or item.prompt != configured.prompt:
             invalid.append(item.item_key)
     if invalid:
         raise InvalidCompletenessReviewOutcomeError(

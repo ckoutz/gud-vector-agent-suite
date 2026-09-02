@@ -82,13 +82,14 @@ class Settings(BaseSettings):
 
 
 class OpenAISettings(BaseSettings):
-    """OpenAI is used for audio transcription only in this pilot."""
+    """OpenAI transcribes audio and runs the contradiction pass on completed reviews."""
 
     model_config = SettingsConfigDict(env_prefix="GVAS_OPENAI_", env_file=".env", extra="ignore")
 
     api_key: str = ""
     api_base_url: str = "https://api.openai.com/v1"
     transcription_model: str = "whisper-1"
+    review_model: str = "gpt-5.6-luna"
     timeout_seconds: float = Field(default=60.0, gt=0)
     max_audio_bytes: int = Field(default=25 * 1024 * 1024, ge=1)
 

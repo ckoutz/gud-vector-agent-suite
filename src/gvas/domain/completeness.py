@@ -34,6 +34,11 @@ class FollowUpQuestionStatus(StrEnum):
     ANSWERED = "answered"
 
 
+class MissingItemReason(StrEnum):
+    MISSING = "missing"
+    CONTRADICTION = "contradiction"
+
+
 class CompletenessModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -102,9 +107,17 @@ class CompletenessReviewRequest(CompletenessModel):
 
 
 class MissingChecklistItem(CompletenessModel):
+    """One follow-up the owner must answer before the review completes.
+
+    A ``MISSING`` item repeats the checklist's configured prompt. A
+    ``CONTRADICTION`` item names the checklist item the transcript conflicts on
+    and carries the question that resolves the conflict.
+    """
+
     item_key: ChecklistItemKey
     prompt: str = Field(min_length=1)
     detail: str | None = None
+    reason: MissingItemReason = MissingItemReason.MISSING
 
 
 class CompletenessReviewOutcome(CompletenessModel):
@@ -127,6 +140,29 @@ class CompletenessReviewPort(Protocol):
     """Provider-neutral review of a transcript plus correlated owner answers."""
 
     async def review(self, request: CompletenessReviewRequest) -> CompletenessReviewOutcome: ...
+
+
+class DetectedContradiction(CompletenessModel):
+    """A hard conflict in the transcript that would leave the report wrong as-is."""
+
+    item_key: ChecklistItemKey
+    question: str = Field(min_length=1)
+    detail: str = Field(min_length=1)
+
+
+class ContradictionGuardOutcome(CompletenessModel):
+    contradictions: tuple[DetectedContradiction, ...] = Field(default_factory=tuple)
+    detail: str | None = None
+
+    @property
+    def is_clear(self) -> bool:
+        return not self.contradictions
+
+
+class ContradictionGuardPort(Protocol):
+    """Provider-neutral second pass that only looks for hard contradictions."""
+
+    async def detect(self, request: CompletenessReviewRequest) -> ContradictionGuardOutcome: ...
 
 
 class UnknownChecklistError(LookupError):

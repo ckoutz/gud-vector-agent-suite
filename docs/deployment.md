@@ -101,8 +101,9 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_SLACK_REQUEST_MAX_AGE_SECONDS` | Default 300 |
 | `GVAS_SLACK_ATTACHMENT_MAX_BYTES` | Default 25 MiB; caps voice note downloads |
 | `GVAS_SLACK_API_BASE_URL`, `GVAS_SLACK_API_TIMEOUT_SECONDS` | Defaults suffice |
-| `GVAS_OPENAI_API_KEY` | Required; transcription only |
+| `GVAS_OPENAI_API_KEY` | Required; transcription and contradiction review |
 | `GVAS_OPENAI_TRANSCRIPTION_MODEL` | Default `whisper-1` |
+| `GVAS_OPENAI_REVIEW_MODEL` | Default `gpt-5.6-luna` |
 | `GVAS_OPENAI_MAX_AUDIO_BYTES`, `GVAS_OPENAI_TIMEOUT_SECONDS` | Defaults suffice |
 | `GVAS_RESEND_API_KEY` | Required; approved quote email |
 | `GVAS_RESEND_FROM_ADDRESS` | Required; verified sending domain |
@@ -132,8 +133,12 @@ misconfigured deploy never accepts Slack traffic.
   new thread. Provider adapters sanitize their errors before raising, so the
   outbox record keeps a provider-neutral failure message; raw provider
   responses, private file URLs and credentials are never stored or logged.
-- **Review and reporting are deterministic**: `MarkerCompletenessReviewer`,
-  `MarkerChecklistEvidenceAttributor` and `DeterministicReportGenerator` are
-  wired in place of an inference provider. No model was benchmarked or selected
-  for review or reporting; when one is, it replaces those three port
-  implementations in `gvas.composition.production` and nothing else.
+- **Review and reporting are deterministic, guarded by one model pass**:
+  `MarkerCompletenessReviewer` decides which checklist items are missing;
+  once it reports the note complete, `OpenAIContradictionGuard` (chat
+  completions, `GVAS_OPENAI_REVIEW_MODEL`, default `gpt-5.6-luna`) runs a
+  focused hard-contradiction pass and a conflict becomes one follow-up
+  question. `MarkerChecklistEvidenceAttributor` and
+  `DeterministicReportGenerator` remain in place of an inference provider; a
+  model for those replaces the port implementations in
+  `gvas.composition.production` and nothing else.
