@@ -258,9 +258,13 @@ application:
   `SlackFileAttachmentAccess` for voice notes, `ReportArtifactAccess` for the
   DOCX the owner-reply adapter attaches.
 - `CompletenessReviewPort` — `GuardedCompletenessReviewer` wrapping the marker
-  reviewer and `OpenAIContradictionGuard`. `ChecklistEvidencePort`,
-  `ReportGenerationPort`, `QuoteDraftingPort` — deterministic implementations;
-  a model replaces them here and nowhere else.
+  reviewer and `OpenAIContradictionGuard`. `ChecklistEvidencePort` —
+  `GuardedChecklistEvidenceAttributor` wrapping the marker attributor and
+  `OpenAIChecklistEvidenceAnnotator`: markers decide which items are satisfied,
+  the model only adds verbatim note excerpts to those items, and a model
+  failure logs and falls back to marker evidence. `ReportGenerationPort`,
+  `QuoteDraftingPort` — deterministic implementations; a model replaces them
+  here and nowhere else.
 - `ObjectStoragePort` — `R2ObjectStorage` exists but is **not wired** in
   `gvas.composition.production`, so published DOCX files currently live only in
   Slack and are re-rendered from the persisted report on demand.
@@ -276,8 +280,9 @@ These need a product or provider decision and are wired only up to the port:
 
 1. **Checklist evidence for satisfied items.** Completeness review reports only
    what is missing, so evidence for satisfied items is attributed through
-   `ChecklistEvidencePort`. The in-repo attributor is marker-based, mirroring
-   `MarkerCompletenessReviewer`; an AI provider decision is still open.
+   `ChecklistEvidencePort`. The decision taken is deterministic-first: the
+   marker attributor stays the source of truth for satisfied items and the
+   review model only annotates them with excerpts it can quote verbatim.
 2. **Report distribution beyond the channel.** The approved DOCX lands in the
    originating channel; `send report to <address>` emails it to one typed
    recipient on request. A per-business office inbox is still undecided.
