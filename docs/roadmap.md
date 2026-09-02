@@ -15,12 +15,12 @@ waiting on the owner and are not built until answered.
 | Focused GPT contradiction pass before notes are marked complete | #19 |
 | `approve report` publishes the exact reviewed version as a generic DOCX into the case thread | #20 |
 | Owner notice when a DOCX publish dead-letters; `approve report` retries it | #21 |
+| Worker and web log one line per command outcome to stderr at `GVAS_LOG_LEVEL` | #23 |
 
 ## In progress
 
-- Audit follow-ups (2026-09), in priority order:
-  1. Operator visibility: the worker emits no logs at all (`GVAS_LOG_LEVEL` is
-     read and unused); dead outbox rows are only visible in the database.
+- Audit follow-ups (2026-09), in priority order (item 1, operator logging,
+  landed in #23):
   2. Unmatched first messages in a fresh thread retry three times and then
      tell the owner to "send the message again", which cannot help. Reply once
      with the available triggers instead of retrying.

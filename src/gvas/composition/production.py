@@ -57,6 +57,7 @@ from gvas.infrastructure.slack.installations import (
     parse_slack_installations,
 )
 from gvas.interfaces.http.app import create_app
+from gvas.interfaces.logging_setup import configure_logging
 
 
 class ProductionConfigurationError(RuntimeError):
@@ -212,5 +213,6 @@ def create_production_app() -> FastAPI:
     """Uvicorn target for the web service; mounts the Slack Request URL."""
 
     runtime = build_production_runtime()
+    configure_logging(runtime.settings.app.log_level)
     runtime.app.add_event_handler("shutdown", runtime.aclose)
     return runtime.app

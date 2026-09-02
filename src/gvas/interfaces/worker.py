@@ -10,6 +10,7 @@ finishes, which leaves claimed rows to expire by lease rather than mid-command.
 
 import argparse
 import asyncio
+import logging
 import signal
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -20,6 +21,9 @@ from gvas.composition.production import (
     build_production_runtime,
     worker_identity,
 )
+from gvas.interfaces.logging_setup import configure_logging
+
+logger = logging.getLogger(__name__)
 
 
 def _utcnow() -> datetime:
@@ -58,14 +62,23 @@ async def run_worker(runtime: ProductionRuntime, stopping: asyncio.Event) -> int
 
 async def _main() -> int:
     runtime = build_production_runtime()
+    configure_logging(runtime.settings.app.log_level)
+    logger.info(
+        "worker started poll=%ss batch=%d lease=%ss retry=%ss",
+        runtime.settings.worker.poll_seconds,
+        runtime.settings.worker.batch_size,
+        runtime.settings.worker.lease_seconds,
+        runtime.settings.worker.retry_seconds,
+    )
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     for received in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(received, stopping.set)
     try:
-        await run_worker(runtime, stopping)
+        batches = await run_worker(runtime, stopping)
     finally:
         await runtime.aclose()
+    logger.info("worker stopped after %d batches", batches)
     return 0
 
 
