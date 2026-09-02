@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -59,6 +60,9 @@ class TransientCommandError(RuntimeError):
 
 class MalformedCommandPayloadError(ValueError):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -309,11 +313,25 @@ class OutboxWorker:
                     record, self._retry_in, repr(error), self._now()
                 )
                 if updated.status is OutboxStatus.DEAD:
+                    _log_record(logging.ERROR, updated, "dead-lettered", error=updated.last_error)
                     await self._notify_exhausted(updated, details)
+                else:
+                    _log_record(
+                        logging.WARNING, updated, "failed, will retry", error=updated.last_error
+                    )
                 continue
             succeeded += 1
             details.append(f"{outcome.command_type}: {outcome.detail}")
             await self._outbox.mark_succeeded(record)
+            _log_record(logging.INFO, record, outcome.detail)
+        if records:
+            logger.info(
+                "batch done worker=%s claimed=%d succeeded=%d failed=%d",
+                self._worker_id,
+                len(records),
+                succeeded,
+                failed,
+            )
         return WorkerBatchReport(
             claimed=len(records),
             succeeded=succeeded,
@@ -330,6 +348,7 @@ class OutboxWorker:
             await self._failure_notices.notify(record)
         except Exception as error:
             details.append(f"failure notice for {record.command.command_type}: {error!r}")
+            _log_record(logging.ERROR, record, "failure notice not enqueued", error=repr(error))
 
     async def drain(self, max_batches: int = 50) -> tuple[WorkerBatchReport, ...]:
         reports: list[WorkerBatchReport] = []
@@ -339,3 +358,21 @@ class OutboxWorker:
             if report.claimed == 0:
                 break
         return tuple(reports)
+
+
+def _log_record(
+    level: int, record: OutboxRecord, message: str, *, error: str | None = None
+) -> None:
+    """One line per command outcome; errors are the adapters' sanitized text."""
+
+    logger.log(
+        level,
+        "%s command=%s id=%s business=%s attempt=%d/%d%s",
+        message,
+        record.command.command_type,
+        record.command.command_id,
+        record.command.business_id,
+        record.attempts,
+        record.max_attempts,
+        f" error={error}" if error else "",
+    )

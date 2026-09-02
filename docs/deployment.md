@@ -94,7 +94,7 @@ Set on both services unless noted. Values below are placeholders; see
 | Variable | Notes |
 | --- | --- |
 | `DATABASE_URL` | Railway Postgres reference; normalized to asyncpg |
-| `GVAS_APP_ENV`, `GVAS_LOG_LEVEL` | `production`, `INFO` (`GVAS_LOG_LEVEL` is read but no process emits logs yet; see `docs/roadmap.md`) |
+| `GVAS_APP_ENV`, `GVAS_LOG_LEVEL` | `production`, `INFO`. Both services log to stderr at this level: one line per outbox command outcome (`completed` / `failed, will retry` / `dead-lettered`, with command type, id, business and attempt), a per-batch summary, and worker start/stop. Errors are the adapters' sanitized text; unknown level names fall back to `INFO` |
 | `GVAS_SLACK_SIGNING_SECRET` | Required; request signature verification |
 | `GVAS_SLACK_BOT_TOKEN` | Required; sent only as a bearer header |
 | `GVAS_SLACK_INSTALLATIONS` | Required; `team=business_uuid:owner_user_id` |
