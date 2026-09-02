@@ -9,6 +9,7 @@ from gvas.domain.field_notes import (
     has_field_note_trigger,
 )
 from gvas.domain.intents import (
+    UNMATCHED_MESSAGE_INTENT,
     WORKFLOW_CONFLICT_INTENT,
     IntentResolution,
     IntentUnresolvedError,
@@ -31,7 +32,10 @@ class DeterministicIntentResolver:
     precedence being guessed. ``close notes`` and ``approve report`` are
     field-note commands, so they only reach the field-note workflow when this
     conversation is not a quote-only conversation; with both workflows active
-    they are allowed through to repair the field-note state.
+    they are allowed through to repair the field-note state. A message that
+    matches nothing resolves to the unmatched intent, whose handler replies with
+    the triggers; ``IntentUnresolvedError`` is kept for resolver faults
+    (unpersisted or ambiguous rows) that a retry can fix.
     """
 
     def __init__(
@@ -63,7 +67,7 @@ class DeterministicIntentResolver:
             return quote_resolution
         if field_note_intent is not None:
             return IntentResolution(intent=field_note_intent, confidence=1)
-        raise IntentUnresolvedError("message does not match a configured workflow trigger")
+        return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
 
     async def _resolve_quote(self, message: NormalizedOwnerMessage) -> IntentResolution | None:
         async with self._field_note_unit_of_work_factory() as unit_of_work:
