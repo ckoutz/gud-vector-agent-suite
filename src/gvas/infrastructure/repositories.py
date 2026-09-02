@@ -198,6 +198,25 @@ class SqlConversationRepository:
             return ConversationId(existing.id)
         return ConversationId(conversation.id)
 
+    async def find_endpoint(self, reference: ConversationRef) -> ChannelEndpointRef | None:
+        endpoint = await self.session.scalar(
+            select(OwnerChannelEndpoint)
+            .join(Conversation, Conversation.endpoint_id == OwnerChannelEndpoint.id)
+            .where(
+                Conversation.business_id == reference.business_id,
+                Conversation.external_conversation_id == reference.external_conversation_id,
+            )
+            .order_by(Conversation.id)
+            .limit(1)
+        )
+        if endpoint is None:
+            return None
+        return ChannelEndpointRef(
+            business_id=BusinessId(endpoint.business_id),
+            source_namespace=endpoint.source_namespace,
+            external_endpoint_id=endpoint.external_endpoint_id,
+        )
+
 
 class SqlInboundMessageRepository:
     def __init__(self, session: AsyncSession) -> None:

@@ -21,6 +21,7 @@ waiting on the owner and are not built until answered.
 | Review model annotates marker-satisfied checklist items with verbatim note excerpts (deterministic-first) | #27 |
 | PDF/image uploads in an open case thread enter plan custody; dead-lettered copies notify the owner; "not enabled" replied once when custody is unwired | #28 |
 | `send report to <address>` emails the published DOCX to one typed recipient on request | #29 |
+| Telnyx SMS as a second owner channel, quotes only (`quote:`, follow-ups, approve/send); other triggers get one "quotes only, field notes belong in Slack" reply | #31 |
 | Per-business monthly ceilings on transcription seconds and review tokens (`GVAS_COST_CEILING_*`); a held-back command completes with one owner notice and the case stays open | #30 |
 
 ## In progress
@@ -39,3 +40,5 @@ waiting on the owner and are not built until answered.
 - Second workspace or second owner (startup refuses both by design).
 - Automatic distribution of any report outside the originating thread.
 - Workspace-wide authorization; only the configured owner is heard.
+- Field notes, voice notes or reports over SMS. SMS is quotes only; a DOCX
+  cannot travel over SMS, so field notes stay in Slack and MMS media is ignored.

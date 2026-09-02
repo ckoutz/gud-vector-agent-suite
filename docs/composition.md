@@ -64,6 +64,35 @@ app = create_app(routers=(build_slack_event_router(application.ingest_service),)
 The route verifies, normalizes, ingests, and enqueues only; every workflow step
 and provider call runs from the worker.
 
+### Second channel: Telnyx SMS (quotes only)
+
+`gvas.infrastructure.telnyx` mirrors the Slack adapter file for file: `config`,
+`signature` (Ed25519 over `"{telnyx-timestamp}|{raw body}"`), `events`,
+`installations`, `normalization`, `ingress`, `delivery`, `api`, `routing`, and
+`composition`; the route is `gvas.interfaces.http.telnyx`. A conversation is
+the `(telnyx number, owner number)` pair, so the owner's texts to the business
+number continue one conversation. MMS media is counted in routing but never
+becomes an attachment part, because media URLs may not enter the domain.
+
+SMS carries only the quote workflow. `ApplicationPorts.channel_policies` takes
+`ChannelWorkflowPolicy` values (`gvas.application.channel_policy`, provider
+neutral): each names an endpoint `source_namespace` and the intents it may run.
+`ChannelScopedIntentResolver` wraps the intent resolver, looks up the
+conversation's persisted endpoint, and swaps any other intent for
+`message.channel_unsupported:<namespace>`, whose handler succeeds with one reply
+carrying the channel's own trigger list (so nothing retries or dead-letters and
+no case opens). `sms_quotes_only_policy(...)` in the Telnyx composition module
+builds that policy for `telnyx`; production passes the name of the channel field
+notes belong in.
+
+With two channels there are two `OwnerReplyPort` adapters.
+`ChannelOwnerReplyRouter` (`gvas.infrastructure.owner_reply_routing`) is the one
+port the application sees; it reads the conversation's endpoint namespace and
+delegates to the Slack or Telnyx adapter, both over one
+`SqlChannelDeliveryLedger`. `TelnyxOwnerReplyAdapter` sends text parts only;
+attachment parts are dropped rather than transmitted, since SMS cannot carry a
+DOCX.
+
 ## Running the worker with fakes
 
 `tests/composition_fakes.py` holds deterministic fakes for each port and
@@ -252,7 +281,9 @@ application:
   `SlackWebApiFileUploader`). `build_slack_owner_reply_adapter` requires an
   explicit `SlackDeliveryLedger` (`SqlChannelDeliveryLedger` in production);
   there is no in-memory default, because outbox retries can be claimed by any
-  worker process.
+  worker process. When `GVAS_TELNYX_*` is set, `TelnyxMessagingApiSender` plus
+  `build_telnyx_owner_reply_adapter` is added and `ChannelOwnerReplyRouter`
+  fronts both adapters.
 - `CustomerQuoteDeliveryPort` — `ResendQuoteDeliveryAdapter` (email only);
   `ReportEmailPort` — `ResendReportEmailAdapter` (DOCX as a base64 attachment
   on the same Resend endpoint).

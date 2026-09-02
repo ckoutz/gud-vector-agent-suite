@@ -86,6 +86,31 @@ otherwise Slack events arrive for a tenant that does not exist.
   tenants. Messages from anyone else are ignored, and there is no
   workspace-wide authorization.
 
+## Telnyx SMS configuration (optional)
+
+SMS is a second owner channel, scoped to quotes only: `quote:` triggers, quote
+follow-ups and approve/send replies run; any other message (field notes, voice
+notes, `approve report`, `close notes`, free text) gets one short reply saying
+SMS supports quotes only and field notes belong in Slack, and nothing is opened
+or retried. MMS media is not surfaced to the workflows.
+
+- **Webhook URL**: `https://<web-service-domain>/telnyx/messaging`
+  (`GVAS_TELNYX_WEBHOOK_PATH` if you change the path) on the messaging profile
+  that owns the business number. Only `message.received` is processed;
+  `message.sent` and `message.finalized` are acknowledged and dropped.
+- **Signing**: requests are verified with the account's Ed25519 public key
+  (Mission Control, `telnyx-signature-ed25519` and `telnyx-timestamp` headers)
+  against the raw body; requests older than
+  `GVAS_TELNYX_REQUEST_MAX_AGE_SECONDS` are rejected with 401 like Slack's.
+- **Authorization**: `GVAS_TELNYX_INSTALLATIONS` maps
+  `owner_e164=business_uuid:telnyx_e164`; the business UUID must match the
+  Slack mapping. Startup rejects a second number or a second owner
+  (`+1..|+1..`). Texts from any other handset are ignored with 200 and never
+  answered.
+- **Optional as a set**: leave all three `GVAS_TELNYX_*` required variables
+  unset to run without SMS. Setting some but not all fails startup, naming the
+  missing variables.
+
 ## Environment variables
 
 Set on both services unless noted. Values below are placeholders; see
@@ -114,6 +139,13 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_RESEND_PORTAL_URL` | Default `https://gudvector.com/portal/login` |
 | `GVAS_WORKER_BATCH_SIZE`, `_POLL_SECONDS`, `_RETRY_SECONDS`, `_LEASE_SECONDS` | Worker only |
 | `GVAS_WORKER_ID_PREFIX` | Worker only; hostname and pid are appended per replica |
+| `GVAS_TELNYX_PUBLIC_KEY` | Optional set; base64 Ed25519 public key for webhook verification |
+| `GVAS_TELNYX_API_KEY` | Optional set; sent only as a bearer header to the Messaging API |
+| `GVAS_TELNYX_INSTALLATIONS` | Optional set; `owner_e164=business_uuid:telnyx_e164` |
+| `GVAS_TELNYX_MESSAGING_PROFILE_ID` | Optional; added to outbound sends when set |
+| `GVAS_TELNYX_WEBHOOK_PATH` | Default `/telnyx/messaging` |
+| `GVAS_TELNYX_REQUEST_MAX_AGE_SECONDS` | Default 300 |
+| `GVAS_TELNYX_API_BASE_URL`, `GVAS_TELNYX_API_TIMEOUT_SECONDS` | Defaults suffice |
 | `GVAS_R2_ACCOUNT_ID`, `GVAS_R2_BUCKET`, `GVAS_R2_ACCESS_KEY_ID`, `GVAS_R2_SECRET_ACCESS_KEY` | Optional as a set: all four on both services keeps every published DOCX in the bucket (an R2 API token with object read/write on that bucket only); none means Slack-only delivery; a partial set fails startup. `GVAS_R2_REGION` defaults to `auto` |
 
 Startup fails immediately when a required variable is missing, so a
