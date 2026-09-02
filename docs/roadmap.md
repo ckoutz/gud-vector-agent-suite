@@ -18,13 +18,11 @@ waiting on the owner and are not built until answered.
 | Worker and web log one line per command outcome to stderr at `GVAS_LOG_LEVEL` | #23 |
 | Unmatched messages get the available triggers once instead of retrying to dead-letter | #25 |
 | R2 object storage wired in production when `GVAS_R2_*` is set; published DOCX kept durably | #26 |
+| PDF/image uploads in an open case thread enter plan custody; dead-lettered copies notify the owner; "not enabled" replied once when custody is unwired | #28 |
 
 ## In progress
 
-- Audit follow-ups (2026-09), in priority order (items 1-3 landed in #23, #25,
-  #26):
-  4. `plan_set.copy_into_custody` has no owner-facing failure guidance and is not reachable
-     from any channel command yet.
+- Audit follow-ups (2026-09): all four items landed (#23, #25, #26, #28).
 
 ## Next (ordered)
 
