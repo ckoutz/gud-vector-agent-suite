@@ -314,3 +314,4 @@ from gvas.infrastructure import delivery_models as delivery_models  # noqa: E402
 from gvas.infrastructure import field_note_models as field_note_models  # noqa: E402, F401
 from gvas.infrastructure import plan_models as plan_models  # noqa: E402, F401
 from gvas.infrastructure import template_models as template_models  # noqa: E402, F401
+from gvas.infrastructure import usage_models as usage_models  # noqa: E402, F401

@@ -22,6 +22,7 @@ waiting on the owner and are not built until answered.
 | PDF/image uploads in an open case thread enter plan custody; dead-lettered copies notify the owner; "not enabled" replied once when custody is unwired | #28 |
 | `send report to <address>` emails the published DOCX to one typed recipient on request | #29 |
 | Telnyx SMS as a second owner channel, quotes only (`quote:`, follow-ups, approve/send); other triggers get one "quotes only, field notes belong in Slack" reply | #31 |
+| Per-business monthly ceilings on transcription seconds and review tokens (`GVAS_COST_CEILING_*`); a held-back command completes with one owner notice and the case stays open | #30 |
 
 ## In progress
 
@@ -33,7 +34,6 @@ waiting on the owner and are not built until answered.
    §4). **Needs decision:** who supplies the template and where the binding
    manifest lives.
 2. Retention and redaction of transcripts, media, and reports.
-3. Cost ceilings per business for transcription and review calls.
 
 ## Not planned for the pilot
 

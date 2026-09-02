@@ -24,7 +24,10 @@ from gvas.composition.failure_notices import NotifyExhaustedCommandService
 from gvas.composition.report_delivery import DeliverFieldNotesReportService
 from gvas.composition.report_email import EmailFieldNotesReportService
 from gvas.composition.report_publication import PublishFieldNotesReportService
-from gvas.composition.review import CoordinateFieldNoteReviewService
+from gvas.composition.review import (
+    CoordinateFieldNoteReviewService,
+    ReviewCoordinationStatus,
+)
 from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.domain.completeness import FieldNoteReviewId
 from gvas.domain.enums import OutboxStatus
@@ -115,6 +118,7 @@ class OutboxCommandDispatcher:
         now: Callable[[], datetime],
         plan_custody: CopyPlanSetIntoCustodyService | None = None,
         lease_ttl: timedelta = timedelta(minutes=5),
+        ceiling_notices: NotifyExhaustedCommandService | None = None,
     ) -> None:
         self._processing = processing
         self._owner_replies = owner_replies
@@ -128,6 +132,7 @@ class OutboxCommandDispatcher:
         self._report_email = report_email
         self._outbox = outbox
         self._plan_custody = plan_custody
+        self._ceiling_notices = ceiling_notices
         self._now = now
         self._lease_ttl = lease_ttl
 
@@ -207,6 +212,9 @@ class OutboxCommandDispatcher:
             raise TransientCommandError(f"field-note transcription is {report.outcome.value}")
         if report.outcome is TranscriptionOutcome.FAILED:
             raise RuntimeError(f"field-note transcription failed: {report.detail}")
+        if report.outcome is TranscriptionOutcome.CEILING_REACHED:
+            await self._notify_ceiling(command)
+            return DispatchOutcome(command.command_type, report.outcome.value)
         await self._outbox.enqueue(
             field_note_review_command(
                 command.business_id,
@@ -232,7 +240,15 @@ class OutboxCommandDispatcher:
             now=self._now(),
             owner_reply_message_id=owner_reply_message_id,
         )
+        if outcome.status is ReviewCoordinationStatus.CEILING_REACHED:
+            await self._notify_ceiling(command)
         return DispatchOutcome(command.command_type, outcome.status.value)
+
+    async def _notify_ceiling(self, command: OutboxCommand) -> None:
+        """The command completes either way; the owner is told once, in the thread."""
+
+        if self._ceiling_notices is not None:
+            await self._ceiling_notices.notify_ceiling_reached(command)
 
     async def _generate_report(self, command: OutboxCommand) -> DispatchOutcome:
         case_id = FieldNoteCaseId(_uuid(command, "field_note_case_id"))

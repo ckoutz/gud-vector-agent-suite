@@ -98,6 +98,21 @@ class OpenAISettings(BaseSettings):
         return bool(self.api_key)
 
 
+class CostCeilingSettings(BaseSettings):
+    """Monthly per-business limits on metered model calls, in provider units.
+
+    Transcription is limited in audio seconds and review-model calls in input
+    plus output tokens. ``0`` (the default) means unlimited.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="GVAS_COST_CEILING_", env_file=".env", extra="ignore"
+    )
+
+    transcription_seconds: int = Field(default=0, ge=0)
+    review_tokens: int = Field(default=0, ge=0)
+
+
 class ResendSettings(BaseSettings):
     """Resend delivers approved customer quotes by email."""
 

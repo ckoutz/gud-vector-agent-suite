@@ -21,6 +21,7 @@ from gvas.domain.messages import NormalizedOwnerMessage
 from gvas.domain.outbox import OutboxCommand
 from gvas.domain.reporting import field_notes_report_command
 from gvas.domain.repositories import UnitOfWork
+from gvas.domain.usage import UsageCeilingGuard, UsageKind
 
 
 class ReviewCoordinationStatus(StrEnum):
@@ -30,6 +31,7 @@ class ReviewCoordinationStatus(StrEnum):
     COMPLETE = "complete"
     ALREADY_COMPLETE = "already_complete"
     IGNORED_REPLY = "ignored_reply"
+    CEILING_REACHED = "ceiling_reached"
 
 
 @dataclass(frozen=True)
@@ -84,11 +86,13 @@ class CoordinateFieldNoteReviewService:
         message_unit_of_work_factory: MessageUnitOfWorkFactory,
         transcripts: FieldNoteTranscriptService,
         completeness: FieldNoteCompletenessService,
+        ceilings: UsageCeilingGuard | None = None,
     ) -> None:
         self._field_notes = field_note_unit_of_work_factory
         self._messages = message_unit_of_work_factory
         self._transcripts = transcripts
         self._completeness = completeness
+        self._ceilings = ceilings or UsageCeilingGuard()
 
     async def coordinate(
         self,
@@ -110,6 +114,13 @@ class CoordinateFieldNoteReviewService:
             return ReviewCoordinationOutcome(
                 ReviewCoordinationStatus.TRANSCRIPT_INCOMPLETE,
                 detail="canonical transcript still has pending or failed audio",
+            )
+        # Nothing of the round is recorded: a primary pass that found the note
+        # complete would go straight to the review model.
+        if await self._ceilings.is_reached(business_id, UsageKind.REVIEW_TOKENS, now=now):
+            return ReviewCoordinationOutcome(
+                ReviewCoordinationStatus.CEILING_REACHED,
+                detail="monthly review ceiling reached",
             )
 
         outcome: CompletenessOutcome | None = None

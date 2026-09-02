@@ -149,8 +149,10 @@ rounds, owner questions, or report versions.
 ```text
 field notes: inbound
   -> intake (case, parts, conversation state)
-  -> field_note.transcribe per audio part (provider call after the claim commits)
-  -> field_note.review
+  -> field_note.transcribe per audio part (provider call after the claim commits;
+     refused without a call, with one owner notice, once the business's monthly
+     transcription ceiling is reached)
+  -> field_note.review (same ceiling check on review tokens before any round)
   -> canonical transcript (blocked while audio is pending or failed)
   -> completeness review, one persisted ASKED question at a time
   -> owner reply routed back to the same review by persisted correlation
@@ -329,7 +331,13 @@ These need a product or provider decision and are wired only up to the port:
    channel cannot notify about itself. Operator-facing alerting (beyond logs and
    the dead outbox rows) remains open.
 4. **Report and transcript retention.** Unchanged from the accepted
-   workstreams: retention, redaction, and cost ceilings remain open.
+   workstreams: retention and redaction remain open. Cost ceilings are in
+   place: `UsageLedgerPort` (domain) is written by the OpenAI adapters and read
+   by `UsageCeilingGuard`, which the transcription and review services consult
+   before any provider call; `build_application` takes the `UsageCeilings` and
+   production fills them from `GVAS_COST_CEILING_*`. A held-back command
+   completes and `NotifyExhaustedCommandService.notify_ceiling_reached` posts
+   one notice keyed on the command (`CEILING_GUIDANCE`).
 5. **Per-business templates and plan artifacts.** Composition hardcodes no
    industry: checklists are per-business, keyed, and versioned rows, and
    `build_application` takes `checklist_key` as an argument, so a future

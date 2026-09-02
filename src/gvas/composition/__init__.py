@@ -64,6 +64,7 @@ from gvas.domain.ports import (
     TranscriptionPort,
 )
 from gvas.domain.reporting import ReportEmailPort, ReportGenerationPort
+from gvas.domain.usage import UsageCeilingGuard, UsageCeilings, UsageLedgerPort
 from gvas.domain.workflows import WorkflowRouter
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.field_note_repositories import SqlFieldNoteUnitOfWorkFactory
@@ -73,6 +74,7 @@ from gvas.infrastructure.unit_of_work import (
     SqlCompletenessUnitOfWorkFactory,
     SqlUnitOfWorkFactory,
 )
+from gvas.infrastructure.usage_ledger import SqlUsageLedger
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,9 @@ class ApplicationPorts:
     object_storage: ObjectStoragePort | None = None
     report_email: ReportEmailPort | None = None
     channel_policies: tuple[ChannelWorkflowPolicy, ...] = ()
+    # The ledger the metered adapters write to; the ceiling guard reads the same
+    # one. Defaults to the SQL ledger on the application's sessions.
+    usage_ledger: UsageLedgerPort | None = None
 
 
 @dataclass(frozen=True)
@@ -124,6 +129,8 @@ class Application:
     report_email_service: EmailFieldNotesReportService
     report_artifacts: ReportArtifactAccess
     failure_notice_service: NotifyExhaustedCommandService
+    usage_ledger: UsageLedgerPort
+    usage_ceilings: UsageCeilings
     plan_set_upload_service: RegisterPlanSetUploadService
     plan_custody_service: CopyPlanSetIntoCustodyService | None
     outbox: OutboxService
@@ -144,6 +151,7 @@ def build_application(
     lease_ttl: timedelta = timedelta(minutes=5),
     engine: AsyncEngine | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    ceilings: UsageCeilings | None = None,
 ) -> Application:
     resolved_engine = engine
     if resolved_engine is None and session_factory is None:
@@ -160,6 +168,9 @@ def build_application(
     completeness_unit_of_work_factory = SqlCompletenessUnitOfWorkFactory(sessions)
     report_unit_of_work_factory = SqlReportUnitOfWorkFactory(sessions)
     plan_custody_unit_of_work_factory = SqlPlanCustodyUnitOfWorkFactory(sessions)
+    usage_ledger = ports.usage_ledger or SqlUsageLedger(sessions)
+    usage_ceilings = ceilings or UsageCeilings()
+    ceiling_guard = UsageCeilingGuard(usage_ledger, usage_ceilings)
 
     intake = FieldNoteIntakeHandler(field_note_unit_of_work_factory, now=now)
     closure = CloseFieldNoteCaseHandler(field_note_unit_of_work_factory, now=now)
@@ -220,6 +231,7 @@ def build_application(
         unit_of_work_factory,
         transcripts,
         completeness,
+        ceilings=ceiling_guard,
     )
     snapshots = BuildFieldNoteCaseSnapshotService(
         completeness_unit_of_work_factory, ports.checklist_evidence, template_resolver
@@ -231,7 +243,7 @@ def build_application(
     owner_replies = DeliverOwnerReplyService(unit_of_work_factory, ports.owner_replies)
     quote_delivery = DeliverApprovedQuoteService(unit_of_work_factory, ports.quote_delivery)
     transcription = TranscribeFieldNoteAudioService(
-        field_note_unit_of_work_factory, ports.transcription
+        field_note_unit_of_work_factory, ports.transcription, ceilings=ceiling_guard
     )
     report_delivery = DeliverFieldNotesReportService(
         field_note_unit_of_work_factory, unit_of_work_factory
@@ -271,6 +283,7 @@ def build_application(
         now=now,
         plan_custody=plan_custody,
         lease_ttl=lease_ttl,
+        ceiling_notices=failure_notices,
     )
     return Application(
         engine=resolved_engine,
@@ -299,6 +312,8 @@ def build_application(
         report_email_service=report_email,
         report_artifacts=report_artifacts,
         failure_notice_service=failure_notices,
+        usage_ledger=usage_ledger,
+        usage_ceilings=usage_ceilings,
         plan_set_upload_service=plan_set_uploads,
         plan_custody_service=plan_custody,
         outbox=outbox,

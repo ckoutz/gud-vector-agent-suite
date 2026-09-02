@@ -8,6 +8,7 @@ retries the review command instead of marking the note ready.
 """
 
 import json
+from datetime import UTC, datetime
 from typing import Any, Final
 
 import httpx
@@ -20,6 +21,7 @@ from gvas.domain.completeness import (
     ContradictionGuardOutcome,
     DetectedContradiction,
 )
+from gvas.domain.usage import UsageKind, UsageLedgerPort
 
 CHAT_COMPLETIONS_PATH: Final = "/chat/completions"
 SCHEMA_NAME: Final = "field_note_contradictions"
@@ -93,11 +95,17 @@ class _ReportedContradictions(BaseModel):
 class OpenAIContradictionGuard:
     """Runs the contradiction pass through the chat-completions endpoint."""
 
-    def __init__(self, settings: OpenAISettings, client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        settings: OpenAISettings,
+        client: httpx.AsyncClient,
+        usage_ledger: UsageLedgerPort | None = None,
+    ) -> None:
         if not settings.is_configured:
             raise ContradictionGuardError("openai api key is not configured")
         self._settings = settings
         self._client = client
+        self._usage_ledger = usage_ledger
 
     async def detect(self, request: CompletenessReviewRequest) -> ContradictionGuardOutcome:
         try:
@@ -109,7 +117,32 @@ class OpenAIContradictionGuard:
             )
         except httpx.HTTPError as error:
             raise ContradictionGuardError("openai was unreachable") from error
-        return _outcome(response, request)
+        outcome = _outcome(response, request)
+        if self._usage_ledger is not None:
+            await self._usage_ledger.record(
+                request.business_id,
+                UsageKind.REVIEW_TOKENS,
+                _total_tokens(response),
+                at=datetime.now(UTC),
+            )
+        return outcome
+
+
+def _total_tokens(response: httpx.Response) -> int:
+    """Input plus output tokens as reported by the provider; 0 when it reports none."""
+
+    try:
+        usage = response.json().get("usage")
+    except ValueError:
+        return 0
+    if not isinstance(usage, dict):
+        return 0
+    total = 0
+    for key in ("prompt_tokens", "completion_tokens"):
+        value = usage.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            total += value
+    return total
 
 
 def _request_body(model: str, request: CompletenessReviewRequest) -> dict[str, Any]:

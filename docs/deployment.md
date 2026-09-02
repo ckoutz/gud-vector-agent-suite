@@ -132,6 +132,8 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_OPENAI_REVIEW_MODEL` | Default `gpt-5.6-luna` |
 | `GVAS_OPENAI_MAX_AUDIO_BYTES`, `GVAS_OPENAI_TIMEOUT_SECONDS` | Defaults suffice |
 | `GVAS_RESEND_API_KEY` | Required; approved quote email and `send report to <address>` |
+| `GVAS_COST_CEILING_TRANSCRIPTION_SECONDS` | Per business per UTC calendar month, in audio seconds; `0` (default) is unlimited |
+| `GVAS_COST_CEILING_REVIEW_TOKENS` | Per business per UTC calendar month, in input+output tokens of the review model; `0` (default) is unlimited |
 | `GVAS_RESEND_FROM_ADDRESS` | Required; verified sending domain |
 | `GVAS_RESEND_REPLY_TO_ADDRESS` | Optional |
 | `GVAS_RESEND_PORTAL_URL` | Default `https://gudvector.com/portal/login` |
@@ -167,6 +169,20 @@ misconfigured deploy never accepts Slack traffic.
   new thread. Provider adapters sanitize their errors before raising, so the
   outbox record keeps a provider-neutral failure message; raw provider
   responses, private file URLs and credentials are never stored or logged.
+- **Cost ceilings**: the OpenAI adapters record every successful call in the
+  `usage_ledger_months` table (audio seconds for transcription, prompt plus
+  completion tokens for the review model), keyed by business, kind and UTC
+  month. Before a transcription or review command calls a provider it checks
+  that month's total against the configured ceiling; once the total is at or
+  over it, the command completes without a provider call (no retry, no
+  dead-letter), the owner gets one reply in the case thread saying the monthly
+  limit is reached, and the case stays open. A voice note held back this way
+  stays pending, so the notice tells the owner to `close notes` and start again
+  in a new thread (typed, or with the recording next month). The check runs
+  before the call and the units are known only after it, so the call that
+  crosses the ceiling completes and is counted; the next one is refused.
+  Ceilings are unit counts only; the ledger holds no prices and no message
+  mentions money.
 - **Review and reporting are deterministic, guarded by one model pass**:
   `MarkerCompletenessReviewer` decides which checklist items are missing;
   once it reports the note complete, `OpenAIContradictionGuard` (chat
