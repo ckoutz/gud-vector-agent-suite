@@ -106,7 +106,7 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_OPENAI_TRANSCRIPTION_MODEL` | Default `whisper-1` |
 | `GVAS_OPENAI_REVIEW_MODEL` | Default `gpt-5.6-luna` |
 | `GVAS_OPENAI_MAX_AUDIO_BYTES`, `GVAS_OPENAI_TIMEOUT_SECONDS` | Defaults suffice |
-| `GVAS_RESEND_API_KEY` | Required; approved quote email |
+| `GVAS_RESEND_API_KEY` | Required; approved quote email and `send report to <address>` |
 | `GVAS_RESEND_FROM_ADDRESS` | Required; verified sending domain |
 | `GVAS_RESEND_REPLY_TO_ADDRESS` | Optional |
 | `GVAS_RESEND_PORTAL_URL` | Default `https://gudvector.com/portal/login` |

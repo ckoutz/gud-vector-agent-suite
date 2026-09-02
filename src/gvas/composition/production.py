@@ -41,7 +41,7 @@ from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGu
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
 from gvas.infrastructure.quote_drafting import DeterministicQuoteDrafter
 from gvas.infrastructure.reporting_unit_of_work import SqlReportUnitOfWorkFactory
-from gvas.infrastructure.resend import ResendQuoteDeliveryAdapter
+from gvas.infrastructure.resend import ResendQuoteDeliveryAdapter, ResendReportEmailAdapter
 from gvas.infrastructure.slack.api import (
     SlackFileAttachmentAccess,
     SlackWebApiChatPoster,
@@ -178,6 +178,7 @@ def build_production_ports(
         ),
         quote_drafting=DeterministicQuoteDrafter(),
         quote_delivery=ResendQuoteDeliveryAdapter(settings.resend, client),
+        report_email=ResendReportEmailAdapter(settings.resend, client),
         transcription=OpenAITranscriber(settings.openai, client, attachments),
         completeness_review=GuardedCompletenessReviewer(
             MarkerCompletenessReviewer(), OpenAIContradictionGuard(settings.openai, client)

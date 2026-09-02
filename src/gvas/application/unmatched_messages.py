@@ -2,6 +2,7 @@ from gvas.domain.enums import WorkflowRunStatus
 from gvas.domain.field_notes import (
     FIELD_NOTE_CLOSE_TRIGGER,
     FIELD_NOTE_REPORT_APPROVE_TRIGGER,
+    FIELD_NOTE_REPORT_SEND_TRIGGER,
     FIELD_NOTE_TRIGGER_PREFIX,
 )
 from gvas.domain.intents import UNMATCHED_MESSAGE_INTENT
@@ -13,7 +14,8 @@ UNMATCHED_MESSAGE_REPLY = (
     "I did not recognize that message, so nothing was started. "
     f"Begin a quote with `{QUOTE_TRIGGER_PREFIX} ...` or a field-note case with "
     f"`{FIELD_NOTE_TRIGGER_PREFIX} ...`. Inside an open case, "
-    f"`{FIELD_NOTE_REPORT_APPROVE_TRIGGER}` publishes the report and "
+    f"`{FIELD_NOTE_REPORT_APPROVE_TRIGGER}` publishes the report, "
+    f"`{FIELD_NOTE_REPORT_SEND_TRIGGER} <address>` emails the published report and "
     f"`{FIELD_NOTE_CLOSE_TRIGGER}` closes the case."
 )
 

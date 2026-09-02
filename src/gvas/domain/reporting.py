@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal, Protocol
@@ -9,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from gvas.domain.completeness import CompletenessChecklist
 from gvas.domain.identifiers import BusinessId, JsonValue, OutboxCommandId
+from gvas.domain.messages import DeliveryReceipt
 from gvas.domain.outbox import OutboxCommand
 from gvas.domain.templates import ReportTemplateDefinition
 
@@ -19,7 +21,12 @@ FIELD_NOTES_REPORT_COMMAND_TYPE = "field_notes_report.generate"
 FIELD_NOTES_REPORT_COMMAND_NAMESPACE = UUID("c1d9a6f2-3b47-5e81-9a2c-6d4f8b0e7315")
 FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE = "field_notes_report.publish"
 FIELD_NOTES_REPORT_PUBLISH_COMMAND_NAMESPACE = UUID("a94e1c57-2d0b-5f36-8e7a-41c9d2b6f083")
+FIELD_NOTES_REPORT_EMAIL_COMMAND_TYPE = "field_notes_report.email"
+FIELD_NOTES_REPORT_EMAIL_COMMAND_NAMESPACE = UUID("5c2e7b91-4f6a-5d38-b0c7-9a1e3d8f2b46")
 REPORT_ARTIFACT_LOCATOR_PREFIX = "field-notes-report"
+# One mailbox at one domain with a dot in it; display names, lists and
+# whitespace are refused rather than guessed at.
+_EMAIL_ADDRESS_PATTERN = re.compile(r"^[^\s@<>,;\"()]+@[^\s@<>,;\"()]+\.[^\s@<>,;\"().]+$")
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
@@ -320,6 +327,32 @@ class RenderedReportArtifact(ReportDomainModel):
     filename: str = Field(min_length=1)
 
 
+def normalize_email_address(value: str) -> str | None:
+    """Returns one lower-cased address, or ``None`` when the text is not exactly one."""
+
+    candidate = value.strip()
+    if not candidate or len(candidate) > 254 or not _EMAIL_ADDRESS_PATTERN.fullmatch(candidate):
+        return None
+    return candidate.lower()
+
+
+class ReportEmailRequest(ReportDomainModel):
+    """One rendered report version addressed to one typed recipient."""
+
+    business_id: BusinessId
+    recipient_address: str = Field(min_length=3)
+    idempotency_key: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    body_text: str = Field(min_length=1)
+    artifact: RenderedReportArtifact
+
+
+class ReportEmailPort(Protocol):
+    """Emails a rendered report; adapters raise to request a retry."""
+
+    async def deliver(self, request: ReportEmailRequest) -> DeliveryReceipt: ...
+
+
 class ReportArtifactRendererPort(Protocol):
     """Projects a persisted report version into its owner-facing document.
 
@@ -435,6 +468,55 @@ def field_notes_report_publish_command(
         },
         dedup_key=f"field_notes_report_publish:{report_version_id}:{approval_key}",
     )
+
+
+def report_publication_correlation_id(report_version_id: UUID) -> str:
+    """Correlation of the outbound message that carries a published version.
+
+    Its presence in the case's conversation is what "published" means: the
+    publish command ran and the document is posted, or queued to be posted.
+    """
+
+    return f"field_notes_report_publish:{report_version_id}"
+
+
+def field_notes_report_email_command(
+    business_id: BusinessId,
+    case_id: UUID,
+    report_version_id: UUID,
+    recipient_address: str,
+    request_key: str,
+) -> OutboxCommand:
+    """Emails one published report version to one typed recipient, once per request.
+
+    Identity is the version, the recipient and the owner message that asked, so
+    a redelivered request collapses to one command while a fresh ``send report
+    to`` is a fresh attempt that can recover a dead-lettered email.
+    """
+
+    key = report_email_idempotency_key(report_version_id, recipient_address, request_key)
+    return OutboxCommand(
+        command_id=OutboxCommandId(
+            uuid5(FIELD_NOTES_REPORT_EMAIL_COMMAND_NAMESPACE, f"{business_id}:{key}")
+        ),
+        business_id=business_id,
+        command_type=FIELD_NOTES_REPORT_EMAIL_COMMAND_TYPE,
+        payload={
+            "field_note_case_id": str(case_id),
+            "report_version_id": str(report_version_id),
+            "recipient_address": recipient_address,
+            "request_key": request_key,
+        },
+        dedup_key=key,
+    )
+
+
+def report_email_idempotency_key(
+    report_version_id: UUID, recipient_address: str, request_key: str
+) -> str:
+    """Shared by the command, the provider call and the thread confirmation."""
+
+    return f"field_notes_report_email:{report_version_id}:{recipient_address}:{request_key}"
 
 
 def field_note_source_fingerprint(source: FieldNoteCaseSnapshot) -> str:

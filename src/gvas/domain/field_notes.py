@@ -33,6 +33,7 @@ FIELD_NOTE_INTENT = WorkflowIntent("field_note.capture")
 FIELD_NOTE_TRIGGER_PREFIX = "field notes:"
 FIELD_NOTE_CLOSE_TRIGGER = "close notes"
 FIELD_NOTE_REPORT_APPROVE_TRIGGER = "approve report"
+FIELD_NOTE_REPORT_SEND_TRIGGER = "send report to"
 FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE = "field_note.transcribe"
 FIELD_NOTE_TRANSCRIBE_COMMAND_NAMESPACE = UUID("b4a7fb38-8c21-4cb9-9de1-4ec9f0c2c7e6")
 FIELD_NOTE_REVIEW_COMMAND_TYPE = "field_note.review"
@@ -102,10 +103,36 @@ def has_field_note_report_approve_trigger(message: NormalizedOwnerMessage) -> bo
     return _has_command(message, FIELD_NOTE_REPORT_APPROVE_TRIGGER)
 
 
+def match_field_note_report_send_trigger(message: NormalizedOwnerMessage) -> str | None:
+    """Returns the typed recipient text of ``send report to <address>``, unvalidated.
+
+    Only the leading text part is read; validation of the address belongs to
+    the handler so the owner can be told what was wrong with it.
+    """
+
+    if not message.parts or not isinstance(message.parts[0], TextPart):
+        return None
+    text = message.parts[0].text.strip()
+    if not text.lower().startswith(FIELD_NOTE_REPORT_SEND_TRIGGER):
+        return None
+    remainder = text[len(FIELD_NOTE_REPORT_SEND_TRIGGER) :]
+    if remainder and not remainder[0].isspace():
+        return None
+    return remainder.strip()
+
+
+def has_field_note_report_send_trigger(message: NormalizedOwnerMessage) -> bool:
+    return match_field_note_report_send_trigger(message) is not None
+
+
 def has_field_note_command_trigger(message: NormalizedOwnerMessage) -> bool:
     """Any bare field-note command that acts on the conversation's existing case."""
 
-    return has_field_note_close_trigger(message) or has_field_note_report_approve_trigger(message)
+    return (
+        has_field_note_close_trigger(message)
+        or has_field_note_report_approve_trigger(message)
+        or has_field_note_report_send_trigger(message)
+    )
 
 
 def _has_command(message: NormalizedOwnerMessage, command: str) -> bool:

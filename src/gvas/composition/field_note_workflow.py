@@ -9,6 +9,7 @@ from gvas.application.field_notes import (
 )
 from gvas.application.plan_custody import RegisterPlanSetUploadService, plan_set_attachments
 from gvas.application.report_approval import ApproveFieldNoteReportHandler
+from gvas.application.report_email import SendFieldNoteReportHandler
 from gvas.domain.completeness import FollowUpQuestionStatus
 from gvas.domain.completeness_repositories import CompletenessUnitOfWork
 from gvas.domain.enums import WorkflowRunStatus
@@ -20,6 +21,7 @@ from gvas.domain.field_notes import (
     field_note_review_command,
     has_field_note_close_trigger,
     has_field_note_report_approve_trigger,
+    has_field_note_report_send_trigger,
     match_field_note_trigger,
 )
 from gvas.domain.identifiers import BusinessId, ConversationId, MessageId
@@ -45,6 +47,10 @@ class FieldNoteWorkflowHandler:
     and publication work to the outbox. PDF and image uploads into the case
     thread are registered as plan sets when plan custody is wired; otherwise
     the owner is told once, per message, that custody is not enabled.
+    owner message closes the case, approves the posted report, emails the
+    published report, continues the note or answers the single outstanding
+    follow-up question, and hands review, publication and email work to the
+    outbox.
     """
 
     intent = FIELD_NOTE_INTENT
@@ -54,6 +60,7 @@ class FieldNoteWorkflowHandler:
         intake: FieldNoteIntakeHandler,
         closure: CloseFieldNoteCaseHandler,
         approval: ApproveFieldNoteReportHandler,
+        report_send: SendFieldNoteReportHandler,
         field_note_unit_of_work_factory: FieldNoteUnitOfWorkFactory,
         completeness_unit_of_work_factory: CompletenessUnitOfWorkFactory,
         *,
@@ -63,6 +70,7 @@ class FieldNoteWorkflowHandler:
         self._intake = intake
         self._closure = closure
         self._approval = approval
+        self._report_send = report_send
         self._field_notes = field_note_unit_of_work_factory
         self._completeness = completeness_unit_of_work_factory
         self._now = now
@@ -78,6 +86,8 @@ class FieldNoteWorkflowHandler:
         if has_field_note_report_approve_trigger(message):
             return await self._approval.approve(message, conversation_id)
         result: WorkflowResult | None = None
+        if has_field_note_report_send_trigger(message):
+            return await self._report_send.send(message, conversation_id)
         if match_field_note_trigger(message) is None:
             result = await self._answer_result(message.business_id, conversation_id, context)
         if result is None:

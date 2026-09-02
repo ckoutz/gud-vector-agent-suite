@@ -160,6 +160,10 @@ class OutboundMessageRepository(Protocol):
         self, outbound_message_id: MessageId
     ) -> OutboundDeliveryRecord | None: ...
 
+    async def find_by_correlation(
+        self, business_id: BusinessId, conversation_id: ConversationId, correlation_id: str
+    ) -> MessageId | None: ...
+
     async def record_delivery(
         self, outbound_message_id: MessageId, receipt: DeliveryReceipt
     ) -> None: ...
