@@ -118,6 +118,7 @@ class CalendlyAppointmentLookup:
                         invitee_email=invitee.email,
                         event_name=event.name or "Appointment",
                         address=location_address or _answered_address(invitee),
+                        notes=booking_notes(invitee),
                         source_label=CALENDLY_SOURCE_LABEL,
                     )
                 )
@@ -206,6 +207,14 @@ def _answered_address(invitee: CalendlyInvitee) -> str | None:
         if ADDRESS_QUESTION_MARKER in entry.question.casefold() and entry.answer.strip():
             return entry.answer.strip()
     return None
+
+
+def booking_notes(invitee: CalendlyInvitee) -> tuple[str, ...]:
+    return tuple(
+        f"{entry.question.strip()}: {entry.answer.strip()}"
+        for entry in sorted(invitee.questions_and_answers, key=lambda item: item.position)
+        if entry.question.strip() and entry.answer.strip()
+    )
 
 
 def _localize(start_time: datetime, timezone_name: str | None) -> datetime:

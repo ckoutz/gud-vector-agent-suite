@@ -24,6 +24,8 @@ class Appointment(AppointmentModel):
     invitee_email: str = Field(min_length=1)
     event_name: str = Field(min_length=1)
     address: str | None = None
+    # What the invitee wrote when booking, as "question: answer" strings.
+    notes: tuple[str, ...] = Field(default_factory=tuple)
     # Owner-facing name of the calendar the record came from, e.g. the
     # provider's product name; the adapter supplies it so no provider is named
     # in this layer.

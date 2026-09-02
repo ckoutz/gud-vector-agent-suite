@@ -32,6 +32,7 @@ from gvas.domain.quotes import (
     QUOTE_INTENT,
     OwnerApprovalRequiredPolicy,
     Quote,
+    QuoteAppointmentContext,
     QuoteConcurrencyError,
     QuoteDraftProposal,
     QuoteDraftRejectedError,
@@ -41,6 +42,7 @@ from gvas.domain.quotes import (
     has_customer_line,
     new_quote,
     quote_delivery_command,
+    quote_trigger_request_text,
     requested_customer_name,
 )
 from gvas.domain.repositories import UnitOfWork
@@ -48,6 +50,7 @@ from gvas.domain.workflows import WorkflowContext, WorkflowResult
 
 logger = logging.getLogger(__name__)
 
+FREE_TEXT_DRAFT_NOTICE = "Drafted from your message — check items before approving."
 CUSTOMER_LOOKUP_UNAVAILABLE = (
     "The appointment calendar could not be reached. "
     "Please send the quote again with a customer: <email> line this time."
@@ -81,8 +84,7 @@ class QuoteIntentSelector:
             ):
                 raise ValueError("active quote does not match the normalized conversation")
             return IntentResolution(intent=QUOTE_INTENT, confidence=1)
-        text = normalized_text(message)
-        if text.lstrip().lower().startswith("quote:"):
+        if quote_trigger_request_text(normalized_text(message)) is not None:
             quote_request_text(message)
             return IntentResolution(intent=QUOTE_INTENT, confidence=1)
         return None
@@ -243,6 +245,7 @@ class QuoteWorkflowHandler:
             revision=quote.revision,
             idempotency_key=f"quote-draft:{quote.quote_id}:{quote.revision}",
             recipient=(None if appointment is None else _appointment_recipient(appointment)),
+            appointment=(None if appointment is None else _appointment_context(appointment)),
         )
         try:
             proposal = await self._drafting_port.draft(request)
@@ -406,10 +409,9 @@ def owner_command(message: NormalizedOwnerMessage) -> str | None:
 
 
 def quote_request_text(message: NormalizedOwnerMessage) -> str:
-    text = normalized_text(message).lstrip()
-    if not text.lower().startswith("quote:"):
+    request_text = quote_trigger_request_text(normalized_text(message))
+    if request_text is None:
         raise QuoteIntakeError("new quote workflows require an explicit quote: prefix")
-    request_text = text.split(":", 1)[1].strip()
     if not request_text:
         raise QuoteIntakeError("quote request text must not be empty")
     return request_text
@@ -433,6 +435,16 @@ def _appointment_recipient(appointment: Appointment) -> CustomerRecipient:
         address=appointment.invitee_email,
         address_kind=RecipientAddressKind.EMAIL,
         display_name=appointment.invitee_name,
+    )
+
+
+def _appointment_context(appointment: Appointment) -> QuoteAppointmentContext:
+    return QuoteAppointmentContext(
+        event_name=appointment.event_name,
+        start_time=appointment.start_time,
+        address=appointment.address,
+        invitee_name=appointment.invitee_name,
+        notes=appointment.notes,
     )
 
 
@@ -510,6 +522,8 @@ def _owner_quote_body(quote: Quote) -> str:
         for item in draft.line_items
     )
     lines.append(f"Total: {format_money(draft.total_minor, draft.currency)}")
+    if draft.drafted_from_free_text:
+        lines.append(FREE_TEXT_DRAFT_NOTICE)
     lines.append("Reply with approve, reject, or correct: <changes>.")
     return "\n".join(lines)
 
