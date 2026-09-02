@@ -122,7 +122,8 @@ uv run gvas-bootstrap --business-id <uuid> --slug protech --name "ProTech"
 ```
 
 Railway deployment, environment variables and operational semantics are in
-[`docs/deployment.md`](docs/deployment.md).
+[`docs/deployment.md`](docs/deployment.md). What has shipped, what is next, and
+which decisions are open is tracked in [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Quote requests
 

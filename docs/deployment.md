@@ -94,7 +94,7 @@ Set on both services unless noted. Values below are placeholders; see
 | Variable | Notes |
 | --- | --- |
 | `DATABASE_URL` | Railway Postgres reference; normalized to asyncpg |
-| `GVAS_APP_ENV`, `GVAS_LOG_LEVEL` | `production`, `INFO` |
+| `GVAS_APP_ENV`, `GVAS_LOG_LEVEL` | `production`, `INFO` (`GVAS_LOG_LEVEL` is read but no process emits logs yet; see `docs/roadmap.md`) |
 | `GVAS_SLACK_SIGNING_SECRET` | Required; request signature verification |
 | `GVAS_SLACK_BOT_TOKEN` | Required; sent only as a bearer header |
 | `GVAS_SLACK_INSTALLATIONS` | Required; `team=business_uuid:owner_user_id` |
@@ -112,6 +112,7 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_RESEND_PORTAL_URL` | Default `https://gudvector.com/portal/login` |
 | `GVAS_WORKER_BATCH_SIZE`, `_POLL_SECONDS`, `_RETRY_SECONDS`, `_LEASE_SECONDS` | Worker only |
 | `GVAS_WORKER_ID_PREFIX` | Worker only; hostname and pid are appended per replica |
+| `GVAS_R2_*` | Present in `.env.example` but not read by production wiring yet; the DOCX is not kept in object storage until it is |
 
 Startup fails immediately when a required variable is missing, so a
 misconfigured deploy never accepts Slack traffic.
