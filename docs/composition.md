@@ -237,9 +237,11 @@ application:
   failure logs and falls back to marker evidence. `ReportGenerationPort`,
   `QuoteDraftingPort` — deterministic implementations; a model replaces them
   here and nowhere else.
-- `ObjectStoragePort` — `R2ObjectStorage` exists but is **not wired** in
-  `gvas.composition.production`, so published DOCX files currently live only in
-  Slack and are re-rendered from the persisted report on demand.
+- `ObjectStoragePort` — `R2ObjectStorage`, wired by `gvas.composition.production`
+  when all four `GVAS_R2_*` settings are present (a partial set fails startup).
+  Without it, published DOCX files live only in Slack and are re-rendered from the
+  persisted report on demand; with it, each published version is also kept under
+  the tenant's key prefix and `plan_set.copy_into_custody` becomes dispatchable.
 - `IntentResolutionPort` — `DeterministicIntentResolver` today; a future
   classifier can replace or precede it.
 
