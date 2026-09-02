@@ -13,13 +13,14 @@ out is a change to this module and the ports it fills, not to the application.
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 
 import httpx
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from gvas.application.channel_policy import ChannelWorkflowPolicy
 from gvas.application.checklist_evidence import MarkerChecklistEvidenceAttributor
 from gvas.application.completeness_review import MarkerCompletenessReviewer
 from gvas.application.contradiction_guard import GuardedCompletenessReviewer
@@ -35,10 +36,12 @@ from gvas.config import (
     WorkerSettings,
     require_managed_postgres_url,
 )
+from gvas.domain.ports import OwnerReplyPort
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.delivery_ledger import SqlChannelDeliveryLedger
 from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGuard
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
+from gvas.infrastructure.owner_reply_routing import ChannelOwnerReplyRouter
 from gvas.infrastructure.quote_drafting import DeterministicQuoteDrafter
 from gvas.infrastructure.reporting_unit_of_work import SqlReportUnitOfWorkFactory
 from gvas.infrastructure.resend import ResendQuoteDeliveryAdapter
@@ -53,8 +56,21 @@ from gvas.infrastructure.slack.composition import (
 )
 from gvas.infrastructure.slack.config import SlackSettings
 from gvas.infrastructure.slack.installations import (
+    SLACK_SOURCE_NAMESPACE,
     SlackInstallationError,
     parse_slack_installations,
+)
+from gvas.infrastructure.telnyx.api import TelnyxMessagingApiSender
+from gvas.infrastructure.telnyx.composition import (
+    build_telnyx_owner_reply_adapter,
+    build_telnyx_webhook_router,
+    sms_quotes_only_policy,
+)
+from gvas.infrastructure.telnyx.config import TelnyxSettings
+from gvas.infrastructure.telnyx.installations import (
+    TELNYX_SOURCE_NAMESPACE,
+    TelnyxInstallationError,
+    parse_telnyx_installations,
 )
 from gvas.interfaces.http.app import create_app
 from gvas.interfaces.logging_setup import configure_logging
@@ -74,6 +90,7 @@ class ProductionSettings:
     openai: OpenAISettings
     resend: ResendSettings
     worker: WorkerSettings
+    telnyx: TelnyxSettings = field(default_factory=TelnyxSettings)
 
 
 def load_production_settings() -> ProductionSettings:
@@ -83,6 +100,7 @@ def load_production_settings() -> ProductionSettings:
         openai=OpenAISettings(),
         resend=ResendSettings(),
         worker=WorkerSettings(),
+        telnyx=TelnyxSettings(),
     )
     missing = [
         name
@@ -106,7 +124,33 @@ def load_production_settings() -> ProductionSettings:
         raise ProductionConfigurationError(f"missing required settings: {', '.join(missing)}")
     _require_managed_database(settings.app.database_url)
     _require_single_owner(settings.slack.installations)
+    _require_complete_telnyx_channel(settings.telnyx)
     return settings
+
+
+def _require_complete_telnyx_channel(settings: TelnyxSettings) -> None:
+    """Telnyx is optional as a set: all of it or none of it.
+
+    A deployment that set the webhook key but not the API key would ingest
+    texts and then fail every reply in the worker, so it must not start.
+    """
+
+    if settings.is_partially_configured:
+        missing = [name for name, present in settings.required_settings.items() if not present]
+        raise ProductionConfigurationError(
+            f"telnyx channel is partially configured; missing: {', '.join(missing)}"
+        )
+    if not settings.is_configured:
+        return
+    try:
+        installations = parse_telnyx_installations(settings.installations)
+    except TelnyxInstallationError as error:
+        raise ProductionConfigurationError(f"GVAS_TELNYX_INSTALLATIONS: {error}") from error
+    if len(installations) != 1 or len(installations[0].owner_numbers) != 1:
+        raise ProductionConfigurationError(
+            "GVAS_TELNYX_INSTALLATIONS must configure exactly one number "
+            "with exactly one owner number"
+        )
 
 
 def _require_managed_database(url: str) -> None:
@@ -168,14 +212,27 @@ def build_production_ports(
     report_artifacts = ReportArtifactAccess(
         DocxReportRenderer(), SqlReportUnitOfWorkFactory(session_factory)
     )
-    return ApplicationPorts(
-        owner_replies=build_slack_owner_reply_adapter(
+    ledger = SqlChannelDeliveryLedger(session_factory)
+    owner_replies: dict[str, OwnerReplyPort] = {
+        SLACK_SOURCE_NAMESPACE: build_slack_owner_reply_adapter(
             poster,
             session_factory,
-            SqlChannelDeliveryLedger(session_factory),
+            ledger,
             uploader=SlackWebApiFileUploader(settings.slack, client),
             attachments=report_artifacts,
-        ),
+        )
+    }
+    channel_policies: tuple[ChannelWorkflowPolicy, ...] = ()
+    if settings.telnyx.is_configured:
+        owner_replies[TELNYX_SOURCE_NAMESPACE] = build_telnyx_owner_reply_adapter(
+            TelnyxMessagingApiSender(settings.telnyx, client),
+            session_factory,
+            ledger,
+            messaging_profile_id=settings.telnyx.messaging_profile_id or None,
+        )
+        channel_policies = (sms_quotes_only_policy("Slack"),)
+    return ApplicationPorts(
+        owner_replies=ChannelOwnerReplyRouter(session_factory, owner_replies),
         quote_drafting=DeterministicQuoteDrafter(),
         quote_delivery=ResendQuoteDeliveryAdapter(settings.resend, client),
         transcription=OpenAITranscriber(settings.openai, client, attachments),
@@ -184,6 +241,7 @@ def build_production_ports(
         ),
         checklist_evidence=MarkerChecklistEvidenceAttributor(),
         report_generation=DeterministicReportGenerator(),
+        channel_policies=channel_policies,
     )
 
 
@@ -199,18 +257,21 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
         session_factory=session_factory,
         lease_ttl=timedelta(seconds=resolved.worker.lease_seconds),
     )
-    router = build_slack_event_router(application.ingest_service, resolved.slack)
+    routers = [build_slack_event_router(application.ingest_service, resolved.slack)]
+    if resolved.telnyx.is_configured:
+        routers.append(build_telnyx_webhook_router(application.ingest_service, resolved.telnyx))
     return ProductionRuntime(
         settings=resolved,
         application=application,
-        app=create_app(resolved.app, (router,)),
+        app=create_app(resolved.app, tuple(routers)),
         http_client=client,
         engine=engine,
     )
 
 
 def create_production_app() -> FastAPI:
-    """Uvicorn target for the web service; mounts the Slack Request URL."""
+    """Uvicorn target for the web service; mounts the Slack Request URL and, when
+    configured, the Telnyx messaging webhook."""
 
     runtime = build_production_runtime()
     configure_logging(runtime.settings.app.log_level)

@@ -17,6 +17,7 @@ waiting on the owner and are not built until answered.
 | Owner notice when a DOCX publish dead-letters; `approve report` retries it | #21 |
 | Worker and web log one line per command outcome to stderr at `GVAS_LOG_LEVEL` | #23 |
 | Unmatched messages get the available triggers once instead of retrying to dead-letter | #25 |
+| Telnyx SMS as a second owner channel, quotes only (`quote:`, follow-ups, approve/send); other triggers get one "quotes only, field notes belong in Slack" reply | #PR_NUMBER |
 
 ## In progress
 
@@ -47,3 +48,5 @@ waiting on the owner and are not built until answered.
 - Second workspace or second owner (startup refuses both by design).
 - Automatic distribution of any report outside the originating thread.
 - Workspace-wide authorization; only the configured owner is heard.
+- Field notes, voice notes or reports over SMS. SMS is quotes only; a DOCX
+  cannot travel over SMS, so field notes stay in Slack and MMS media is ignored.

@@ -143,6 +143,57 @@ def test_production_app_serves_the_slack_request_url_and_health_check() -> None:
 
     assert runtime.settings.slack.events_path in paths
     assert "/healthz" in paths
+    assert not runtime.settings.telnyx.is_configured
+    assert runtime.settings.telnyx.webhook_path not in paths
+
+
+TELNYX_ENVIRONMENT = {
+    "GVAS_TELNYX_PUBLIC_KEY": "cHVibGljLWtleQ==",
+    "GVAS_TELNYX_API_KEY": "KEY-not-a-real-key",
+    "GVAS_TELNYX_INSTALLATIONS": f"+15550100001={BUSINESS_ID}:+15550100000",
+}
+
+
+@pytest.mark.usefixtures("production_environment")
+def test_telnyx_is_optional_as_a_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in TELNYX_ENVIRONMENT.items():
+        monkeypatch.setenv(name, value)
+    runtime = build_production_runtime(load_production_settings())
+    paths = {route.path for route in runtime.app.routes if hasattr(route, "path")}
+    assert runtime.settings.telnyx.is_configured
+    assert runtime.settings.telnyx.webhook_path in paths
+    assert runtime.settings.slack.events_path in paths
+
+    monkeypatch.delenv("GVAS_TELNYX_API_KEY")
+    with pytest.raises(ProductionConfigurationError) as error:
+        load_production_settings()
+    message = str(error.value)
+    assert "GVAS_TELNYX_API_KEY" in message
+    assert "GVAS_TELNYX_PUBLIC_KEY" not in message
+    assert "KEY-not-a-real-key" not in message
+    assert "cHVibGljLWtleQ==" not in message
+
+
+@pytest.mark.usefixtures("production_environment")
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"+15550100001|+15550100002={BUSINESS_ID}:+15550100000",
+        f"+15550100001={BUSINESS_ID}:+15550100000,+15550100003={BUSINESS_ID}:+15550100009",
+        f"15550100001={BUSINESS_ID}:+15550100000",
+    ],
+)
+def test_startup_rejects_telnyx_mappings_outside_the_pilot_boundary(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    for name, env_value in TELNYX_ENVIRONMENT.items():
+        monkeypatch.setenv(name, env_value)
+    monkeypatch.setenv("GVAS_TELNYX_INSTALLATIONS", value)
+
+    with pytest.raises(ProductionConfigurationError) as error:
+        load_production_settings()
+
+    assert "GVAS_TELNYX_INSTALLATIONS" in str(error.value)
 
 
 @pytest.mark.usefixtures("production_environment")

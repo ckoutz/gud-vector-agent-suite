@@ -4,6 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from gvas.application.channel_policy import (
+    ChannelScopedIntentResolver,
+    ChannelUnsupportedMessageHandler,
+    ChannelWorkflowPolicy,
+)
 from gvas.application.completeness import FieldNoteCompletenessService
 from gvas.application.docx_report import DocxReportRenderer
 from gvas.application.field_note_transcription import (
@@ -85,6 +90,7 @@ class ApplicationPorts:
     report_generation: ReportGenerationPort
     source_attachments: AttachmentAccessPort | None = None
     object_storage: ObjectStoragePort | None = None
+    channel_policies: tuple[ChannelWorkflowPolicy, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -165,15 +171,25 @@ def build_application(
     )
     quote_handler = QuoteWorkflowHandler(unit_of_work_factory, ports.quote_drafting)
     router = WorkflowRouter(
-        [quote_handler, field_note_handler, WorkflowConflictHandler(), UnmatchedMessageHandler()]
+        [
+            quote_handler,
+            field_note_handler,
+            WorkflowConflictHandler(),
+            UnmatchedMessageHandler(),
+            *(ChannelUnsupportedMessageHandler(policy) for policy in ports.channel_policies),
+        ]
     )
 
-    resolver = intent_resolver or DeterministicIntentResolver(
+    resolver: IntentResolutionPort = intent_resolver or DeterministicIntentResolver(
         FieldNoteIntentContribution(field_note_unit_of_work_factory),
         QuoteIntentSelector(),
         field_note_unit_of_work_factory,
         unit_of_work_factory,
     )
+    if ports.channel_policies:
+        resolver = ChannelScopedIntentResolver(
+            resolver, ports.channel_policies, unit_of_work_factory
+        )
 
     transcripts = FieldNoteTranscriptService(field_note_unit_of_work_factory)
     template_resolver = TemplateResolver(completeness_unit_of_work_factory)
