@@ -17,7 +17,7 @@ waiting on the owner and are not built until answered.
 | Owner notice when a DOCX publish dead-letters; `approve report` retries it | #21 |
 | Worker and web log one line per command outcome to stderr at `GVAS_LOG_LEVEL` | #23 |
 | Unmatched messages get the available triggers once instead of retrying to dead-letter | #25 |
-| Review model annotates marker-satisfied checklist items with verbatim note excerpts (deterministic-first) | #PR_NUMBER |
+| Review model annotates marker-satisfied checklist items with verbatim note excerpts (deterministic-first) | #27 |
 
 ## In progress
 
