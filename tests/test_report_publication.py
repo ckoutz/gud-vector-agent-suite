@@ -1,6 +1,6 @@
 import zipfile
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from uuid import UUID, uuid4
 from xml.etree import ElementTree
@@ -27,14 +27,17 @@ from gvas.application.report_approval import (
     approved_report_reply,
 )
 from gvas.composition import Application, build_application
+from gvas.composition.dispatcher import OutboxWorker
 from gvas.composition.report_publication import (
     REPORT_ARTIFACT_CUSTODY_SCOPE,
     ReportVersionNotFoundError,
 )
-from gvas.domain.enums import MediaKind
+from gvas.domain.enums import MediaKind, OutboxStatus
 from gvas.domain.field_notes import FieldNoteCaseStatus
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.messages import AttachmentPart, AttachmentReference
+from gvas.domain.object_storage import ObjectCustodyError, ObjectCustodyRequest, StoredObject
+from gvas.domain.outbox import DEFAULT_MAX_ATTEMPTS
 from gvas.domain.reporting import (
     DOCX_MEDIA_TYPE,
     FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE,
@@ -151,14 +154,15 @@ def test_docx_renderer_names_and_types_the_artifact() -> None:
     assert artifact.content.startswith(b"PK")
 
 
-def test_publish_command_identity_is_pinned_to_the_report_version() -> None:
+def test_publish_command_identity_is_pinned_to_the_version_and_the_approval() -> None:
     business_id = BusinessId(uuid4())
     case_id = uuid4()
     report_version_id = uuid4()
 
-    first = field_notes_report_publish_command(business_id, case_id, report_version_id)
-    again = field_notes_report_publish_command(business_id, case_id, report_version_id)
-    other = field_notes_report_publish_command(business_id, case_id, uuid4())
+    first = field_notes_report_publish_command(business_id, case_id, report_version_id, "ok-1")
+    again = field_notes_report_publish_command(business_id, case_id, report_version_id, "ok-1")
+    retry = field_notes_report_publish_command(business_id, case_id, report_version_id, "ok-2")
+    other = field_notes_report_publish_command(business_id, case_id, uuid4(), "ok-1")
 
     assert first == again
     assert first.command_type == FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE
@@ -166,9 +170,10 @@ def test_publish_command_identity_is_pinned_to_the_report_version() -> None:
         "field_note_case_id": str(case_id),
         "report_version_id": str(report_version_id),
     }
-    assert first.dedup_key == f"field_notes_report_publish:{report_version_id}"
-    assert first.command_id != other.command_id
-    assert first.dedup_key != other.dedup_key
+    assert first.dedup_key == f"field_notes_report_publish:{report_version_id}:ok-1"
+    assert retry.payload == first.payload
+    assert len({first.command_id, retry.command_id, other.command_id}) == 3
+    assert len({first.dedup_key, retry.dedup_key, other.dedup_key}) == 3
 
 
 def test_report_artifact_locator_round_trips_and_rejects_foreign_locators() -> None:
@@ -271,8 +276,84 @@ async def test_approve_report_publishes_the_docx_once_and_keeps_the_case_open(
     await drain(application)
 
     assert reply_texts(owner_replies).count(approved_report_reply(1)) == 2
-    assert len(await outbox_rows(session_factory, FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE)) == 1
+    assert len(await outbox_rows(session_factory, FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE)) == 2
+    assert await unsucceeded_outbox(session_factory) == 0
     assert len(attachments(owner_replies)) == 1
+    assert len(storage.keys) == 1
+
+
+class RecoveringObjectStorage(InMemoryObjectStorage):
+    """Refuses custody until told otherwise, the way an outage would."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.available = False
+        self.refused = 0
+
+    async def put(self, request: ObjectCustodyRequest) -> StoredObject:
+        if not self.available:
+            self.refused += 1
+            raise ObjectCustodyError("bucket unavailable: secret-bucket-name")
+        return await super().put(request)
+
+
+@pytest.mark.asyncio
+async def test_dead_publish_tells_the_owner_and_approving_again_recovers_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    owner_replies = OwnerReplyFake()
+    storage = RecoveringObjectStorage()
+    application = publishing_application(session_factory, owner_replies, storage)
+    await configure_checklist(application, business_id)
+    worker = OutboxWorker(
+        application.outbox,
+        application.dispatcher,
+        now=Clock(),
+        retry_in=timedelta(seconds=0),
+        failure_notices=application.failure_notice_service,
+    )
+
+    await application.ingest_service.ingest(
+        inbound(business_id, "field notes: site: north work: inspection", message_key="notes-1")
+    )
+    await worker.drain()
+    await application.ingest_service.ingest(
+        inbound(business_id, "approve report", message_key="approve-1")
+    )
+    await worker.drain()
+    await worker.drain()
+
+    publishes = await outbox_rows(session_factory, FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE)
+    assert [row.status for row in publishes] == [OutboxStatus.DEAD.value]
+    assert storage.refused == DEFAULT_MAX_ATTEMPTS
+    notices = [
+        text
+        for text in reply_texts(owner_replies)
+        if text.startswith("The approved report document could not be posted")
+    ]
+    assert len(notices) == 1
+    assert "approve report" in notices[0]
+    assert "secret-bucket-name" not in notices[0]
+    assert attachments(owner_replies) == []
+    assert [case.status for case in await case_rows(session_factory)] == [
+        FieldNoteCaseStatus.OPEN.value
+    ]
+
+    storage.available = True
+    await application.ingest_service.ingest(
+        inbound(business_id, "approve report", message_key="approve-2")
+    )
+    await worker.drain()
+
+    publishes = await outbox_rows(session_factory, FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE)
+    assert sorted(row.status for row in publishes) == [
+        OutboxStatus.DEAD.value,
+        OutboxStatus.SUCCEEDED.value,
+    ]
+    assert len(attachments(owner_replies)) == 1
+    assert len(storage.keys) == 1
 
 
 @pytest.mark.asyncio
