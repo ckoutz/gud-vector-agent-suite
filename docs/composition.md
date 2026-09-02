@@ -90,7 +90,7 @@ until `max_attempts` is exhausted.
 | `field_note.review` | `CoordinateFieldNoteReviewService` | `CompletenessReviewPort` |
 | `field_notes_report.generate` | snapshot builder + `GenerateFieldNotesReportService` | `ChecklistEvidencePort`, `ReportGenerationPort` |
 | `field_notes_report.publish` | `PublishFieldNotesReportService` | `ReportArtifactRendererPort`, `ObjectStoragePort` (optional), `OwnerReplyPort` |
-| `plan_set.copy` | `CopyPlanSetIntoCustodyService` (only when `object_storage` and `source_attachments` are supplied) | `AttachmentAccessPort`, `ObjectStoragePort` |
+| `plan_set.copy_into_custody` | `CopyPlanSetIntoCustodyService` (only when `object_storage` and `source_attachments` are supplied) | `AttachmentAccessPort`, `ObjectStoragePort` |
 
 `field_note.review` and `field_notes_report.generate` are new composition
 commands with deterministic UUIDv5 IDs and business-scoped deduplication keys
