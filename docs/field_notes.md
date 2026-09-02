@@ -44,10 +44,9 @@ remains the only command that closes the case.
   whether transcripts must be redacted or purged with source media.
 - Which transcription provider/model, cost ceiling, maximum audio duration or
   size, and language handling should be selected.
-- Whether failed transcriptions should eventually produce an owner-facing
-  message, requiring dispatcher and product decisions.
 - Whether transcription retries should have a ceiling beyond the outbox
-  `max_attempts`; no dead-letter handling exists yet.
+  `max_attempts`. A command that exhausts them dead-letters and posts one
+  owner-facing notice with recovery guidance (see `docs/composition.md`).
 - `WorkflowContext` currently exposes no endpoint-scoped persisted identity,
   so workflows re-resolve it from business, external conversation ID, and
   message key. This can be ambiguous when endpoints reuse those external

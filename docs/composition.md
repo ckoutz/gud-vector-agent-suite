@@ -138,8 +138,11 @@ it there and can add notes to the open case, which produces the next version.
 Nothing leaves the thread until the owner types `approve report`. Approval
 resolves the latest completed report version for the conversation's active case
 and enqueues `field_notes_report.publish`, whose command id and dedup key derive
-from that report version id, so replaying the approval or retrying the command
-resolves to the same publication. Publication renders the pinned version — never
+from that report version id plus the approving message key: a redelivered
+approval collapses to one command, while a fresh `approve report` is a new
+attempt that recovers a dead-lettered publish. The published outbound message is
+correlated on the version alone, so repeated approvals still yield one posted
+document. Publication renders the pinned version — never
 the newest one — into a generic editable DOCX with the standard library alone
 (`DocxReportRenderer`; letterhead templates are a documented follow-up), stores
 it under the business's object-storage prefix when a store is wired, and hands
@@ -221,9 +224,13 @@ These need a product or provider decision and are wired only up to the port:
    originating channel; email to a client or office inbox is opt-in and has no
    command or recipient contract yet. Owner-supplied letterhead templates are
    designed in [`docs/templates_and_site_plans.md`](templates_and_site_plans.md).
-3. **Permanent transcription or review failure.** Failures retry through the
-   outbox and eventually dead-letter; no owner-facing failure message is
-   defined.
+3. **Permanent failure notices.** A command that exhausts its retries enqueues
+   one sanitized notice into its conversation via
+   `NotifyExhaustedCommandService`, with per-command recovery guidance
+   (`FAILURE_GUIDANCE`): re-send, add a note, approve again, or start a fresh
+   case/quote in a new thread. Owner-reply delivery is excluded so a broken
+   channel cannot notify about itself. Operator-facing alerting (beyond logs and
+   the dead outbox rows) remains open.
 4. **Report and transcript retention.** Unchanged from the accepted
    workstreams: retention, redaction, and cost ceilings remain open.
 5. **Per-business templates and plan artifacts.** Composition hardcodes no

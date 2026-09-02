@@ -409,19 +409,22 @@ def field_notes_report_command(
 
 
 def field_notes_report_publish_command(
-    business_id: BusinessId, case_id: UUID, report_version_id: UUID
+    business_id: BusinessId, case_id: UUID, report_version_id: UUID, approval_key: str
 ) -> OutboxCommand:
     """Publishes one approved report version as a document in the case's channel.
 
-    The command identity is the approved version, so a repeated approval or a
-    replayed command reuses one command and one posted document.
+    The command identity is the approved version plus the owner message that
+    approved it. A redelivered approval reuses one command, while a fresh
+    ``approve report`` is a fresh attempt, which is what lets the owner retry
+    after a publish dead-letters. The posted document itself stays single
+    because the outbound message is correlated on the version alone.
     """
 
     return OutboxCommand(
         command_id=OutboxCommandId(
             uuid5(
                 FIELD_NOTES_REPORT_PUBLISH_COMMAND_NAMESPACE,
-                f"{business_id}:{report_version_id}",
+                f"{business_id}:{report_version_id}:{approval_key}",
             )
         ),
         business_id=business_id,
@@ -430,7 +433,7 @@ def field_notes_report_publish_command(
             "field_note_case_id": str(case_id),
             "report_version_id": str(report_version_id),
         },
-        dedup_key=f"field_notes_report_publish:{report_version_id}",
+        dedup_key=f"field_notes_report_publish:{report_version_id}:{approval_key}",
     )
 
 

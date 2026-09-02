@@ -40,8 +40,9 @@ class ApproveFieldNoteReportHandler:
     pins the case's current completed version and asks the outbox to publish it
     as a document. Nothing is regenerated here and the case stays open, so a
     later note still produces a new version that can be approved in turn.
-    Approving the same version twice yields the same command, which the outbox
-    deduplicates.
+    Each distinct approval message is its own publish attempt, so approving
+    again after a failed publish retries it; the published document is still
+    deduplicated on the version.
     """
 
     def __init__(
@@ -77,7 +78,10 @@ class ApproveFieldNoteReportHandler:
             f"report version {version.version} approved for publication",
             commands=(
                 field_notes_report_publish_command(
-                    message.business_id, case_id, version.report_version_id
+                    message.business_id,
+                    case_id,
+                    version.report_version_id,
+                    str(message.message_key),
                 ),
             ),
         )

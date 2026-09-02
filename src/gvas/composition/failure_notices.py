@@ -31,7 +31,10 @@ from gvas.domain.outbox import (
     owner_reply_command,
 )
 from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE
-from gvas.domain.reporting import FIELD_NOTES_REPORT_COMMAND_TYPE
+from gvas.domain.reporting import (
+    FIELD_NOTES_REPORT_COMMAND_TYPE,
+    FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE,
+)
 from gvas.domain.repositories import UnitOfWork
 
 # Guidance is per command type because the recoverable path differs, and a
@@ -40,7 +43,7 @@ from gvas.domain.repositories import UnitOfWork
 # transcribed keeps an incomplete canonical transcript, so neither is retryable
 # by repeating the message; both need a fresh case in a new thread. Intake,
 # review and report work, by contrast, is re-enqueued by the next note in the
-# same thread.
+# same thread, and a publish is re-enqueued by approving again.
 RESEND_IN_THREAD: Final = "Send the message again in this thread."
 NEW_NOTE_IN_THREAD: Final = (
     "Add the note again in this thread; that starts the review over. "
@@ -48,6 +51,10 @@ NEW_NOTE_IN_THREAD: Final = (
 )
 NEW_QUOTE_IN_NEW_THREAD: Final = (
     "This quote will not send itself again. Start a new quote in a new thread."
+)
+APPROVE_AGAIN_IN_THREAD: Final = (
+    "The report text above is unchanged. Send 'approve report' again in this "
+    "thread to retry posting the document."
 )
 RESTART_NOTES_IN_NEW_THREAD: Final = (
     "That recording is not part of these notes and the case cannot complete "
@@ -75,6 +82,10 @@ FAILURE_GUIDANCE: Final[dict[str, tuple[str, str]]] = {
     FIELD_NOTES_REPORT_COMMAND_TYPE: (
         "The field-notes report could not be generated.",
         NEW_NOTE_IN_THREAD,
+    ),
+    FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE: (
+        "The approved report document could not be posted to this thread.",
+        APPROVE_AGAIN_IN_THREAD,
     ),
 }
 
