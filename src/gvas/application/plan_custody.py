@@ -3,8 +3,10 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 
+from gvas.domain.enums import MediaKind
+from gvas.domain.field_notes import FieldNoteCaseId
 from gvas.domain.identifiers import BusinessId
-from gvas.domain.messages import AttachmentReference
+from gvas.domain.messages import AttachmentPart, AttachmentReference, ContentPart
 from gvas.domain.object_storage import (
     ObjectCustodyError,
     ObjectCustodyRequest,
@@ -25,14 +27,27 @@ from gvas.domain.plans import (
     SiteId,
     SitePlanSetVersion,
     UnknownSiteError,
+    field_note_case_site_id,
     plan_set_copy_command,
     plan_set_custody_name,
 )
 from gvas.domain.ports import AttachmentAccessPort, ObjectStoragePort
 
+PLAN_SET_MEDIA_KINDS = frozenset({MediaKind.DOCUMENT, MediaKind.IMAGE})
+
 
 class PlanCustodyUnitOfWorkFactory(Protocol):
     def __call__(self) -> PlanCustodyUnitOfWork: ...
+
+
+def plan_set_attachments(parts: tuple[ContentPart, ...]) -> tuple[AttachmentReference, ...]:
+    """The PDF and image attachments of an owner message, in message order."""
+
+    return tuple(
+        part.attachment
+        for part in parts
+        if isinstance(part, AttachmentPart) and part.attachment.media_kind in PLAN_SET_MEDIA_KINDS
+    )
 
 
 class RegisterPlanSetUploadService:
@@ -60,16 +75,75 @@ class RegisterPlanSetUploadService:
             if site is None:
                 await unit_of_work.rollback()
                 raise UnknownSiteError("site does not belong to this business")
-            plan_set = await unit_of_work.plan_sets.get_or_create(
-                business_id, site_id, plan_set_key, now=now
-            )
-            registration = await unit_of_work.plan_set_uploads.register(
-                business_id, site_id, plan_set.plan_set_id, source, now=now
-            )
-            await unit_of_work.outbox.enqueue(
-                plan_set_copy_command(business_id, registration.upload.upload_id)
+            registration = await self._register(
+                unit_of_work, business_id, site_id, source, plan_set_key=plan_set_key, now=now
             )
             await unit_of_work.commit()
+        return registration
+
+    async def register_for_case(
+        self,
+        business_id: BusinessId,
+        case_id: FieldNoteCaseId,
+        sources: tuple[AttachmentReference, ...],
+        *,
+        now: datetime,
+    ) -> tuple[PlanSetUploadRegistration, ...]:
+        """Registers plan sets uploaded into a field-note case thread.
+
+        The case stands in for the site (``field_note_case_site_id``), and the
+        copy command carries the case so a dead copy can be reported back into
+        the thread it came from.
+        """
+
+        site_id = field_note_case_site_id(business_id, case_id)
+        registrations: list[PlanSetUploadRegistration] = []
+        async with self._unit_of_work_factory() as unit_of_work:
+            await unit_of_work.sites.get_or_create(
+                business_id,
+                label=f"Field notes case {case_id}",
+                site_id=site_id,
+                now=now,
+            )
+            for source in sources:
+                registrations.append(
+                    await self._register(
+                        unit_of_work,
+                        business_id,
+                        site_id,
+                        source,
+                        plan_set_key=DEFAULT_PLAN_SET_KEY,
+                        now=now,
+                        field_note_case_id=case_id,
+                    )
+                )
+            await unit_of_work.commit()
+        return tuple(registrations)
+
+    @staticmethod
+    async def _register(
+        unit_of_work: PlanCustodyUnitOfWork,
+        business_id: BusinessId,
+        site_id: SiteId,
+        source: AttachmentReference,
+        *,
+        plan_set_key: str,
+        now: datetime,
+        field_note_case_id: FieldNoteCaseId | None = None,
+    ) -> PlanSetUploadRegistration:
+        plan_set = await unit_of_work.plan_sets.get_or_create(
+            business_id, site_id, plan_set_key, now=now
+        )
+        registration = await unit_of_work.plan_set_uploads.register(
+            business_id, site_id, plan_set.plan_set_id, source, now=now
+        )
+        await unit_of_work.outbox.enqueue(
+            plan_set_copy_command(
+                business_id,
+                registration.upload.upload_id,
+                field_note_case_id=field_note_case_id,
+            )
+        )
         return registration
 
 

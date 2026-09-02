@@ -30,6 +30,7 @@ from gvas.domain.outbox import (
     OutboxRecord,
     owner_reply_command,
 )
+from gvas.domain.plans import PLAN_SET_COPY_COMMAND_TYPE
 from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE
 from gvas.domain.reporting import (
     FIELD_NOTES_REPORT_COMMAND_TYPE,
@@ -43,7 +44,8 @@ from gvas.domain.repositories import UnitOfWork
 # transcribed keeps an incomplete canonical transcript, so neither is retryable
 # by repeating the message; both need a fresh case in a new thread. Intake,
 # review and report work, by contrast, is re-enqueued by the next note in the
-# same thread, and a publish is re-enqueued by approving again.
+# same thread, a publish is re-enqueued by approving again, and a plan-set copy
+# is re-enqueued by uploading the file again (a fresh upload is a new file).
 RESEND_IN_THREAD: Final = "Send the message again in this thread."
 NEW_NOTE_IN_THREAD: Final = (
     "Add the note again in this thread; that starts the review over. "
@@ -55,6 +57,9 @@ NEW_QUOTE_IN_NEW_THREAD: Final = (
 APPROVE_AGAIN_IN_THREAD: Final = (
     "The report text above is unchanged. Send 'approve report' again in this "
     "thread to retry posting the document."
+)
+UPLOAD_PLAN_SET_AGAIN_IN_THREAD: Final = (
+    "The notes are unaffected. Upload the plan set file again in this thread to retry storing it."
 )
 RESTART_NOTES_IN_NEW_THREAD: Final = (
     "That recording is not part of these notes and the case cannot complete "
@@ -86,6 +91,10 @@ FAILURE_GUIDANCE: Final[dict[str, tuple[str, str]]] = {
     FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE: (
         "The approved report document could not be posted to this thread.",
         APPROVE_AGAIN_IN_THREAD,
+    ),
+    PLAN_SET_COPY_COMMAND_TYPE: (
+        "A plan set uploaded to this thread could not be stored.",
+        UPLOAD_PLAN_SET_AGAIN_IN_THREAD,
     ),
 }
 

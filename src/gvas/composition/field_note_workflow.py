@@ -1,10 +1,13 @@
-from typing import Protocol
+from collections.abc import Callable
+from datetime import datetime
+from typing import Final, Protocol
 
 from gvas.application.field_notes import (
     CloseFieldNoteCaseHandler,
     FieldNoteIntakeHandler,
     FieldNoteUnitOfWorkFactory,
 )
+from gvas.application.plan_custody import RegisterPlanSetUploadService, plan_set_attachments
 from gvas.application.report_approval import ApproveFieldNoteReportHandler
 from gvas.domain.completeness import FollowUpQuestionStatus
 from gvas.domain.completeness_repositories import CompletenessUnitOfWork
@@ -20,7 +23,13 @@ from gvas.domain.field_notes import (
     match_field_note_trigger,
 )
 from gvas.domain.identifiers import BusinessId, ConversationId, MessageId
+from gvas.domain.messages import NormalizedOwnerMessage, OutboundOwnerMessage, TextPart
 from gvas.domain.workflows import WorkflowContext, WorkflowResult
+
+PLAN_CUSTODY_NOT_ENABLED_REPLY: Final = (
+    "Plan custody is not enabled, so that plan set was not stored. "
+    "The notes in this thread are unaffected."
+)
 
 
 class CompletenessUnitOfWorkFactory(Protocol):
@@ -33,7 +42,9 @@ class FieldNoteWorkflowHandler:
     Intake stays in its accepted handler; this handler only decides whether an
     owner message closes the case, approves the posted report, continues the
     note or answers the single outstanding follow-up question, and hands review
-    and publication work to the outbox.
+    and publication work to the outbox. PDF and image uploads into the case
+    thread are registered as plan sets when plan custody is wired; otherwise
+    the owner is told once, per message, that custody is not enabled.
     """
 
     intent = FIELD_NOTE_INTENT
@@ -45,12 +56,17 @@ class FieldNoteWorkflowHandler:
         approval: ApproveFieldNoteReportHandler,
         field_note_unit_of_work_factory: FieldNoteUnitOfWorkFactory,
         completeness_unit_of_work_factory: CompletenessUnitOfWorkFactory,
+        *,
+        now: Callable[[], datetime],
+        plan_set_uploads: RegisterPlanSetUploadService | None = None,
     ) -> None:
         self._intake = intake
         self._closure = closure
         self._approval = approval
         self._field_notes = field_note_unit_of_work_factory
         self._completeness = completeness_unit_of_work_factory
+        self._now = now
+        self._plan_set_uploads = plan_set_uploads
 
     async def handle(self, context: WorkflowContext) -> WorkflowResult:
         message = context.message
@@ -61,23 +77,51 @@ class FieldNoteWorkflowHandler:
             return await self._closure.close(message, conversation_id)
         if has_field_note_report_approve_trigger(message):
             return await self._approval.approve(message, conversation_id)
+        result: WorkflowResult | None = None
         if match_field_note_trigger(message) is None:
-            answer = await self._answer_result(message.business_id, conversation_id, context)
-            if answer is not None:
-                return answer
-        result = await self._intake.handle(context)
-        if result.status is not WorkflowRunStatus.SUCCEEDED:
+            result = await self._answer_result(message.business_id, conversation_id, context)
+        if result is None:
+            result = await self._intake.handle(context)
+            if result.status is not WorkflowRunStatus.SUCCEEDED:
+                return result
+            case_id = await self._active_case_id(message.business_id, conversation_id)
+            if case_id is None:
+                return result
+            review = field_note_review_command(
+                message.business_id,
+                case_id,
+                FieldNoteReviewTrigger.INTAKE,
+                str(message.message_key),
+            )
+            result = result.model_copy(update={"commands": (*result.commands, review)})
+        else:
+            case_id = await self._active_case_id(message.business_id, conversation_id)
+            if case_id is None:
+                return result
+        plan_reply = await self._register_plan_sets(message, case_id)
+        if plan_reply is None:
             return result
-        case_id = await self._active_case_id(message.business_id, conversation_id)
-        if case_id is None:
-            return result
-        review = field_note_review_command(
-            message.business_id,
-            case_id,
-            FieldNoteReviewTrigger.INTAKE,
-            str(message.message_key),
+        return result.model_copy(update={"replies": (*result.replies, plan_reply)})
+
+    async def _register_plan_sets(
+        self, message: NormalizedOwnerMessage, case_id: FieldNoteCaseId
+    ) -> OutboundOwnerMessage | None:
+        sources = plan_set_attachments(message.parts)
+        if not sources:
+            return None
+        if self._plan_set_uploads is None:
+            body = PLAN_CUSTODY_NOT_ENABLED_REPLY
+        else:
+            registrations = await self._plan_set_uploads.register_for_case(
+                message.business_id, case_id, sources, now=self._now()
+            )
+            body = f"Queued {len(registrations)} plan set file(s) for storage."
+        return OutboundOwnerMessage(
+            business_id=message.business_id,
+            conversation_ref=message.conversation_ref,
+            parts=(TextPart(text=body),),
+            correlation_id=f"plan_set.upload:{message.message_key}",
         )
-        return result.model_copy(update={"commands": (*result.commands, review)})
 
     async def _answer_result(
         self,

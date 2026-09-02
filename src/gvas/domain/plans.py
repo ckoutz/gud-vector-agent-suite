@@ -31,6 +31,7 @@ PLAN_SET_COPY_COMMAND_NAMESPACE = UUID("0d1c6a9b-2f45-5a7c-9b31-8c6f2d4e5a71")
 PLAN_SET_NAMESPACE = UUID("3a8f1d52-6c74-5b19-8e2a-4f9d0b7c6e35")
 PLAN_SET_VERSION_NAMESPACE = UUID("9e4b70c1-58d3-5f26-a4b8-1c7e3d9f0a62")
 PLAN_SET_UPLOAD_NAMESPACE = UUID("5c2d9e18-7b46-5d03-9f75-2a8b6c1e4d97")
+FIELD_NOTE_CASE_SITE_NAMESPACE = UUID("7e1f4b3a-9c2d-5e60-8a47-3d5b9f1c2e84")
 
 
 class PlanModel(BaseModel):
@@ -133,8 +134,25 @@ def plan_set_custody_name(plan_set_id: SitePlanSetId, content_digest: str) -> st
     return f"{plan_set_id}/{content_digest}"
 
 
-def plan_set_copy_command(business_id: BusinessId, upload_id: PlanSetUploadId) -> OutboxCommand:
+def field_note_case_site_id(business_id: BusinessId, case_id: UUID) -> SiteId:
+    """The site a plan set uploaded into a field-note thread belongs to.
+
+    Cases carry no site of their own yet, so each case is its own site;
+    re-uploads into the same thread version the same plan set.
+    """
+
+    return SiteId(uuid5(FIELD_NOTE_CASE_SITE_NAMESPACE, f"{business_id}:{case_id}"))
+
+
+def plan_set_copy_command(
+    business_id: BusinessId,
+    upload_id: PlanSetUploadId,
+    *,
+    field_note_case_id: UUID | None = None,
+) -> OutboxCommand:
     payload: dict[str, JsonValue] = {"plan_set_upload_id": str(upload_id)}
+    if field_note_case_id is not None:
+        payload["field_note_case_id"] = str(field_note_case_id)
     return OutboxCommand(
         command_id=OutboxCommandId(uuid5(PLAN_SET_COPY_COMMAND_NAMESPACE, str(upload_id))),
         business_id=business_id,
