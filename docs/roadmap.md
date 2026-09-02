@@ -25,6 +25,7 @@ waiting on the owner and are not built until answered.
 | Per-business monthly ceilings on transcription seconds and review tokens (`GVAS_COST_CEILING_*`); a held-back command completes with one owner notice and the case stays open | #30 |
 | Calendly-backed customer lookup: `quote:` may omit `customer:` when `GVAS_CALENDLY_*` is set; one match names the customer in the draft reply, several get a numbered selection over Slack or SMS | #32 |
 | Free-text quotes (`quote: inspection 250`, `quote for jane: …`) drafted by the review model when the structured parser refuses; every price must be literal in the owner's text, matched booking is context for descriptions only, review-token ceiling and sanitized failure replies | #33 |
+| Portal quote handoff: with `GVAS_PORTAL_*` set an approved quote is created on gudvector.com (replay-safe on the delivery idempotency key), the portal emails the link and Telnyx texts it from the business number as its own outbox command; owner confirmation names the link and channels, a dead text reports the portal's `emailed` flag; Calendly invitee phone and address ride along | #34 |
 
 ## In progress
 
