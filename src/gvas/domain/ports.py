@@ -1,5 +1,6 @@
 from typing import Protocol
 
+from gvas.domain.appointments import AppointmentLookupPort as AppointmentLookupPort
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intents import IntentResolution
 from gvas.domain.messages import (

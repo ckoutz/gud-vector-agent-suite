@@ -1,13 +1,27 @@
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from gvas.domain.enums import DeliveryStatus, QuoteSendAction, QuoteStatus, WorkflowRunStatus
+from gvas.domain.appointments import (
+    Appointment,
+    AppointmentLookupError,
+    AppointmentLookupPort,
+    surrounding_days_window,
+)
+from gvas.domain.enums import (
+    DeliveryStatus,
+    QuoteSendAction,
+    QuoteStatus,
+    RecipientAddressKind,
+    WorkflowRunStatus,
+)
 from gvas.domain.identifiers import BusinessId, ConversationId, MessageKey, QuoteId
 from gvas.domain.intents import IntentResolution
 from gvas.domain.messages import (
     ConversationRef,
     CustomerDeliveryRequest,
+    CustomerRecipient,
     NormalizedOwnerMessage,
     OutboundOwnerMessage,
     TextPart,
@@ -24,11 +38,20 @@ from gvas.domain.quotes import (
     QuoteDraftRequest,
     QuoteSendAssessment,
     QuoteSendPolicy,
+    has_customer_line,
     new_quote,
     quote_delivery_command,
+    requested_customer_name,
 )
 from gvas.domain.repositories import UnitOfWork
 from gvas.domain.workflows import WorkflowContext, WorkflowResult
+
+logger = logging.getLogger(__name__)
+
+CUSTOMER_LOOKUP_UNAVAILABLE = (
+    "The appointment calendar could not be reached. "
+    "Please send the quote again with a customer: <email> line this time."
+)
 
 
 class QuoteIntakeError(ValueError):
@@ -73,10 +96,12 @@ class QuoteWorkflowHandler:
         unit_of_work_factory: QuoteUnitOfWorkFactory,
         drafting_port: QuoteDraftingPort,
         send_policy: QuoteSendPolicy | None = None,
+        appointment_lookup: AppointmentLookupPort | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._drafting_port = drafting_port
         self._send_policy = send_policy or OwnerApprovalRequiredPolicy()
+        self._appointment_lookup = appointment_lookup
 
     async def handle(self, context: WorkflowContext) -> WorkflowResult:
         conversation_id = context.conversation_id
@@ -87,6 +112,8 @@ class QuoteWorkflowHandler:
         if quote is not None:
             if quote.status is QuoteStatus.DRAFTING:
                 return await self._complete_draft(quote, message)
+            if quote.status is QuoteStatus.AWAITING_CUSTOMER_SELECTION:
+                return _customer_selection_reply(quote, message.message_key)
             if quote.status is QuoteStatus.AWAITING_APPROVAL and quote.draft is not None:
                 return _workflow_reply(
                     quote,
@@ -124,7 +151,27 @@ class QuoteWorkflowHandler:
                     ),
                 ),
             )
+        if quote.status is QuoteStatus.AWAITING_CUSTOMER_SELECTION:
+            return await self._handle_customer_selection(quote, message)
         return await self._handle_owner_reply(quote, message)
+
+    async def _handle_customer_selection(
+        self, quote: Quote, message: NormalizedOwnerMessage
+    ) -> WorkflowResult:
+        text = normalized_text(message).strip()
+        if text.casefold() == "reject":
+            return await self._abandon_draft(quote, message, "Quote cancelled.")
+        candidates = quote.customer_candidates or ()
+        choice = text.rstrip(".")
+        if not choice.isdigit() or not 1 <= int(choice) <= len(candidates):
+            return _customer_selection_reply(
+                quote,
+                message.message_key,
+                prefix=f"Reply with a number from 1 to {len(candidates)}, or reject.",
+            )
+        drafting = quote.select_customer(int(choice), message.message_key, message.received_at)
+        await self._save(drafting, expected_version=quote.version)
+        return await self._complete_draft(drafting, message)
 
     async def _handle_owner_reply(
         self, quote: Quote, message: NormalizedOwnerMessage
@@ -169,6 +216,25 @@ class QuoteWorkflowHandler:
     async def _complete_draft(
         self, quote: Quote, message: NormalizedOwnerMessage
     ) -> WorkflowResult:
+        if (
+            self._appointment_lookup is not None
+            and quote.customer_appointment is None
+            and not has_customer_line(quote.pending_request_text)
+        ):
+            try:
+                candidates = await self._find_appointments(quote, message)
+            except AppointmentLookupError as error:
+                logger.warning("appointment lookup failed for quote %s: %s", quote.quote_id, error)
+                return await self._abandon_draft(quote, message, CUSTOMER_LOOKUP_UNAVAILABLE)
+            if len(candidates) == 1:
+                quote = quote.with_customer_appointment(candidates[0])
+            elif len(candidates) > 1:
+                awaiting = quote.await_customer_selection(
+                    candidates, message.message_key, message.received_at
+                )
+                await self._save(awaiting, expected_version=quote.version)
+                return _customer_selection_reply(awaiting, message.message_key)
+        appointment = quote.customer_appointment
         request = QuoteDraftRequest(
             quote_id=quote.quote_id,
             business_id=quote.business_id,
@@ -176,6 +242,7 @@ class QuoteWorkflowHandler:
             request_text=quote.pending_request_text,
             revision=quote.revision,
             idempotency_key=f"quote-draft:{quote.quote_id}:{quote.revision}",
+            recipient=(None if appointment is None else _appointment_recipient(appointment)),
         )
         try:
             proposal = await self._drafting_port.draft(request)
@@ -207,6 +274,23 @@ class QuoteWorkflowHandler:
                 ),
             ),
         )
+
+    async def _find_appointments(
+        self, quote: Quote, message: NormalizedOwnerMessage
+    ) -> tuple[Appointment, ...]:
+        if self._appointment_lookup is None:
+            return ()
+        window = surrounding_days_window(quote.business_id, message.received_at)
+        found = await self._appointment_lookup.find(window)
+        name_filter = requested_customer_name(quote.pending_request_text)
+        if name_filter is not None:
+            needle = name_filter.casefold()
+            found = tuple(
+                appointment
+                for appointment in found
+                if needle in appointment.invitee_name.casefold()
+            )
+        return tuple(sorted(found, key=lambda appointment: appointment.start_time))
 
     def _send_decision_detail(self, proposal: QuoteDraftProposal) -> str | None:
         decision = self._send_policy.decide(
@@ -344,6 +428,30 @@ def _no_awaiting_approval_reply(message: NormalizedOwnerMessage) -> WorkflowResu
     )
 
 
+def _appointment_recipient(appointment: Appointment) -> CustomerRecipient:
+    return CustomerRecipient(
+        address=appointment.invitee_email,
+        address_kind=RecipientAddressKind.EMAIL,
+        display_name=appointment.invitee_name,
+    )
+
+
+def _customer_selection_reply(
+    quote: Quote, message_key: MessageKey, prefix: str | None = None
+) -> WorkflowResult:
+    candidates = quote.customer_candidates or ()
+    listing = "  ".join(
+        f"{index}. {candidate.choice_label}" for index, candidate in enumerate(candidates, 1)
+    )
+    body = f"Which appointment is this quote for? {listing} — reply with the number"
+    if prefix:
+        body = f"{prefix}\n{body}"
+    return WorkflowResult(
+        status=WorkflowRunStatus.SUCCEEDED,
+        replies=(_owner_reply(quote, message_key, body),),
+    )
+
+
 def _workflow_reply(
     quote: Quote, message_key: MessageKey, detail: str | None = None
 ) -> WorkflowResult:
@@ -390,10 +498,17 @@ def _owner_quote_body(quote: Quote) -> str:
     draft = quote.draft
     if draft is None:
         raise ValueError("quote draft is missing")
-    lines = [
+    lines: list[str] = []
+    appointment = quote.customer_appointment
+    if appointment is not None and draft.recipient.address == appointment.invitee_email:
+        lines.append(
+            f"Customer: {appointment.invitee_name} ({appointment.invitee_email})"
+            f" — {appointment.summary}"
+        )
+    lines.extend(
         f"{item.quantity} × {item.description}: {format_money(item.total_minor, draft.currency)}"
         for item in draft.line_items
-    ]
+    )
     lines.append(f"Total: {format_money(draft.total_minor, draft.currency)}")
     lines.append("Reply with approve, reject, or correct: <changes>.")
     return "\n".join(lines)

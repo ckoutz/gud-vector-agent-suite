@@ -44,6 +44,12 @@ from gvas.config import (
 )
 from gvas.domain.ports import OwnerReplyPort
 from gvas.domain.usage import UsageCeilings
+from gvas.infrastructure.calendly.api import CalendlyAppointmentLookup
+from gvas.infrastructure.calendly.config import (
+    CalendlyInstallationError,
+    CalendlySettings,
+    parse_calendly_installations,
+)
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.delivery_ledger import SqlChannelDeliveryLedger
 from gvas.infrastructure.object_storage import R2ObjectStorage
@@ -111,6 +117,7 @@ class ProductionSettings:
     worker: WorkerSettings
     storage: ObjectStorageSettings = field(default_factory=ObjectStorageSettings)
     telnyx: TelnyxSettings = field(default_factory=TelnyxSettings)
+    calendly: CalendlySettings = field(default_factory=CalendlySettings)
     cost_ceilings: CostCeilingSettings = field(default_factory=CostCeilingSettings)
 
     def usage_ceilings(self) -> UsageCeilings:
@@ -129,6 +136,7 @@ def load_production_settings() -> ProductionSettings:
         worker=WorkerSettings(),
         storage=ObjectStorageSettings(),
         telnyx=TelnyxSettings(),
+        calendly=CalendlySettings(),
         cost_ceilings=CostCeilingSettings(),
     )
     missing = [
@@ -155,6 +163,7 @@ def load_production_settings() -> ProductionSettings:
     _require_single_owner(settings.slack.installations)
     _require_complete_object_storage(settings.storage)
     _require_complete_telnyx_channel(settings.telnyx)
+    _require_complete_calendly_lookup(settings.calendly)
     return settings
 
 
@@ -177,6 +186,23 @@ def _require_complete_object_storage(storage: ObjectStorageSettings) -> None:
         raise ProductionConfigurationError(
             f"object storage is partially configured; missing: {', '.join(missing)}"
         )
+
+
+def _require_complete_calendly_lookup(settings: CalendlySettings) -> None:
+    """Calendly is optional as a set: with neither variable set a quote must
+    carry ``customer:``; with only one set the deployment must not start."""
+
+    if settings.is_partially_configured:
+        missing = [name for name, present in settings.required_settings.items() if not present]
+        raise ProductionConfigurationError(
+            f"calendly lookup is partially configured; missing: {', '.join(missing)}"
+        )
+    if not settings.is_configured:
+        return
+    try:
+        parse_calendly_installations(settings.installations)
+    except CalendlyInstallationError as error:
+        raise ProductionConfigurationError(f"GVAS_CALENDLY_INSTALLATIONS: {error}") from error
 
 
 def _require_complete_telnyx_channel(settings: TelnyxSettings) -> None:
@@ -286,9 +312,15 @@ def build_production_ports(
             messaging_profile_id=settings.telnyx.messaging_profile_id or None,
         )
         channel_policies = (sms_quotes_only_policy("Slack"),)
+    appointment_lookup = (
+        CalendlyAppointmentLookup(settings.calendly, client)
+        if settings.calendly.is_configured
+        else None
+    )
     return ApplicationPorts(
         owner_replies=ChannelOwnerReplyRouter(session_factory, owner_replies),
         quote_drafting=DeterministicQuoteDrafter(),
+        appointment_lookup=appointment_lookup,
         quote_delivery=ResendQuoteDeliveryAdapter(settings.resend, client),
         report_email=ResendReportEmailAdapter(settings.resend, client),
         transcription=OpenAITranscriber(

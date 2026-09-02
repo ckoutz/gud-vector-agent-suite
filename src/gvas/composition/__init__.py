@@ -54,6 +54,7 @@ from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.config import Settings
 from gvas.domain.completeness import CompletenessReviewPort
 from gvas.domain.ports import (
+    AppointmentLookupPort,
     AttachmentAccessPort,
     ChecklistEvidencePort,
     CustomerQuoteDeliveryPort,
@@ -95,6 +96,9 @@ class ApplicationPorts:
     source_attachments: AttachmentAccessPort | None = None
     object_storage: ObjectStoragePort | None = None
     report_email: ReportEmailPort | None = None
+    # When absent a quote must carry ``customer:``; when present the quote
+    # workflow may resolve the customer from the owner's appointments instead.
+    appointment_lookup: AppointmentLookupPort | None = None
     channel_policies: tuple[ChannelWorkflowPolicy, ...] = ()
     # The ledger the metered adapters write to; the ceiling guard reads the same
     # one. Defaults to the SQL ledger on the application's sessions.
@@ -198,7 +202,11 @@ def build_application(
         now=now,
         plan_set_uploads=plan_set_uploads if plan_custody is not None else None,
     )
-    quote_handler = QuoteWorkflowHandler(unit_of_work_factory, ports.quote_drafting)
+    quote_handler = QuoteWorkflowHandler(
+        unit_of_work_factory,
+        ports.quote_drafting,
+        appointment_lookup=ports.appointment_lookup,
+    )
     router = WorkflowRouter(
         [
             quote_handler,

@@ -148,6 +148,19 @@ owner-facing message rather than guessed, and corrections are sent in the same
 format. The owner still approves before anything is emailed; approved quotes go
 out through Resend and link to the customer portal.
 
+When Calendly is configured (`GVAS_CALENDLY_*`, see [deployment](docs/deployment.md))
+`customer:` may be omitted and the customer is taken from the owner's
+appointments in the surrounding three UTC days (yesterday, today, tomorrow).
+One match drafts straight away and the approval reply opens with
+`Customer: Jane Doe (jane@example.com) — Calendly, Tue 2:00pm, 234 Del Rd` so
+a wrong match is caught before `approve`. Several matches get one numbered list
+(address, or invitee name and time when the event has no address) and the owner
+replies with the number; `reject` cancels. No match falls back to the
+`customer` required message. An optional `for: <name>` line narrows the
+candidates by a case-insensitive substring of the invitee name. If Calendly
+cannot be reached the quote is dropped with one reply asking for `customer:`
+this time. The same flow runs over Slack and SMS.
+
 Ingress persists the inbound message and one `owner_message.process` command;
 processing remains resumable across restarts. Outbox workers claim with an
 explicit worker identity; attempts increment at claim time, and failed retries
