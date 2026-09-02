@@ -59,7 +59,6 @@ from gvas.domain.ports import (
     TranscriptionPort,
 )
 from gvas.domain.reporting import ReportEmailPort, ReportGenerationPort
-from gvas.domain.reporting import ReportGenerationPort
 from gvas.domain.usage import UsageCeilingGuard, UsageCeilings, UsageLedgerPort
 from gvas.domain.workflows import WorkflowRouter
 from gvas.infrastructure.db import create_engine, create_session_factory
