@@ -14,6 +14,10 @@ src/gvas/composition/
   review.py              transcript -> completeness -> report request
   snapshots.py           completed review -> report snapshot
   dispatcher.py          outbox command routing and worker loop
+  failure_notices.py     one sanitized owner notice per dead-lettered command
+  report_delivery.py     report text posted into the originating thread
+  report_publication.py  approved report version -> DOCX -> object storage -> thread
+  production.py          the deployment's concrete providers and settings
 ```
 
 Application and domain modules still import only `gvas.domain` (plus the
@@ -86,6 +90,7 @@ until `max_attempts` is exhausted.
 | `field_note.review` | `CoordinateFieldNoteReviewService` | `CompletenessReviewPort` |
 | `field_notes_report.generate` | snapshot builder + `GenerateFieldNotesReportService` | `ChecklistEvidencePort`, `ReportGenerationPort` |
 | `field_notes_report.publish` | `PublishFieldNotesReportService` | `ReportArtifactRendererPort`, `ObjectStoragePort` (optional), `OwnerReplyPort` |
+| `plan_set.copy` | `CopyPlanSetIntoCustodyService` (only when `object_storage` and `source_attachments` are supplied) | `AttachmentAccessPort`, `ObjectStoragePort` |
 
 `field_note.review` and `field_notes_report.generate` are new composition
 commands with deterministic UUIDv5 IDs and business-scoped deduplication keys
@@ -194,23 +199,27 @@ the owner can repair that state.
 Each port has exactly one implementation site, all outside domain and
 application:
 
-- `OwnerReplyPort` — `gvas.infrastructure.slack` (owner chat channel).
-  `build_slack_owner_reply_adapter` requires an explicit `SlackDeliveryLedger`;
+- `OwnerReplyPort` — `gvas.infrastructure.slack` (`SlackWebApiChatPoster` and
+  `SlackWebApiFileUploader`). `build_slack_owner_reply_adapter` requires an
+  explicit `SlackDeliveryLedger` (`SqlChannelDeliveryLedger` in production);
   there is no in-memory default, because outbox retries can be claimed by any
-  worker process. Until a production poster exists, Slack delivery is deduped
-  only within one process: the future poster must honor
-  `SlackChatPostRequest.idempotency_key`, and deployments must inject a durable
-  shared ledger.
-- `CustomerQuoteDeliveryPort` — future email adapter, or the future SMS/voice
-  adapter (Telnyx) for text delivery.
-- `TranscriptionPort` and `AttachmentAccessPort` — future media adapters.
-- `CompletenessReviewPort`, `ChecklistEvidencePort`, `ReportGenerationPort`,
-  `QuoteDraftingPort` — future AI adapters.
+  worker process.
+- `CustomerQuoteDeliveryPort` — `ResendQuoteDeliveryAdapter` (email only).
+- `TranscriptionPort` — `OpenAITranscriber`; `AttachmentAccessPort` —
+  `SlackFileAttachmentAccess` for voice notes, `ReportArtifactAccess` for the
+  DOCX the owner-reply adapter attaches.
+- `CompletenessReviewPort` — `GuardedCompletenessReviewer` wrapping the marker
+  reviewer and `OpenAIContradictionGuard`. `ChecklistEvidencePort`,
+  `ReportGenerationPort`, `QuoteDraftingPort` — deterministic implementations;
+  a model replaces them here and nowhere else.
+- `ObjectStoragePort` — `R2ObjectStorage` exists but is **not wired** in
+  `gvas.composition.production`, so published DOCX files currently live only in
+  Slack and are re-rendered from the persisted report on demand.
 - `IntentResolutionPort` — `DeterministicIntentResolver` today; a future
   classifier can replace or precede it.
 
-No hosting, queue runtime, or scheduler is selected: something must call
-`worker.run_once()`/`drain()`.
+`gvas.interfaces.worker` runs `worker.run_once()` in a poll loop for the
+deployed worker service; tests call `drain()` directly.
 
 ## Documented gaps at the neutral boundary
 
