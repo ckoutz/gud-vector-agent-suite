@@ -111,6 +111,28 @@ or retried. MMS media is not surfaced to the workflows.
   unset to run without SMS. Setting some but not all fails startup, naming the
   missing variables.
 
+## Calendly appointment lookup (optional)
+
+With Calendly configured a `quote:` may omit `customer:`; the quote workflow
+asks the `AppointmentLookupPort` (Calendly adapter in production) for the
+owner's active scheduled events and their invitees, and uses the invitee's
+name and email as the recipient. The window is yesterday through tomorrow as
+whole days; businesses carry no timezone yet, so day boundaries are UTC.
+
+- **Token**: `GVAS_CALENDLY_TOKEN` is a Calendly personal access token, sent
+  only as a bearer header to `api.calendly.com`. It never appears in owner
+  replies or startup errors.
+- **Installations**: `GVAS_CALENDLY_INSTALLATIONS` maps
+  `business_uuid=https://api.calendly.com/users/<uuid>` (comma-separated for
+  several businesses; the business UUID must match the Slack mapping). The
+  user URI is the `resource.uri` returned by `GET /users/me` with that token.
+- **Optional as a set**: leave both unset to run without the lookup
+  (`customer:` stays required). Setting one but not the other fails startup,
+  naming the missing variable only.
+- **Failure**: an unreachable or erroring Calendly API never dead-letters the
+  quote; the owner gets one reply asking to include `customer:` this time and
+  the worker logs a sanitized warning.
+
 ## Environment variables
 
 Set on both services unless noted. Values below are placeholders; see
@@ -146,6 +168,9 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_TELNYX_WEBHOOK_PATH` | Default `/telnyx/messaging` |
 | `GVAS_TELNYX_REQUEST_MAX_AGE_SECONDS` | Default 300 |
 | `GVAS_TELNYX_API_BASE_URL`, `GVAS_TELNYX_API_TIMEOUT_SECONDS` | Defaults suffice |
+| `GVAS_CALENDLY_TOKEN` | Optional set; personal access token, bearer header only |
+| `GVAS_CALENDLY_INSTALLATIONS` | Optional set; `business_uuid=https://api.calendly.com/users/<uuid>` |
+| `GVAS_CALENDLY_API_BASE_URL`, `GVAS_CALENDLY_API_TIMEOUT_SECONDS`, `GVAS_CALENDLY_PAGE_SIZE` | Defaults suffice |
 | `GVAS_R2_ACCOUNT_ID`, `GVAS_R2_BUCKET`, `GVAS_R2_ACCESS_KEY_ID`, `GVAS_R2_SECRET_ACCESS_KEY` | Optional as a set: all four on both services keeps every published DOCX in the bucket (an R2 API token with object read/write on that bucket only); none means Slack-only delivery; a partial set fails startup. `GVAS_R2_REGION` defaults to `auto` |
 
 Startup fails immediately when a required variable is missing, so a

@@ -40,6 +40,7 @@ application = build_application(
         checklist_evidence=MarkerChecklistEvidenceAttributor(),
         report_generation=...,      # ReportGenerationPort
         report_email=...,           # ReportEmailPort (optional; email dead-letters without it)
+        appointment_lookup=...,     # AppointmentLookupPort (optional; customer: required without it)
     )
 )
 ```
@@ -92,6 +93,24 @@ delegates to the Slack or Telnyx adapter, both over one
 `SqlChannelDeliveryLedger`. `TelnyxOwnerReplyAdapter` sends text parts only;
 attachment parts are dropped rather than transmitted, since SMS cannot carry a
 DOCX.
+
+### Customer lookup from appointments
+
+`gvas.domain.appointments` defines `Appointment`, `AppointmentWindow` and the
+`AppointmentLookupPort`; the quote handler only sees those. When the port is
+wired and a `quote:` has no `customer:` line, `QuoteWorkflowHandler` queries the
+business's window (three UTC days around now), applies the optional `for:`
+filter, and either injects the single match as the `CustomerRecipient` (the
+drafter still lets an explicit `customer:` win), or parks the quote in
+`awaiting_customer_selection` with the candidates persisted on the quote row.
+The next owner message in that conversation — a digit or `reject` — is routed by
+the existing active-quote lookup, so the selection works the same over Slack
+and SMS and replays via the quote's message key. `AppointmentLookupError`
+abandons the draft with one owner reply; nothing is dead-lettered.
+`gvas.infrastructure.calendly` holds the only Calendly-aware code
+(`CalendlySettings`, `parse_calendly_installations`,
+`CalendlyAppointmentLookup` over `httpx`), and `production.py` wires it when the
+optional variable set is complete.
 
 ## Running the worker with fakes
 

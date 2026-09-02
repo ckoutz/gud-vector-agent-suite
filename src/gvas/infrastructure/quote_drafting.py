@@ -12,7 +12,10 @@ owner-facing message.
     item: 1 | Report | 200.00
     note: on-site visit scheduled for Tuesday
 
-``customer``, ``currency`` and at least one ``item`` are required. Keys and
+``customer``, ``currency`` and at least one ``item`` are required; ``customer``
+may instead arrive as ``request.recipient`` when the workflow resolved it from an
+appointment, and an explicit line still wins. ``for`` is accepted and ignored
+here (the workflow consumes it). Keys and
 surrounding whitespace are case- and space-insensitive; amounts are not. Amounts
 are read as exact minor units, so no floating point value is ever involved.
 
@@ -34,6 +37,8 @@ from gvas.domain.money import (
     supported_currencies,
 )
 from gvas.domain.quotes import (
+    CUSTOMER_LINE_KEYS,
+    CUSTOMER_NAME_LINE_KEY,
     HostedLinkReference,
     QuoteDraftProposal,
     QuoteDraftRejectedError,
@@ -96,7 +101,7 @@ class DeterministicQuoteDrafter:
         self._portal_link_reference = portal_link_reference
 
     async def draft(self, request: QuoteDraftRequest) -> QuoteDraftProposal:
-        recipient: str | None = None
+        recipient: CustomerRecipient | None = request.recipient
         currency: str | None = None
         note: str | None = None
         line_items: list[QuoteLineItem] = []
@@ -111,8 +116,12 @@ class DeterministicQuoteDrafter:
                 )
             field = key.strip().casefold()
             content = value.strip()
-            if field in {"customer", "email"}:
-                recipient = _parse_email(content)
+            if field in CUSTOMER_LINE_KEYS:
+                recipient = CustomerRecipient(
+                    address=_parse_email(content), address_kind=RecipientAddressKind.EMAIL
+                )
+            elif field == CUSTOMER_NAME_LINE_KEY:
+                continue
             elif field == "currency":
                 currency = _parse_currency(content)
             elif field == "item":
@@ -141,7 +150,7 @@ class DeterministicQuoteDrafter:
         return QuoteDraftProposal(
             quote_id=request.quote_id,
             business_id=request.business_id,
-            recipient=CustomerRecipient(address=recipient, address_kind=RecipientAddressKind.EMAIL),
+            recipient=recipient,
             currency=currency,
             line_items=tuple(line_items),
             owner_note=note,

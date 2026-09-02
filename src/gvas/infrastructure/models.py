@@ -303,6 +303,8 @@ class QuoteRecord(Base):
     draft: Mapped[dict[str, JsonValue] | None] = mapped_column(json_type)
     approval_correlation_id: Mapped[str | None] = mapped_column(String(255))
     delivery_receipt: Mapped[dict[str, JsonValue] | None] = mapped_column(json_type)
+    customer_appointment: Mapped[dict[str, JsonValue] | None] = mapped_column(json_type)
+    customer_candidates: Mapped[list[JsonValue] | None] = mapped_column(json_type)
     version: Mapped[int] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

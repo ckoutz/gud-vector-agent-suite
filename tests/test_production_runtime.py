@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 
+from gvas.application.quotes import QuoteWorkflowHandler
 from gvas.composition.production import (
     ProductionConfigurationError,
     ProductionSettings,
@@ -14,6 +15,9 @@ from gvas.composition.production import (
     worker_identity,
 )
 from gvas.config import OpenAISettings, ResendSettings, Settings, WorkerSettings
+from gvas.domain.identifiers import BusinessId
+from gvas.domain.quotes import QUOTE_INTENT
+from gvas.infrastructure.calendly.api import CalendlyAppointmentLookup
 from gvas.infrastructure.object_storage import R2ObjectStorage
 from gvas.infrastructure.slack.config import SlackSettings
 from gvas.interfaces.worker import build_worker, run_worker
@@ -272,3 +276,37 @@ def test_production_settings_read_the_deployment_environment() -> None:
 
     assert resolved.slack.installations
     assert resolved.app.database_url == MANAGED_DATABASE_URL
+
+
+CALENDLY_ENVIRONMENT = {
+    "GVAS_CALENDLY_TOKEN": "eyJ-not-a-real-calendly-token",
+    "GVAS_CALENDLY_INSTALLATIONS": f"{BUSINESS_ID}=https://api.calendly.com/users/AAAAAAAA",
+}
+
+
+@pytest.mark.usefixtures("production_environment")
+def test_calendly_lookup_is_optional_as_a_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = build_production_runtime(load_production_settings())
+    handler = runtime.application.router.route(QUOTE_INTENT)
+    assert isinstance(handler, QuoteWorkflowHandler)
+    assert handler._appointment_lookup is None
+
+    for name, value in CALENDLY_ENVIRONMENT.items():
+        monkeypatch.setenv(name, value)
+    runtime = build_production_runtime(load_production_settings())
+    handler = runtime.application.router.route(QUOTE_INTENT)
+    assert isinstance(handler, QuoteWorkflowHandler)
+    assert isinstance(handler._appointment_lookup, CalendlyAppointmentLookup)
+    assert handler._appointment_lookup.serves(BusinessId(BUSINESS_ID))
+
+    monkeypatch.delenv("GVAS_CALENDLY_INSTALLATIONS")
+    with pytest.raises(ProductionConfigurationError) as error:
+        load_production_settings()
+    message = str(error.value)
+    assert "GVAS_CALENDLY_INSTALLATIONS" in message
+    assert "GVAS_CALENDLY_TOKEN" not in message
+    assert "eyJ-not-a-real-calendly-token" not in message
+
+    monkeypatch.setenv("GVAS_CALENDLY_INSTALLATIONS", "not-a-uuid=https://api.calendly.com/users/A")
+    with pytest.raises(ProductionConfigurationError, match="GVAS_CALENDLY_INSTALLATIONS"):
+        load_production_settings()

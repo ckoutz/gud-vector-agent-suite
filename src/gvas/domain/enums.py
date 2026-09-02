@@ -44,6 +44,7 @@ class OutboxStatus(StrEnum):
 
 class QuoteStatus(StrEnum):
     DRAFTING = "drafting"
+    AWAITING_CUSTOMER_SELECTION = "awaiting_customer_selection"
     AWAITING_APPROVAL = "awaiting_approval"
     REJECTED = "rejected"
     APPROVED = "approved"

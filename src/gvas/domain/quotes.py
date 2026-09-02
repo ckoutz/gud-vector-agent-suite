@@ -4,6 +4,7 @@ from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from gvas.domain.appointments import Appointment
 from gvas.domain.enums import (
     DeliveryStatus,
     HostedLinkKind,
@@ -29,6 +30,8 @@ from gvas.domain.outbox import OutboxCommand
 
 QUOTE_INTENT = WorkflowIntent("quote")
 QUOTE_TRIGGER_PREFIX = "quote:"
+CUSTOMER_LINE_KEYS = frozenset({"customer", "email"})
+CUSTOMER_NAME_LINE_KEY = "for"
 QUOTE_DELIVERY_COMMAND_TYPE = "customer_quote.deliver"
 QUOTE_ID_NAMESPACE = UUID("391d4c69-e58a-4621-ad77-1f45ac243ae2")
 QUOTE_DELIVERY_COMMAND_NAMESPACE = UUID("e940a293-273c-4914-b17b-63ac10db4db4")
@@ -102,6 +105,9 @@ class QuoteDraftRequest(QuoteModel):
     request_text: str = Field(min_length=1)
     revision: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1)
+    # Filled from an appointment when the request carries no customer line;
+    # the drafter uses it only when the text names no customer itself.
+    recipient: CustomerRecipient | None = None
 
 
 class QuoteSendAssessment(QuoteModel):
@@ -128,6 +134,8 @@ class Quote(QuoteModel):
     draft: QuoteDraftProposal | None = None
     approval_correlation_id: str | None = None
     delivery_receipt: DeliveryReceipt | None = None
+    customer_appointment: Appointment | None = None
+    customer_candidates: tuple[Appointment, ...] | None = None
     version: int = Field(default=1, ge=1)
     created_at: datetime
     updated_at: datetime
@@ -159,6 +167,11 @@ class Quote(QuoteModel):
             self.delivery_receipt is None
         ):
             raise ValueError("delivery states require a receipt")
+        awaiting_selection = self.status is QuoteStatus.AWAITING_CUSTOMER_SELECTION
+        if awaiting_selection != (self.customer_candidates is not None):
+            raise ValueError("customer candidates exist exactly while a selection is awaited")
+        if self.customer_candidates is not None and len(self.customer_candidates) < 2:
+            raise ValueError("a customer selection needs at least two candidates")
         return self
 
     @property
@@ -190,16 +203,59 @@ class Quote(QuoteModel):
     def abandon_draft(self, message_key: MessageKey, now: datetime) -> "Quote":
         """Close a draft the drafting port refused so the owner can send a new one."""
 
-        if self.status is not QuoteStatus.DRAFTING:
+        if self.status not in {QuoteStatus.DRAFTING, QuoteStatus.AWAITING_CUSTOMER_SELECTION}:
             raise InvalidQuoteTransitionError(f"cannot abandon quote in {self.status}")
         return self.model_copy(
             update={
                 "status": QuoteStatus.REJECTED,
+                "customer_candidates": None,
                 "last_message_key": message_key,
                 "updated_at": now,
                 "version": self.version + 1,
             }
         )
+
+    def await_customer_selection(
+        self, candidates: tuple[Appointment, ...], message_key: MessageKey, now: datetime
+    ) -> "Quote":
+        if self.status is not QuoteStatus.DRAFTING:
+            raise InvalidQuoteTransitionError(f"cannot ask for a customer in {self.status}")
+        if len(candidates) < 2:
+            raise ValueError("a customer selection needs at least two candidates")
+        return self.model_copy(
+            update={
+                "status": QuoteStatus.AWAITING_CUSTOMER_SELECTION,
+                "customer_candidates": candidates,
+                "customer_appointment": None,
+                "last_message_key": message_key,
+                "updated_at": now,
+                "version": self.version + 1,
+            }
+        )
+
+    def select_customer(self, choice: int, message_key: MessageKey, now: datetime) -> "Quote":
+        """Resume drafting with the ``choice``-th (1-based) listed appointment."""
+
+        if self.status is not QuoteStatus.AWAITING_CUSTOMER_SELECTION:
+            raise InvalidQuoteTransitionError(f"no customer selection is pending in {self.status}")
+        candidates = self.customer_candidates or ()
+        if not 1 <= choice <= len(candidates):
+            raise ValueError(f"choice must be between 1 and {len(candidates)}")
+        return self.model_copy(
+            update={
+                "status": QuoteStatus.DRAFTING,
+                "customer_candidates": None,
+                "customer_appointment": candidates[choice - 1],
+                "last_message_key": message_key,
+                "updated_at": now,
+                "version": self.version + 1,
+            }
+        )
+
+    def with_customer_appointment(self, appointment: Appointment) -> "Quote":
+        if self.status is not QuoteStatus.DRAFTING:
+            raise InvalidQuoteTransitionError(f"cannot pick a customer in {self.status}")
+        return self.model_copy(update={"customer_appointment": appointment})
 
     def approve(self, message_key: MessageKey, now: datetime) -> "Quote":
         self._require_awaiting_approval()
@@ -345,6 +401,28 @@ def new_quote(
 def has_quote_trigger(message: NormalizedOwnerMessage) -> bool:
     text = "\n".join(part.text for part in message.parts if isinstance(part, TextPart))
     return text.lstrip().lower().startswith(QUOTE_TRIGGER_PREFIX)
+
+
+def _request_lines(request_text: str) -> list[tuple[str, str]]:
+    lines: list[tuple[str, str]] = []
+    for line in request_text.splitlines():
+        key, separator, value = line.partition(":")
+        if separator:
+            lines.append((key.strip().casefold(), value.strip()))
+    return lines
+
+
+def has_customer_line(request_text: str) -> bool:
+    return any(key in CUSTOMER_LINE_KEYS for key, _ in _request_lines(request_text))
+
+
+def requested_customer_name(request_text: str) -> str | None:
+    """The ``for: <name>`` filter, if the owner wrote one."""
+
+    for key, value in _request_lines(request_text):
+        if key == CUSTOMER_NAME_LINE_KEY and value:
+            return value
+    return None
 
 
 def approval_correlation_id(quote_id: QuoteId, revision: int) -> str:

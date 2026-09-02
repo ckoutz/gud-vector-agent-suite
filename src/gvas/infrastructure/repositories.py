@@ -623,11 +623,28 @@ class SqlQuoteRepository:
                 "draft": row.draft,
                 "approval_correlation_id": row.approval_correlation_id,
                 "delivery_receipt": row.delivery_receipt,
+                "customer_appointment": row.customer_appointment,
+                "customer_candidates": row.customer_candidates,
                 "version": row.version,
                 "created_at": created_at,
                 "updated_at": updated_at,
             }
         )
+
+    @staticmethod
+    def _customer_columns(quote: Quote) -> dict[str, object]:
+        return {
+            "customer_appointment": (
+                quote.customer_appointment.model_dump(mode="json")
+                if quote.customer_appointment is not None
+                else None
+            ),
+            "customer_candidates": (
+                [candidate.model_dump(mode="json") for candidate in quote.customer_candidates]
+                if quote.customer_candidates is not None
+                else None
+            ),
+        }
 
     async def get(self, business_id: BusinessId, quote_id: QuoteId) -> Quote | None:
         row = await self.session.scalar(
@@ -698,6 +715,7 @@ class SqlQuoteRepository:
             version=quote.version,
             created_at=quote.created_at,
             updated_at=quote.updated_at,
+            **self._customer_columns(quote),
         )
         try:
             async with self.session.begin_nested():
@@ -729,6 +747,7 @@ class SqlQuoteRepository:
                 ),
                 version=quote.version,
                 updated_at=quote.updated_at,
+                **self._customer_columns(quote),
             )
         )
         if _rowcount(result) != 1:
