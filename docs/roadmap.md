@@ -19,7 +19,7 @@ waiting on the owner and are not built until answered.
 | Unmatched messages get the available triggers once instead of retrying to dead-letter | #25 |
 | Review model annotates marker-satisfied checklist items with verbatim note excerpts (deterministic-first) | #27 |
 | PDF/image uploads in an open case thread enter plan custody; dead-lettered copies notify the owner; "not enabled" replied once when custody is unwired | #28 |
-| Telnyx SMS as a second owner channel, quotes only (`quote:`, follow-ups, approve/send); other triggers get one "quotes only, field notes belong in Slack" reply | #PR_NUMBER |
+| Telnyx SMS as a second owner channel, quotes only (`quote:`, follow-ups, approve/send); other triggers get one "quotes only, field notes belong in Slack" reply | #31 |
 
 ## In progress
 
