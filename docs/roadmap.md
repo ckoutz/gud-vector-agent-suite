@@ -18,7 +18,7 @@ waiting on the owner and are not built until answered.
 | Worker and web log one line per command outcome to stderr at `GVAS_LOG_LEVEL` | #23 |
 | Unmatched messages get the available triggers once instead of retrying to dead-letter | #25 |
 | PDF/image uploads in an open case thread enter plan custody; dead-lettered copies notify the owner; "not enabled" replied once when custody is unwired | #28 |
-| `send report to <address>` emails the published DOCX to one typed recipient on request | #PRNUM |
+| `send report to <address>` emails the published DOCX to one typed recipient on request | #29 |
 
 ## In progress
 
