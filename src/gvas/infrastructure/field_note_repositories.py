@@ -578,7 +578,7 @@ class SqlFieldNoteTranscriptionRepository:
             result=TranscriptionClaimResult.ACQUIRED,
             part_id=FieldNotePartId(row.id),
             business_id=BusinessId(row.business_id),
-            audio=AudioReference(attachment=attachment),
+            audio=AudioReference(attachment=attachment, business_id=BusinessId(row.business_id)),
             attempts=row.attempts,
             lease_token=row.lease_token,
         )

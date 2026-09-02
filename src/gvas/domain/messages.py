@@ -131,6 +131,9 @@ class DeliveryReceipt(DomainModel):
 
 class AudioReference(DomainModel):
     attachment: AttachmentReference
+    # Present when the audio belongs to a tenant, so a metered adapter can
+    # attribute what the call consumed to that business.
+    business_id: BusinessId | None = None
 
     @field_validator("attachment")
     @classmethod

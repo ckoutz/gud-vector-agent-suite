@@ -32,6 +32,7 @@ from gvas.application.guarded_checklist_evidence import GuardedChecklistEvidence
 from gvas.composition import Application, ApplicationPorts, build_application
 from gvas.composition.report_publication import ReportArtifactAccess
 from gvas.config import (
+    CostCeilingSettings,
     DatabaseUrlError,
     ObjectStorageSettings,
     OpenAISettings,
@@ -40,6 +41,7 @@ from gvas.config import (
     WorkerSettings,
     require_managed_postgres_url,
 )
+from gvas.domain.usage import UsageCeilings
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.delivery_ledger import SqlChannelDeliveryLedger
 from gvas.infrastructure.object_storage import R2ObjectStorage
@@ -63,6 +65,7 @@ from gvas.infrastructure.slack.installations import (
     SlackInstallationError,
     parse_slack_installations,
 )
+from gvas.infrastructure.usage_ledger import SqlUsageLedger
 from gvas.interfaces.http.app import create_app
 from gvas.interfaces.logging_setup import configure_logging
 
@@ -91,6 +94,13 @@ class ProductionSettings:
     resend: ResendSettings
     worker: WorkerSettings
     storage: ObjectStorageSettings = field(default_factory=ObjectStorageSettings)
+    cost_ceilings: CostCeilingSettings = field(default_factory=CostCeilingSettings)
+
+    def usage_ceilings(self) -> UsageCeilings:
+        return UsageCeilings(
+            transcription_seconds=self.cost_ceilings.transcription_seconds,
+            review_tokens=self.cost_ceilings.review_tokens,
+        )
 
 
 def load_production_settings() -> ProductionSettings:
@@ -101,6 +111,7 @@ def load_production_settings() -> ProductionSettings:
         resend=ResendSettings(),
         worker=WorkerSettings(),
         storage=ObjectStorageSettings(),
+        cost_ceilings=CostCeilingSettings(),
     )
     missing = [
         name
@@ -205,6 +216,7 @@ def build_production_ports(
 ) -> ApplicationPorts:
     poster = SlackWebApiChatPoster(settings.slack, client)
     attachments = SlackFileAttachmentAccess(settings.slack, client)
+    usage_ledger = SqlUsageLedger(session_factory)
     report_artifacts = ReportArtifactAccess(
         DocxReportRenderer(), SqlReportUnitOfWorkFactory(session_factory)
     )
@@ -222,9 +234,12 @@ def build_production_ports(
         quote_drafting=DeterministicQuoteDrafter(),
         quote_delivery=ResendQuoteDeliveryAdapter(settings.resend, client),
         report_email=ResendReportEmailAdapter(settings.resend, client),
-        transcription=OpenAITranscriber(settings.openai, client, attachments),
+        transcription=OpenAITranscriber(
+            settings.openai, client, attachments, usage_ledger=usage_ledger
+        ),
         completeness_review=GuardedCompletenessReviewer(
-            MarkerCompletenessReviewer(), OpenAIContradictionGuard(settings.openai, client)
+            MarkerCompletenessReviewer(),
+            OpenAIContradictionGuard(settings.openai, client, usage_ledger=usage_ledger),
         ),
         checklist_evidence=GuardedChecklistEvidenceAttributor(
             MarkerChecklistEvidenceAttributor(),
@@ -233,6 +248,7 @@ def build_production_ports(
         report_generation=DeterministicReportGenerator(),
         source_attachments=attachments,
         object_storage=object_storage,
+        usage_ledger=usage_ledger,
     )
 
 
@@ -247,6 +263,7 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
         resolved.app,
         session_factory=session_factory,
         lease_ttl=timedelta(seconds=resolved.worker.lease_seconds),
+        ceilings=resolved.usage_ceilings(),
     )
     router = build_slack_event_router(application.ingest_service, resolved.slack)
     return ProductionRuntime(

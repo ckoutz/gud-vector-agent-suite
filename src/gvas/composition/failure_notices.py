@@ -9,6 +9,11 @@ attempt history stay in the outbox record and the logs.
 Owner reply delivery is deliberately excluded. If replies cannot reach the
 conversation, a notice about the reply would fail the same way and enqueue
 another notice.
+
+The same anchoring serves the monthly cost ceiling: a transcription or review
+command held back by the ceiling completes normally and the owner is told once,
+in the case thread, that the limit is reached. Only units are ever mentioned,
+never money.
 """
 
 from dataclasses import dataclass
@@ -73,6 +78,21 @@ RESTART_NOTES_IN_NEW_THREAD: Final = (
     "without it. Send 'close notes' here, then start the notes again in a new "
     "thread and re-upload the recording."
 )
+
+CEILING_GUIDANCE: Final[dict[str, str]] = {
+    FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE: (
+        "This month's transcription limit for your business is reached, so this "
+        "voice note was not transcribed and these notes cannot complete with it "
+        "pending. The case stays open; when you are ready, send 'close notes' here "
+        "and start the notes again in a new thread, typed, or with the recording "
+        "again next month."
+    ),
+    FIELD_NOTE_REVIEW_COMMAND_TYPE: (
+        "This month's review limit for your business is reached, so these notes "
+        "were not reviewed. The case stays open and the transcript is kept; "
+        "add a note in this thread next month to start the review."
+    ),
+}
 
 FAILURE_GUIDANCE: Final[dict[str, tuple[str, str]]] = {
     OWNER_MESSAGE_PROCESS_COMMAND_TYPE: (
@@ -143,14 +163,25 @@ class NotifyExhaustedCommandService:
         if guidance is None or command.command_type == OWNER_REPLY_COMMAND_TYPE:
             return None
         summary, recovery = guidance
+        return await self._post(command, f"{summary}\n{recovery}", "failure_notice")
+
+    async def notify_ceiling_reached(self, command: OutboxCommand) -> MessageId | None:
+        """One notice per held-back command; replays reuse the same outbound message."""
+
+        text = CEILING_GUIDANCE.get(command.command_type)
+        if text is None:
+            return None
+        return await self._post(command, text, "ceiling_notice")
+
+    async def _post(self, command: OutboxCommand, text: str, prefix: str) -> MessageId | None:
         anchor = await self._anchor(command)
         if anchor is None:
             return None
         message = OutboundOwnerMessage(
             business_id=anchor.business_id,
             conversation_ref=anchor.conversation_ref,
-            parts=(TextPart(text=f"{summary}\n{recovery}"),),
-            correlation_id=f"failure_notice:{command.command_id}",
+            parts=(TextPart(text=text),),
+            correlation_id=f"{prefix}:{command.command_id}",
         )
         async with self._messages() as unit_of_work:
             outbound_message_id = await unit_of_work.outbound_messages.create(

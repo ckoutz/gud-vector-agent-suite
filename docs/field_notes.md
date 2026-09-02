@@ -53,8 +53,10 @@ in the thread.
 
 - How long neutral attachment locators and payloads may be retained, and
   whether transcripts must be redacted or purged with source media.
-- Which transcription provider/model, cost ceiling, maximum audio duration or
-  size, and language handling should be selected.
+- Which transcription provider/model, maximum audio duration or size, and
+  language handling should be selected. Monthly per-business ceilings exist
+  (`GVAS_COST_CEILING_*`, see `docs/deployment.md`); the values to set for the
+  pilot are still an owner decision.
 - Whether transcription retries should have a ceiling beyond the outbox
   `max_attempts`. A command that exhausts them dead-letters and posts one
   owner-facing notice with recovery guidance (see `docs/composition.md`).

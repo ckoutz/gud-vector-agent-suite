@@ -200,7 +200,7 @@ class FieldNotePart(FieldNoteModel):
     def audio_reference(self) -> AudioReference:
         if self.kind is not FieldNotePartKind.AUDIO or self.attachment is None:
             raise ValueError("field-note part is not audio")
-        return AudioReference(attachment=self.attachment)
+        return AudioReference(attachment=self.attachment, business_id=self.business_id)
 
 
 class FieldNoteCase(FieldNoteModel):

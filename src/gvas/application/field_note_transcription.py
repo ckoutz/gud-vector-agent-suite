@@ -22,6 +22,7 @@ from gvas.domain.field_notes import (
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.messages import AttachmentPayload, AttachmentReference
 from gvas.domain.ports import AttachmentAccessPort, TranscriptionPort
+from gvas.domain.usage import UsageCeilingGuard, UsageKind
 
 
 class FieldNoteMediaHandoff:
@@ -56,6 +57,7 @@ class TranscriptionOutcome(StrEnum):
     MISSING = "missing"
     FAILED = "failed"
     LEASE_LOST = "lease_lost"
+    CEILING_REACHED = "ceiling_reached"
 
 
 @dataclass(frozen=True)
@@ -72,10 +74,14 @@ class FieldNoteUnitOfWorkFactory(Protocol):
 
 class TranscribeFieldNoteAudioService:
     def __init__(
-        self, unit_of_work_factory: FieldNoteUnitOfWorkFactory, transcription: TranscriptionPort
+        self,
+        unit_of_work_factory: FieldNoteUnitOfWorkFactory,
+        transcription: TranscriptionPort,
+        ceilings: UsageCeilingGuard | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._transcription = transcription
+        self._ceilings = ceilings or UsageCeilingGuard()
 
     async def transcribe(
         self,
@@ -85,6 +91,16 @@ class TranscribeFieldNoteAudioService:
         now: datetime,
         stale_before: datetime,
     ) -> TranscriptionResultReport:
+        # Checked before the claim so a part held back by the ceiling keeps its
+        # PENDING status and attempt count untouched; nothing is leased.
+        if await self._ceilings.is_reached(
+            business_id, UsageKind.TRANSCRIPTION_AUDIO_SECONDS, now=now
+        ):
+            return TranscriptionResultReport(
+                TranscriptionOutcome.CEILING_REACHED,
+                part_id=part_id,
+                detail="monthly transcription ceiling reached",
+            )
         async with self._unit_of_work_factory() as unit_of_work:
             claim = await unit_of_work.field_note_transcriptions.claim(
                 business_id, part_id, now=now, stale_before=stale_before
