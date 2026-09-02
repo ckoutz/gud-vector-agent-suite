@@ -21,7 +21,7 @@ from gvas.domain.quotes import (
     QuoteDraftRequest,
     QuoteLineItem,
 )
-from gvas.domain.reporting import ReportGenerationRequest
+from gvas.domain.reporting import ReportEmailRequest, ReportGenerationRequest
 
 FAKE_NOW = datetime(2026, 3, 4, 5, 6, tzinfo=UTC)
 
@@ -85,6 +85,23 @@ class CustomerDeliveryFake:
         )
 
 
+class ReportEmailFake:
+    def __init__(self, fail_times: int = 0) -> None:
+        self.requests: list[ReportEmailRequest] = []
+        self.fail_times = fail_times
+
+    async def deliver(self, request: ReportEmailRequest) -> DeliveryReceipt:
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise RuntimeError("resend returned http 500 api_key=re_secret")
+        self.requests.append(request)
+        return DeliveryReceipt(
+            status=DeliveryStatus.ACCEPTED,
+            provider_message_id=f"report-email-{len(self.requests)}",
+            occurred_at=FAKE_NOW,
+        )
+
+
 class TranscriptionFake:
     """Returns configured transcripts and observes committed state while called.
 
@@ -143,6 +160,7 @@ def application_ports(
     quote_delivery: CustomerDeliveryFake,
     transcription: TranscriptionFake,
     report_generation: ReportGenerationFake,
+    report_email: ReportEmailFake | None = None,
 ) -> ApplicationPorts:
     return ApplicationPorts(
         owner_replies=owner_replies,
@@ -152,4 +170,5 @@ def application_ports(
         completeness_review=MarkerCompletenessReviewer(),
         checklist_evidence=MarkerChecklistEvidenceAttributor(),
         report_generation=report_generation,
+        report_email=report_email,
     )

@@ -1,3 +1,5 @@
+import base64
+import json
 from uuid import uuid4
 
 import httpx
@@ -13,9 +15,14 @@ from gvas.domain.messages import (
     CustomerDeliveryRequest,
     CustomerRecipient,
 )
+from gvas.domain.reporting import DOCX_MEDIA_TYPE, RenderedReportArtifact, ReportEmailRequest
 from gvas.infrastructure.hosted_links import PORTAL_LOGIN_LINK_REFERENCE
 from gvas.infrastructure.openai_transcription import OpenAITranscriber, TranscriptionError
-from gvas.infrastructure.resend import ResendDeliveryError, ResendQuoteDeliveryAdapter
+from gvas.infrastructure.resend import (
+    ResendDeliveryError,
+    ResendQuoteDeliveryAdapter,
+    ResendReportEmailAdapter,
+)
 
 OPENAI_KEY = "sk-test"
 RESEND_KEY = "re-test"
@@ -177,3 +184,64 @@ async def test_quote_email_provider_error_is_sanitized() -> None:
             await adapter.deliver(delivery_request())
 
     assert RESEND_KEY not in str(error.value)
+
+
+def report_email_request() -> ReportEmailRequest:
+    return ReportEmailRequest(
+        business_id=BUSINESS_ID,
+        recipient_address="client@example.com",
+        idempotency_key="field_notes_report_email:v:client@example.com:m1",
+        subject="Roof Inspection — report version 2",
+        body_text="The approved report is attached.",
+        artifact=RenderedReportArtifact(
+            filename="roof-inspection-v2.docx",
+            media_type=DOCX_MEDIA_TYPE,
+            content=b"PK\x03\x04docx-bytes",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_report_email_posts_the_docx_as_a_base64_attachment() -> None:
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"id": "email_9"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        adapter = ResendReportEmailAdapter(resend_settings("office@gudvector.com"), client)
+        receipt = await adapter.deliver(report_email_request())
+
+    assert receipt.provider_message_id == "email_9"
+    request = seen[0]
+    assert request.url.path.endswith("/emails")
+    assert request.headers["authorization"] == f"Bearer {RESEND_KEY}"
+    assert request.headers["idempotency-key"] == "field_notes_report_email:v:client@example.com:m1"
+    body = json.loads(request.read())
+    assert body["from"] == "quotes@gudvector.com"
+    assert body["reply_to"] == "office@gudvector.com"
+    assert body["to"] == ["client@example.com"]
+    assert body["subject"] == "Roof Inspection — report version 2"
+    assert body["text"] == "The approved report is attached."
+    assert body["attachments"] == [
+        {
+            "filename": "roof-inspection-v2.docx",
+            "content": base64.b64encode(b"PK\x03\x04docx-bytes").decode("ascii"),
+            "content_type": DOCX_MEDIA_TYPE,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_report_email_provider_error_is_sanitized() -> None:
+    def handle(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": f"boom {RESEND_KEY}"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        adapter = ResendReportEmailAdapter(resend_settings(), client)
+        with pytest.raises(ResendDeliveryError) as error:
+            await adapter.deliver(report_email_request())
+
+    assert RESEND_KEY not in str(error.value)
+    assert "boom" not in str(error.value)

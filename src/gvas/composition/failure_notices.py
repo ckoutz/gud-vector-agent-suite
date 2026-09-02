@@ -34,6 +34,7 @@ from gvas.domain.plans import PLAN_SET_COPY_COMMAND_TYPE
 from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE
 from gvas.domain.reporting import (
     FIELD_NOTES_REPORT_COMMAND_TYPE,
+    FIELD_NOTES_REPORT_EMAIL_COMMAND_TYPE,
     FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE,
 )
 from gvas.domain.repositories import UnitOfWork
@@ -46,6 +47,8 @@ from gvas.domain.repositories import UnitOfWork
 # review and report work, by contrast, is re-enqueued by the next note in the
 # same thread, a publish is re-enqueued by approving again, and a plan-set copy
 # is re-enqueued by uploading the file again (a fresh upload is a new file).
+# same thread, a publish is re-enqueued by approving again, and a report email
+# by asking for it again.
 RESEND_IN_THREAD: Final = "Send the message again in this thread."
 NEW_NOTE_IN_THREAD: Final = (
     "Add the note again in this thread; that starts the review over. "
@@ -60,6 +63,10 @@ APPROVE_AGAIN_IN_THREAD: Final = (
 )
 UPLOAD_PLAN_SET_AGAIN_IN_THREAD: Final = (
     "The notes are unaffected. Upload the plan set file again in this thread to retry storing it."
+)
+SEND_REPORT_AGAIN_IN_THREAD: Final = (
+    "The document in this thread is unaffected. Send 'send report to <address>' "
+    "again in this thread to retry the email."
 )
 RESTART_NOTES_IN_NEW_THREAD: Final = (
     "That recording is not part of these notes and the case cannot complete "
@@ -95,6 +102,10 @@ FAILURE_GUIDANCE: Final[dict[str, tuple[str, str]]] = {
     PLAN_SET_COPY_COMMAND_TYPE: (
         "A plan set uploaded to this thread could not be stored.",
         UPLOAD_PLAN_SET_AGAIN_IN_THREAD,
+    ),
+    FIELD_NOTES_REPORT_EMAIL_COMMAND_TYPE: (
+        "The published report could not be emailed to the requested address.",
+        SEND_REPORT_AGAIN_IN_THREAD,
     ),
 }
 

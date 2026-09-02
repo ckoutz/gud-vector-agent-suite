@@ -14,6 +14,7 @@ on any failure. Report generation remains deterministic. Swapping a model in or
 out is a change to this module and the ports it fills, not to the application.
 """
 
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -33,6 +34,7 @@ from gvas.composition import Application, ApplicationPorts, build_application
 from gvas.composition.report_publication import ReportArtifactAccess
 from gvas.config import (
     DatabaseUrlError,
+    ObjectStorageSettings,
     OpenAISettings,
     ResendSettings,
     Settings,
@@ -42,13 +44,14 @@ from gvas.config import (
 from gvas.domain.ports import OwnerReplyPort
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.delivery_ledger import SqlChannelDeliveryLedger
+from gvas.infrastructure.object_storage import R2ObjectStorage
 from gvas.infrastructure.openai_checklist_evidence import OpenAIChecklistEvidenceAnnotator
 from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGuard
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
 from gvas.infrastructure.owner_reply_routing import ChannelOwnerReplyRouter
 from gvas.infrastructure.quote_drafting import DeterministicQuoteDrafter
 from gvas.infrastructure.reporting_unit_of_work import SqlReportUnitOfWorkFactory
-from gvas.infrastructure.resend import ResendQuoteDeliveryAdapter
+from gvas.infrastructure.resend import ResendQuoteDeliveryAdapter, ResendReportEmailAdapter
 from gvas.infrastructure.slack.api import (
     SlackFileAttachmentAccess,
     SlackWebApiChatPoster,
@@ -79,6 +82,15 @@ from gvas.infrastructure.telnyx.installations import (
 from gvas.interfaces.http.app import create_app
 from gvas.interfaces.logging_setup import configure_logging
 
+logger = logging.getLogger(__name__)
+
+R2_SETTING_NAMES = (
+    "GVAS_R2_ACCOUNT_ID",
+    "GVAS_R2_BUCKET",
+    "GVAS_R2_ACCESS_KEY_ID",
+    "GVAS_R2_SECRET_ACCESS_KEY",
+)
+
 
 class ProductionConfigurationError(RuntimeError):
     """Raised at startup when required settings are missing or malformed.
@@ -94,6 +106,7 @@ class ProductionSettings:
     openai: OpenAISettings
     resend: ResendSettings
     worker: WorkerSettings
+    storage: ObjectStorageSettings = field(default_factory=ObjectStorageSettings)
     telnyx: TelnyxSettings = field(default_factory=TelnyxSettings)
 
 
@@ -104,6 +117,7 @@ def load_production_settings() -> ProductionSettings:
         openai=OpenAISettings(),
         resend=ResendSettings(),
         worker=WorkerSettings(),
+        storage=ObjectStorageSettings(),
         telnyx=TelnyxSettings(),
     )
     missing = [
@@ -128,8 +142,30 @@ def load_production_settings() -> ProductionSettings:
         raise ProductionConfigurationError(f"missing required settings: {', '.join(missing)}")
     _require_managed_database(settings.app.database_url)
     _require_single_owner(settings.slack.installations)
+    _require_complete_object_storage(settings.storage)
     _require_complete_telnyx_channel(settings.telnyx)
     return settings
+
+
+def _require_complete_object_storage(storage: ObjectStorageSettings) -> None:
+    """Object storage is optional, but half of it is a misconfiguration.
+
+    With no ``GVAS_R2_*`` set the DOCX is delivered to the channel only; with
+    all of them set it is also kept in the bucket. Some-but-not-all means the
+    operator intended durability and would silently not get it.
+    """
+
+    present = (
+        bool(storage.account_id),
+        bool(storage.bucket),
+        bool(storage.access_key_id),
+        bool(storage.secret_access_key),
+    )
+    if any(present) and not all(present):
+        missing = [name for name, ok in zip(R2_SETTING_NAMES, present, strict=True) if not ok]
+        raise ProductionConfigurationError(
+            f"object storage is partially configured; missing: {', '.join(missing)}"
+        )
 
 
 def _require_complete_telnyx_channel(settings: TelnyxSettings) -> None:
@@ -216,6 +252,9 @@ def build_production_ports(
     report_artifacts = ReportArtifactAccess(
         DocxReportRenderer(), SqlReportUnitOfWorkFactory(session_factory)
     )
+    object_storage = R2ObjectStorage(settings.storage) if settings.storage.is_configured else None
+    if object_storage is None:
+        logger.warning("object storage not configured; published reports live in Slack only")
     ledger = SqlChannelDeliveryLedger(session_factory)
     owner_replies: dict[str, OwnerReplyPort] = {
         SLACK_SOURCE_NAMESPACE: build_slack_owner_reply_adapter(
@@ -239,6 +278,7 @@ def build_production_ports(
         owner_replies=ChannelOwnerReplyRouter(session_factory, owner_replies),
         quote_drafting=DeterministicQuoteDrafter(),
         quote_delivery=ResendQuoteDeliveryAdapter(settings.resend, client),
+        report_email=ResendReportEmailAdapter(settings.resend, client),
         transcription=OpenAITranscriber(settings.openai, client, attachments),
         completeness_review=GuardedCompletenessReviewer(
             MarkerCompletenessReviewer(), OpenAIContradictionGuard(settings.openai, client)
@@ -248,6 +288,8 @@ def build_production_ports(
             OpenAIChecklistEvidenceAnnotator(settings.openai, client),
         ),
         report_generation=DeterministicReportGenerator(),
+        source_attachments=attachments,
+        object_storage=object_storage,
         channel_policies=channel_policies,
     )
 

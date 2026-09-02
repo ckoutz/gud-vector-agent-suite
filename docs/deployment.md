@@ -131,7 +131,7 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_OPENAI_TRANSCRIPTION_MODEL` | Default `whisper-1` |
 | `GVAS_OPENAI_REVIEW_MODEL` | Default `gpt-5.6-luna` |
 | `GVAS_OPENAI_MAX_AUDIO_BYTES`, `GVAS_OPENAI_TIMEOUT_SECONDS` | Defaults suffice |
-| `GVAS_RESEND_API_KEY` | Required; approved quote email |
+| `GVAS_RESEND_API_KEY` | Required; approved quote email and `send report to <address>` |
 | `GVAS_RESEND_FROM_ADDRESS` | Required; verified sending domain |
 | `GVAS_RESEND_REPLY_TO_ADDRESS` | Optional |
 | `GVAS_RESEND_PORTAL_URL` | Default `https://gudvector.com/portal/login` |
@@ -144,7 +144,7 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_TELNYX_WEBHOOK_PATH` | Default `/telnyx/messaging` |
 | `GVAS_TELNYX_REQUEST_MAX_AGE_SECONDS` | Default 300 |
 | `GVAS_TELNYX_API_BASE_URL`, `GVAS_TELNYX_API_TIMEOUT_SECONDS` | Defaults suffice |
-| `GVAS_R2_*` | Present in `.env.example` but not read by production wiring yet; the DOCX is not kept in object storage until it is |
+| `GVAS_R2_ACCOUNT_ID`, `GVAS_R2_BUCKET`, `GVAS_R2_ACCESS_KEY_ID`, `GVAS_R2_SECRET_ACCESS_KEY` | Optional as a set: all four on both services keeps every published DOCX in the bucket (an R2 API token with object read/write on that bucket only); none means Slack-only delivery; a partial set fails startup. `GVAS_R2_REGION` defaults to `auto` |
 
 Startup fails immediately when a required variable is missing, so a
 misconfigured deploy never accepts Slack traffic.

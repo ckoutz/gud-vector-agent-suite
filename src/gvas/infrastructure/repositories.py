@@ -433,6 +433,18 @@ class SqlOutboundMessageRepository:
             status=DeliveryStatus(outbound.status),
         )
 
+    async def find_by_correlation(
+        self, business_id: BusinessId, conversation_id: ConversationId, correlation_id: str
+    ) -> MessageId | None:
+        row_id = await self.session.scalar(
+            select(OutboundMessage.id).where(
+                OutboundMessage.business_id == business_id,
+                OutboundMessage.conversation_id == conversation_id,
+                OutboundMessage.correlation_id == correlation_id,
+            )
+        )
+        return None if row_id is None else MessageId(row_id)
+
     async def record_delivery(
         self, outbound_message_id: MessageId, receipt: DeliveryReceipt
     ) -> None:
