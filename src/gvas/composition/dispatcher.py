@@ -22,6 +22,7 @@ from gvas.application.quotes import DeliverApprovedQuoteService, QuoteDeliverySt
 from gvas.application.report_generation import GenerateFieldNotesReportService
 from gvas.composition.failure_notices import NotifyExhaustedCommandService
 from gvas.composition.report_delivery import DeliverFieldNotesReportService
+from gvas.composition.report_email import EmailFieldNotesReportService
 from gvas.composition.report_publication import PublishFieldNotesReportService
 from gvas.composition.review import CoordinateFieldNoteReviewService
 from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
@@ -46,7 +47,9 @@ from gvas.domain.plans import PLAN_SET_COPY_COMMAND_TYPE, PlanSetUploadId
 from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE
 from gvas.domain.reporting import (
     FIELD_NOTES_REPORT_COMMAND_TYPE,
+    FIELD_NOTES_REPORT_EMAIL_COMMAND_TYPE,
     FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE,
+    report_email_idempotency_key,
 )
 
 
@@ -107,6 +110,7 @@ class OutboxCommandDispatcher:
         reports: GenerateFieldNotesReportService,
         report_delivery: DeliverFieldNotesReportService,
         report_publication: PublishFieldNotesReportService,
+        report_email: EmailFieldNotesReportService,
         outbox: OutboxService,
         now: Callable[[], datetime],
         plan_custody: CopyPlanSetIntoCustodyService | None = None,
@@ -121,6 +125,7 @@ class OutboxCommandDispatcher:
         self._reports = reports
         self._report_delivery = report_delivery
         self._report_publication = report_publication
+        self._report_email = report_email
         self._outbox = outbox
         self._plan_custody = plan_custody
         self._now = now
@@ -142,6 +147,8 @@ class OutboxCommandDispatcher:
             return await self._generate_report(command)
         if command.command_type == FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE:
             return await self._publish_report(command)
+        if command.command_type == FIELD_NOTES_REPORT_EMAIL_COMMAND_TYPE:
+            return await self._email_report(command)
         if command.command_type == PLAN_SET_COPY_COMMAND_TYPE:
             return await self._copy_plan_set(command)
         raise UnknownCommandTypeError(f"no handler is registered for {command.command_type}")
@@ -243,6 +250,19 @@ class OutboxCommandDispatcher:
         report_version_id = _uuid(command, "report_version_id")
         await self._report_publication.publish(command.business_id, report_version_id)
         return DispatchOutcome(command.command_type, f"published {report_version_id}")
+
+    async def _email_report(self, command: OutboxCommand) -> DispatchOutcome:
+        report_version_id = _uuid(command, "report_version_id")
+        recipient_address = _text(command, "recipient_address")
+        await self._report_email.send(
+            command.business_id,
+            report_version_id,
+            recipient_address,
+            report_email_idempotency_key(
+                report_version_id, recipient_address, _text(command, "request_key")
+            ),
+        )
+        return DispatchOutcome(command.command_type, f"emailed {report_version_id}")
 
     async def _copy_plan_set(self, command: OutboxCommand) -> DispatchOutcome:
         if self._plan_custody is None:

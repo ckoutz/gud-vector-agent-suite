@@ -1,10 +1,12 @@
-"""Resend email delivery for approved customer quotes.
+"""Resend email delivery for approved customer quotes and published reports.
 
 Only this module talks HTTP to Resend. The domain keeps hosted links opaque, so
 the known portal token is resolved to the configured portal URL here; unknown
-tokens are refused rather than guessed at.
+tokens are refused rather than guessed at. Report documents travel as inline
+base64 attachments on the same ``/emails`` endpoint.
 """
 
+import base64
 from datetime import UTC, datetime
 from typing import Final
 
@@ -14,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from gvas.config import ResendSettings
 from gvas.domain.enums import DeliveryStatus, RecipientAddressKind
 from gvas.domain.messages import CustomerDeliveryRequest, DeliveryReceipt
+from gvas.domain.reporting import ReportEmailRequest
 from gvas.infrastructure.hosted_links import PORTAL_LOGIN_LINK_REFERENCE
 
 EMAILS_PATH: Final = "/emails"
@@ -33,25 +36,22 @@ class ResendEmailResponse(BaseModel):
     id: str
 
 
-class ResendQuoteDeliveryAdapter:
-    """Sends the approved quote body to the customer's email address."""
-
+class _ResendEmailClient:
     def __init__(self, settings: ResendSettings, client: httpx.AsyncClient) -> None:
         if not settings.is_configured:
             raise ResendDeliveryError("resend api key and from address are not configured")
         self._settings = settings
         self._client = client
 
-    async def deliver(self, request: CustomerDeliveryRequest) -> DeliveryReceipt:
-        if request.recipient.address_kind is not RecipientAddressKind.EMAIL:
-            raise ResendDeliveryError("resend delivers to email recipients only")
-        if request.attachments:
-            raise ResendDeliveryError("quote emails do not carry attachments")
+    async def _send(
+        self, to: str, subject: str, text: str, idempotency_key: str, **extra: object
+    ) -> DeliveryReceipt:
         payload: dict[str, object] = {
             "from": self._settings.from_address,
-            "to": [request.recipient.address],
-            "subject": request.subject or "Your quote",
-            "text": self._body(request),
+            "to": [to],
+            "subject": subject,
+            "text": text,
+            **extra,
         }
         if self._settings.reply_to_address:
             payload["reply_to"] = self._settings.reply_to_address
@@ -61,24 +61,13 @@ class ResendQuoteDeliveryAdapter:
                 json=payload,
                 headers={
                     "Authorization": f"Bearer {self._settings.api_key}",
-                    "Idempotency-Key": request.idempotency_key,
+                    "Idempotency-Key": idempotency_key,
                 },
                 timeout=self._settings.timeout_seconds,
             )
         except httpx.HTTPError as error:
             raise ResendDeliveryError("resend was unreachable") from error
         return self._receipt(response)
-
-    def _body(self, request: CustomerDeliveryRequest) -> str:
-        links = [self._resolve_link(reference) for reference in request.links]
-        if not links:
-            return request.body_text
-        return "\n\n".join([request.body_text, *links])
-
-    def _resolve_link(self, reference: str) -> str:
-        if reference == PORTAL_LOGIN_LINK_REFERENCE:
-            return self._settings.portal_url
-        raise ResendDeliveryError("quote carries an unknown hosted link reference")
 
     @staticmethod
     def _receipt(response: httpx.Response) -> DeliveryReceipt:
@@ -92,4 +81,50 @@ class ResendQuoteDeliveryAdapter:
             status=DeliveryStatus.ACCEPTED,
             provider_message_id=parsed.id,
             occurred_at=_utc_now(),
+        )
+
+
+class ResendQuoteDeliveryAdapter(_ResendEmailClient):
+    """Sends the approved quote body to the customer's email address."""
+
+    async def deliver(self, request: CustomerDeliveryRequest) -> DeliveryReceipt:
+        if request.recipient.address_kind is not RecipientAddressKind.EMAIL:
+            raise ResendDeliveryError("resend delivers to email recipients only")
+        if request.attachments:
+            raise ResendDeliveryError("quote emails do not carry attachments")
+        return await self._send(
+            request.recipient.address,
+            request.subject or "Your quote",
+            self._body(request),
+            request.idempotency_key,
+        )
+
+    def _body(self, request: CustomerDeliveryRequest) -> str:
+        links = [self._resolve_link(reference) for reference in request.links]
+        if not links:
+            return request.body_text
+        return "\n\n".join([request.body_text, *links])
+
+    def _resolve_link(self, reference: str) -> str:
+        if reference == PORTAL_LOGIN_LINK_REFERENCE:
+            return self._settings.portal_url
+        raise ResendDeliveryError("quote carries an unknown hosted link reference")
+
+
+class ResendReportEmailAdapter(_ResendEmailClient):
+    """Emails a rendered report document to the address the owner typed."""
+
+    async def deliver(self, request: ReportEmailRequest) -> DeliveryReceipt:
+        return await self._send(
+            request.recipient_address,
+            request.subject,
+            request.body_text,
+            request.idempotency_key,
+            attachments=[
+                {
+                    "filename": request.artifact.filename,
+                    "content": base64.b64encode(request.artifact.content).decode("ascii"),
+                    "content_type": request.artifact.media_type,
+                }
+            ],
         )

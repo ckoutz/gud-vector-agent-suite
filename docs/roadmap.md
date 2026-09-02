@@ -20,6 +20,7 @@ waiting on the owner and are not built until answered.
 | R2 object storage wired in production when `GVAS_R2_*` is set; published DOCX kept durably | #26 |
 | Review model annotates marker-satisfied checklist items with verbatim note excerpts (deterministic-first) | #27 |
 | PDF/image uploads in an open case thread enter plan custody; dead-lettered copies notify the owner; "not enabled" replied once when custody is unwired | #28 |
+| `send report to <address>` emails the published DOCX to one typed recipient on request | #29 |
 
 ## In progress
 
@@ -30,11 +31,8 @@ waiting on the owner and are not built until answered.
 1. Letterhead DOCX templates per business (`docs/templates_and_site_plans.md`
    §4). **Needs decision:** who supplies the template and where the binding
    manifest lives.
-2. Opt-in email of a published report on request (`send report to <address>`).
-   **Needs decision:** allowed recipients (typed address only, or a
-   per-business office inbox too).
-3. Retention and redaction of transcripts, media, and reports.
-4. Cost ceilings per business for transcription and review calls.
+2. Retention and redaction of transcripts, media, and reports.
+3. Cost ceilings per business for transcription and review calls.
 
 ## Not planned for the pilot
 

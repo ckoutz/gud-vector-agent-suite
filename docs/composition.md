@@ -17,6 +17,7 @@ src/gvas/composition/
   failure_notices.py     one sanitized owner notice per dead-lettered command
   report_delivery.py     report text posted into the originating thread
   report_publication.py  approved report version -> DOCX -> object storage -> thread
+  report_email.py        published report version -> same DOCX -> typed email address
   production.py          the deployment's concrete providers and settings
 ```
 
@@ -38,6 +39,7 @@ application = build_application(
         completeness_review=MarkerCompletenessReviewer(),
         checklist_evidence=MarkerChecklistEvidenceAttributor(),
         report_generation=...,      # ReportGenerationPort
+        report_email=...,           # ReportEmailPort (optional; email dead-letters without it)
     )
 )
 ```
@@ -90,6 +92,7 @@ until `max_attempts` is exhausted.
 | `field_note.review` | `CoordinateFieldNoteReviewService` | `CompletenessReviewPort` |
 | `field_notes_report.generate` | snapshot builder + `GenerateFieldNotesReportService` | `ChecklistEvidencePort`, `ReportGenerationPort` |
 | `field_notes_report.publish` | `PublishFieldNotesReportService` | `ReportArtifactRendererPort`, `ObjectStoragePort` (optional), `OwnerReplyPort` |
+| `field_notes_report.email` | `EmailFieldNotesReportService` | `ReportArtifactRendererPort`, `ReportEmailPort`, `OwnerReplyPort` |
 | `plan_set.copy_into_custody` | `CopyPlanSetIntoCustodyService` (only when `object_storage` and `source_attachments` are supplied) | `AttachmentAccessPort`, `ObjectStoragePort` |
 
 `plan_set.copy_into_custody` is reached from the field-note thread: a PDF or
@@ -130,6 +133,8 @@ field notes: inbound
   -> field_notes_report.publish pinned to that exact report version
   -> DOCX rendered, kept in object storage when configured, shared as a file
      into the same channel/thread
+  -> owner may send `send report to <address>`
+  -> field_notes_report.email pinned to that published version, one typed recipient
   -> case stays open until the owner sends `close notes`
 ```
 
@@ -174,6 +179,26 @@ channel is the system of record: nothing is emailed by default, and `approve
 report` with no active case or no completed report replies with what is missing
 instead of failing. Publication does not close the case.
 
+## Report email is opt-in (decided)
+
+`send report to <address>` in an open case thread emails the published DOCX to
+exactly one typed address. The handler (`SendFieldNoteReportHandler`) resolves
+the case's current completed report version and requires that its publication
+message (correlated `field_notes_report_publish:<version id>`) already exists
+in the conversation; otherwise it replies once to `approve report` first. The
+address must be a single RFC-ish mailbox (`normalize_email_address`): display
+names, lists and bare hosts are refused with one reply and nothing is queued.
+There is no per-business default inbox. The `field_notes_report.email` command
+id and dedup key derive from (report version, lower-cased recipient, requesting
+message key), so a redelivered request collapses to one command and a fresh
+`send report to` retries a dead-lettered email. `EmailFieldNotesReportService`
+re-renders the pinned version with the same `DocxReportRenderer` (byte-for-byte
+the document in the thread), sends it through `ReportEmailPort` under that dedup
+key as the provider idempotency key, and posts one thread confirmation naming
+the recipient, correlated on the same key. The owner is told on enqueue, on
+success, and — via `FAILURE_GUIDANCE` — when the email dead-letters; none of
+those replies carry provider errors.
+
 ## Case closure is explicit (decided)
 
 Neither a completed review nor a generated report closes a case. A case closes
@@ -210,7 +235,8 @@ the owner can repair that state.
 
 A message that carries no trigger and lands in a conversation with no active
 workflow resolves to `message.unmatched`, whose handler replies once with the
-available triggers (`quote:`, `field notes:`, `approve report`, `close notes`)
+available triggers (`quote:`, `field notes:`, `approve report`,
+`send report to <address>`, `close notes`)
 and starts nothing. Not matching is a property of the message, so it is not a
 retryable failure; `IntentUnresolvedError` is reserved for resolver faults
 (unpersisted or ambiguous rows) that a retry can fix.
@@ -225,7 +251,9 @@ application:
   explicit `SlackDeliveryLedger` (`SqlChannelDeliveryLedger` in production);
   there is no in-memory default, because outbox retries can be claimed by any
   worker process.
-- `CustomerQuoteDeliveryPort` — `ResendQuoteDeliveryAdapter` (email only).
+- `CustomerQuoteDeliveryPort` — `ResendQuoteDeliveryAdapter` (email only);
+  `ReportEmailPort` — `ResendReportEmailAdapter` (DOCX as a base64 attachment
+  on the same Resend endpoint).
 - `TranscriptionPort` — `OpenAITranscriber`; `AttachmentAccessPort` —
   `SlackFileAttachmentAccess` for voice notes, `ReportArtifactAccess` for the
   DOCX the owner-reply adapter attaches.
@@ -258,9 +286,10 @@ These need a product or provider decision and are wired only up to the port:
    marker attributor stays the source of truth for satisfied items and the
    review model only annotates them with excerpts it can quote verbatim.
 2. **Report distribution beyond the channel.** The approved DOCX lands in the
-   originating channel; email to a client or office inbox is opt-in and has no
-   command or recipient contract yet. Owner-supplied letterhead templates are
-   designed in [`docs/templates_and_site_plans.md`](templates_and_site_plans.md).
+   originating channel; `send report to <address>` emails it to one typed
+   recipient on request. A per-business office inbox is still undecided.
+   Owner-supplied letterhead templates are designed in
+   [`docs/templates_and_site_plans.md`](templates_and_site_plans.md).
 3. **Permanent failure notices.** A command that exhausts its retries enqueues
    one sanitized notice into its conversation via
    `NotifyExhaustedCommandService`, with per-command recovery guidance

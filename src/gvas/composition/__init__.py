@@ -29,6 +29,7 @@ from gvas.application.quotes import (
     QuoteWorkflowHandler,
 )
 from gvas.application.report_approval import ApproveFieldNoteReportHandler
+from gvas.application.report_email import SendFieldNoteReportHandler
 from gvas.application.report_generation import GenerateFieldNotesReportService
 from gvas.application.templates import PublishTemplateSetService, TemplateResolver
 from gvas.application.unmatched_messages import UnmatchedMessageHandler
@@ -38,6 +39,7 @@ from gvas.composition.failure_notices import NotifyExhaustedCommandService
 from gvas.composition.field_note_workflow import FieldNoteWorkflowHandler
 from gvas.composition.intents import DeterministicIntentResolver
 from gvas.composition.report_delivery import DeliverFieldNotesReportService
+from gvas.composition.report_email import EmailFieldNotesReportService
 from gvas.composition.report_publication import (
     PublishFieldNotesReportService,
     ReportArtifactAccess,
@@ -56,7 +58,7 @@ from gvas.domain.ports import (
     QuoteDraftingPort,
     TranscriptionPort,
 )
-from gvas.domain.reporting import ReportGenerationPort
+from gvas.domain.reporting import ReportEmailPort, ReportGenerationPort
 from gvas.domain.workflows import WorkflowRouter
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.field_note_repositories import SqlFieldNoteUnitOfWorkFactory
@@ -85,6 +87,7 @@ class ApplicationPorts:
     report_generation: ReportGenerationPort
     source_attachments: AttachmentAccessPort | None = None
     object_storage: ObjectStoragePort | None = None
+    report_email: ReportEmailPort | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,7 @@ class Application:
     report_service: GenerateFieldNotesReportService
     report_delivery_service: DeliverFieldNotesReportService
     report_publication_service: PublishFieldNotesReportService
+    report_email_service: EmailFieldNotesReportService
     report_artifacts: ReportArtifactAccess
     failure_notice_service: NotifyExhaustedCommandService
     plan_set_upload_service: RegisterPlanSetUploadService
@@ -164,10 +168,14 @@ def build_application(
         if ports.source_attachments is not None and ports.object_storage is not None
         else None
     )
+    report_send = SendFieldNoteReportHandler(
+        field_note_unit_of_work_factory, report_unit_of_work_factory, unit_of_work_factory
+    )
     field_note_handler = FieldNoteWorkflowHandler(
         intake,
         closure,
         approval,
+        report_send,
         field_note_unit_of_work_factory,
         completeness_unit_of_work_factory,
         now=now,
@@ -220,6 +228,13 @@ def build_application(
         unit_of_work_factory,
         ports.object_storage,
     )
+    report_email = EmailFieldNotesReportService(
+        report_renderer,
+        ports.report_email,
+        report_unit_of_work_factory,
+        field_note_unit_of_work_factory,
+        unit_of_work_factory,
+    )
     report_artifacts = ReportArtifactAccess(report_renderer, report_unit_of_work_factory)
     failure_notices = NotifyExhaustedCommandService(
         unit_of_work_factory, field_note_unit_of_work_factory
@@ -235,6 +250,7 @@ def build_application(
         reports=reports,
         report_delivery=report_delivery,
         report_publication=report_publication,
+        report_email=report_email,
         outbox=outbox,
         now=now,
         plan_custody=plan_custody,
@@ -264,6 +280,7 @@ def build_application(
         report_service=reports,
         report_delivery_service=report_delivery,
         report_publication_service=report_publication,
+        report_email_service=report_email,
         report_artifacts=report_artifacts,
         failure_notice_service=failure_notices,
         plan_set_upload_service=plan_set_uploads,

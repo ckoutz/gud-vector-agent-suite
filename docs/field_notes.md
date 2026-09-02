@@ -35,7 +35,10 @@ review, follow-up correlation, and report generation is documented in
 `field_note.review` and `field_notes_report.generate` commands and the gaps that
 remain at the neutral boundary. The generated report is posted as text into the
 same thread for review; `approve report` then publishes that exact version as an
-editable DOCX into the channel (`field_notes_report.publish`), and `close notes`
+editable DOCX into the channel (`field_notes_report.publish`), `send report to
+<address>` emails that same published DOCX to one typed address on request
+(`field_notes_report.email`; never automatic, and refused with a pointer to
+`approve report` until the document is in the thread), and `close notes`
 remains the only command that closes the case.
 
 A PDF or image uploaded into an open case thread is still recorded as an
