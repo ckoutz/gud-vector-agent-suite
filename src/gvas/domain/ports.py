@@ -15,7 +15,11 @@ from gvas.domain.messages import (
 )
 from gvas.domain.object_storage import ObjectCustodyRequest, StoredObject
 from gvas.domain.quotes import QuoteDraftProposal, QuoteDraftRequest
-from gvas.domain.reporting import ChecklistEvidence, ChecklistEvidenceRequest
+from gvas.domain.reporting import (
+    ChecklistEvidence,
+    ChecklistEvidenceAnnotation,
+    ChecklistEvidenceRequest,
+)
 
 
 class IntentResolutionPort(Protocol):
@@ -67,6 +71,19 @@ class ChecklistEvidencePort(Protocol):
     async def attribute(
         self, request: ChecklistEvidenceRequest
     ) -> tuple[ChecklistEvidence, ...]: ...
+
+
+class ChecklistEvidenceAnnotatorPort(Protocol):
+    """Attaches supporting excerpts to items a primary attributor already satisfied.
+
+    The annotator never decides whether an item is satisfied; it receives the
+    attributed evidence and may only return verbatim transcript excerpts for the
+    observed items.
+    """
+
+    async def annotate(
+        self, request: ChecklistEvidenceRequest, attributed: tuple[ChecklistEvidence, ...]
+    ) -> tuple[ChecklistEvidenceAnnotation, ...]: ...
 
 
 class QuoteDraftingPort(Protocol):

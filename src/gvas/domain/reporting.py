@@ -197,6 +197,13 @@ class ChecklistEvidenceRequest(ReportDomainModel):
     correlated_answers: tuple[CorrelatedAnswer, ...] = Field(default_factory=tuple)
 
 
+class ChecklistEvidenceAnnotation(ReportDomainModel):
+    """Supporting excerpts a review model attached to an already-satisfied item."""
+
+    item_key: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9_.-]*$")
+    excerpts: tuple[str, ...] = Field(default_factory=tuple)
+
+
 class ReportGenerationRequest(ReportDomainModel):
     report_id: UUID
     report_version: int = Field(ge=1)
