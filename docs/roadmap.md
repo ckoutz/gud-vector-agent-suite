@@ -18,6 +18,7 @@ waiting on the owner and are not built until answered.
 | Worker and web log one line per command outcome to stderr at `GVAS_LOG_LEVEL` | #23 |
 | Unmatched messages get the available triggers once instead of retrying to dead-letter | #25 |
 | Review model annotates marker-satisfied checklist items with verbatim note excerpts (deterministic-first) | #27 |
+| PDF/image uploads in an open case thread enter plan custody; dead-lettered copies notify the owner; "not enabled" replied once when custody is unwired | #28 |
 
 ## In progress
 
@@ -26,8 +27,6 @@ waiting on the owner and are not built until answered.
   3. Object storage (`GVAS_R2_*`) is configured and implemented but not wired in
      `gvas.composition.production`, so the published DOCX has no durable copy
      outside Slack. Wire it, or remove the settings and say so.
-  4. `plan_set.copy_into_custody` has no owner-facing failure guidance and is not reachable
-     from any channel command yet.
 
 ## Next (ordered)
 

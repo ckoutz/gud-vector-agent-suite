@@ -92,6 +92,20 @@ until `max_attempts` is exhausted.
 | `field_notes_report.publish` | `PublishFieldNotesReportService` | `ReportArtifactRendererPort`, `ObjectStoragePort` (optional), `OwnerReplyPort` |
 | `plan_set.copy_into_custody` | `CopyPlanSetIntoCustodyService` (only when `object_storage` and `source_attachments` are supplied) | `AttachmentAccessPort`, `ObjectStoragePort` |
 
+`plan_set.copy_into_custody` is reached from the field-note thread: a PDF or
+image uploaded into an open case registers a plan-set upload for the case's
+site (`field_note_case_site_id`, one deterministic site per case until cases
+carry a site of their own) and enqueues the copy in the same transaction. The
+upload id is UUIDv5 over tenant, plan set, attachment id and locator, and the
+command's id and `plan_set_copy:<upload>` dedup key derive from it, so a
+replayed upload yields one stored copy and one provider fetch. The command
+payload carries `field_note_case_id` only so a dead-lettered copy can be
+reported into the originating thread ("upload the plan set file again in this
+thread to retry"); it takes no part in the command's identity. When
+`object_storage` or `source_attachments` is not configured, the upload is
+acknowledged once with "plan custody is not enabled" and nothing is registered
+or enqueued, so there is nothing to retry or dead-letter.
+
 `field_note.review` and `field_notes_report.generate` are new composition
 commands with deterministic UUIDv5 IDs and business-scoped deduplication keys
 (`field_note_review:<case>:<trigger>:<key>`, `field_notes_report:<case>:<review>`),
