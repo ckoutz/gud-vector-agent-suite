@@ -31,6 +31,7 @@ from gvas.application.quotes import (
 from gvas.application.report_approval import ApproveFieldNoteReportHandler
 from gvas.application.report_generation import GenerateFieldNotesReportService
 from gvas.application.templates import PublishTemplateSetService, TemplateResolver
+from gvas.application.unmatched_messages import UnmatchedMessageHandler
 from gvas.application.workflow_conflicts import WorkflowConflictHandler
 from gvas.composition.dispatcher import OutboxCommandDispatcher, OutboxWorker
 from gvas.composition.failure_notices import NotifyExhaustedCommandService
@@ -163,7 +164,9 @@ def build_application(
         completeness_unit_of_work_factory,
     )
     quote_handler = QuoteWorkflowHandler(unit_of_work_factory, ports.quote_drafting)
-    router = WorkflowRouter([quote_handler, field_note_handler, WorkflowConflictHandler()])
+    router = WorkflowRouter(
+        [quote_handler, field_note_handler, WorkflowConflictHandler(), UnmatchedMessageHandler()]
+    )
 
     resolver = intent_resolver or DeterministicIntentResolver(
         FieldNoteIntentContribution(field_note_unit_of_work_factory),

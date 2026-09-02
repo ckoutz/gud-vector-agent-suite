@@ -3,6 +3,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from gvas.domain.identifiers import WorkflowIntent
 
 WORKFLOW_CONFLICT_INTENT = WorkflowIntent("workflow.conflict")
+UNMATCHED_MESSAGE_INTENT = WorkflowIntent("message.unmatched")
 
 
 class IntentResolution(BaseModel):

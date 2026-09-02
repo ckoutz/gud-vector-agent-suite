@@ -194,6 +194,13 @@ the field-note handler. When a legacy conversation carries both an active quote
 and an open case, `close notes` is allowed through to the field-note workflow so
 the owner can repair that state.
 
+A message that carries no trigger and lands in a conversation with no active
+workflow resolves to `message.unmatched`, whose handler replies once with the
+available triggers (`quote:`, `field notes:`, `approve report`, `close notes`)
+and starts nothing. Not matching is a property of the message, so it is not a
+retryable failure; `IntentUnresolvedError` is reserved for resolver faults
+(unpersisted or ambiguous rows) that a retry can fix.
+
 ## Where production adapters plug in
 
 Each port has exactly one implementation site, all outside domain and

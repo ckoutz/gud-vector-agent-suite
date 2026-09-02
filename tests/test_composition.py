@@ -15,6 +15,7 @@ from composition_fakes import (
 )
 from gvas.application.field_notes import CLOSED_CASE_REPLY, NO_OPEN_CASE_REPLY
 from gvas.application.templates import IndustryTemplateDefinition
+from gvas.application.unmatched_messages import UNMATCHED_MESSAGE_REPLY
 from gvas.application.workflow_conflicts import (
     FIELD_NOTE_CONFLICT_REPLY,
     QUOTE_CONFLICT_REPLY,
@@ -712,6 +713,29 @@ async def test_close_notes_without_an_active_case_replies_without_error(
     assert await unsucceeded_outbox(session_factory) == 0
     assert await case_rows(session_factory) == []
     assert reply_texts(owner_replies) == [NO_OPEN_CASE_REPLY]
+
+
+@pytest.mark.asyncio
+async def test_unmatched_first_message_gets_the_triggers_once_without_retrying(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    owner_replies = OwnerReplyFake()
+    application = field_note_application(session_factory, owner_replies)
+    await configure_checklist(application, business_id)
+
+    await application.ingest_service.ingest(
+        inbound(business_id, "hey, are you there?", message_key="unmatched-1")
+    )
+    await drain(application)
+    await drain(application)
+
+    assert await unsucceeded_outbox(session_factory) == 0
+    assert await case_rows(session_factory) == []
+    assert reply_texts(owner_replies) == [UNMATCHED_MESSAGE_REPLY]
+    assert "field notes:" in UNMATCHED_MESSAGE_REPLY
+    assert "quote:" in UNMATCHED_MESSAGE_REPLY
 
 
 @pytest.mark.asyncio
