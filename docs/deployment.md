@@ -77,7 +77,8 @@ otherwise Slack events arrive for a tenant that does not exist.
   `message` events are handled; voice notes arrive as the `file_share` subtype
   of a message, so no separate file event is needed.
 - **Bot scopes**: `chat:write` for replies, `files:read` for voice note bytes,
-  plus the `*:history` scopes for the conversation types above.
+  `files:write` to share the approved report DOCX into the thread, plus the
+  `*:history` scopes for the conversation types above.
 - **Authorization**: this pilot is approved for one workspace and one owner.
   `GVAS_SLACK_INSTALLATIONS` maps `team_id=business_uuid:owner_user_id`, and
   startup rejects a value carrying a second installation or a second owner

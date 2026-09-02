@@ -24,7 +24,9 @@ from gvas.application.checklist_evidence import MarkerChecklistEvidenceAttributo
 from gvas.application.completeness_review import MarkerCompletenessReviewer
 from gvas.application.contradiction_guard import GuardedCompletenessReviewer
 from gvas.application.deterministic_report import DeterministicReportGenerator
+from gvas.application.docx_report import DocxReportRenderer
 from gvas.composition import Application, ApplicationPorts, build_application
+from gvas.composition.report_publication import ReportArtifactAccess
 from gvas.config import (
     DatabaseUrlError,
     OpenAISettings,
@@ -38,8 +40,13 @@ from gvas.infrastructure.delivery_ledger import SqlChannelDeliveryLedger
 from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGuard
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
 from gvas.infrastructure.quote_drafting import DeterministicQuoteDrafter
+from gvas.infrastructure.reporting_unit_of_work import SqlReportUnitOfWorkFactory
 from gvas.infrastructure.resend import ResendQuoteDeliveryAdapter
-from gvas.infrastructure.slack.api import SlackFileAttachmentAccess, SlackWebApiChatPoster
+from gvas.infrastructure.slack.api import (
+    SlackFileAttachmentAccess,
+    SlackWebApiChatPoster,
+    SlackWebApiFileUploader,
+)
 from gvas.infrastructure.slack.composition import (
     build_slack_event_router,
     build_slack_owner_reply_adapter,
@@ -157,9 +164,16 @@ def build_production_ports(
 ) -> ApplicationPorts:
     poster = SlackWebApiChatPoster(settings.slack, client)
     attachments = SlackFileAttachmentAccess(settings.slack, client)
+    report_artifacts = ReportArtifactAccess(
+        DocxReportRenderer(), SqlReportUnitOfWorkFactory(session_factory)
+    )
     return ApplicationPorts(
         owner_replies=build_slack_owner_reply_adapter(
-            poster, session_factory, SqlChannelDeliveryLedger(session_factory)
+            poster,
+            session_factory,
+            SqlChannelDeliveryLedger(session_factory),
+            uploader=SlackWebApiFileUploader(settings.slack, client),
+            attachments=report_artifacts,
         ),
         quote_drafting=DeterministicQuoteDrafter(),
         quote_delivery=ResendQuoteDeliveryAdapter(settings.resend, client),

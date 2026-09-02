@@ -5,7 +5,7 @@ from gvas.application.quotes import QuoteIntentSelector
 from gvas.domain.field_note_repositories import AmbiguousFieldNoteMessageError
 from gvas.domain.field_notes import (
     FIELD_NOTE_INTENT,
-    has_field_note_close_trigger,
+    has_field_note_command_trigger,
     has_field_note_trigger,
 )
 from gvas.domain.intents import (
@@ -28,10 +28,10 @@ class DeterministicIntentResolver:
     quote or field-note case. One conversation runs one workflow: a trigger for
     the other workflow, or a conversation that already carries both, resolves to
     the conflict intent so the owner is told to use another thread instead of a
-    precedence being guessed. ``close notes`` is a field-note command, so it only
-    reaches the field-note workflow when this conversation is not a quote-only
-    conversation; with both workflows active it is allowed through to repair the
-    field-note state.
+    precedence being guessed. ``close notes`` and ``approve report`` are
+    field-note commands, so they only reach the field-note workflow when this
+    conversation is not a quote-only conversation; with both workflows active
+    they are allowed through to repair the field-note state.
     """
 
     def __init__(
@@ -53,7 +53,7 @@ class DeterministicIntentResolver:
                 return IntentResolution(intent=WORKFLOW_CONFLICT_INTENT, confidence=1)
             return IntentResolution(intent=FIELD_NOTE_INTENT, confidence=1)
         field_note_intent = await self._field_notes.contribute(message)
-        if has_field_note_close_trigger(message):
+        if has_field_note_command_trigger(message):
             if field_note_intent is None and quote_resolution is not None:
                 return IntentResolution(intent=WORKFLOW_CONFLICT_INTENT, confidence=1)
             return IntentResolution(intent=FIELD_NOTE_INTENT, confidence=1)

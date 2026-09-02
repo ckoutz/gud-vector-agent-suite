@@ -10,6 +10,7 @@ from gvas.domain.enums import DeliveryStatus, MediaKind
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.messages import (
     AttachmentPart,
+    AttachmentPayload,
     AttachmentReference,
     ConversationRef,
     OutboundOwnerMessage,
@@ -24,8 +25,11 @@ from gvas.infrastructure.slack.delivery import (
     SlackChatPostResult,
     SlackConversationRouting,
     SlackDeliveryError,
+    SlackFileUploadRequest,
+    SlackFileUploadResult,
     SlackOwnerReplyAdapter,
     SlackRoutingError,
+    delivery_key,
 )
 from gvas.infrastructure.slack.routing import SqlSlackRoutingResolver
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
@@ -214,3 +218,125 @@ async def test_persisted_slack_routing_is_resolved_for_ingested_conversations(
         )
         is None
     )
+
+
+class RecordingUploader:
+    def __init__(self, result: SlackFileUploadResult | None = None) -> None:
+        self.requests: list[SlackFileUploadRequest] = []
+        self._result = result or SlackFileUploadResult(file_ids=("F0DOC",))
+
+    async def upload_files(self, request: SlackFileUploadRequest) -> SlackFileUploadResult:
+        self.requests.append(request)
+        return self._result
+
+
+class StaticAttachmentSource:
+    def __init__(self, content: bytes = b"PK\x03\x04docx") -> None:
+        self.fetched: list[AttachmentReference] = []
+        self._content = content
+
+    async def fetch(self, attachment: AttachmentReference) -> AttachmentPayload:
+        self.fetched.append(attachment)
+        return AttachmentPayload(
+            content=self._content, mime_type=attachment.mime_type, filename=attachment.filename
+        )
+
+
+@pytest.mark.asyncio
+async def test_attachment_reply_is_uploaded_as_a_file_into_the_thread() -> None:
+    business_id = BusinessId(uuid4())
+    poster = RecordingPoster()
+    uploader = RecordingUploader()
+    source = StaticAttachmentSource()
+    adapter = SlackOwnerReplyAdapter(
+        poster,
+        StaticRoutingResolver(SlackConversationRouting(channel=CHANNEL, thread_ts=ROOT_TS)),
+        InMemorySlackDeliveryLedger(),
+        uploader=uploader,
+        attachments=source,
+        clock=lambda: DELIVERED_AT,
+    )
+    message = reply(business_id)
+
+    receipt = await adapter.send(message.conversation_ref, message)
+
+    assert poster.requests == []
+    assert len(uploader.requests) == 1
+    request = uploader.requests[0]
+    assert request.channel == CHANNEL
+    assert request.thread_ts == ROOT_TS
+    assert request.initial_comment == "On it."
+    assert [file.filename for file in request.files] == ["quote.pdf"]
+    assert request.files[0].content == b"PK\x03\x04docx"
+    assert source.fetched == [message.parts[1].attachment]  # type: ignore[union-attr]
+    assert receipt.provider_message_id == "F0DOC"
+    assert receipt.status is DeliveryStatus.ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_retried_upload_is_suppressed_by_the_ledger() -> None:
+    business_id = BusinessId(uuid4())
+    uploader = RecordingUploader()
+    adapter = SlackOwnerReplyAdapter(
+        RecordingPoster(),
+        StaticRoutingResolver(SlackConversationRouting(channel=CHANNEL, thread_ts=ROOT_TS)),
+        InMemorySlackDeliveryLedger(),
+        uploader=uploader,
+        attachments=StaticAttachmentSource(),
+        clock=lambda: DELIVERED_AT,
+    )
+    message = reply(business_id)
+
+    first = await adapter.send(message.conversation_ref, message)
+    second = await adapter.send(message.conversation_ref, message)
+
+    assert first == second
+    assert len(uploader.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_rejected_upload_is_retryable_and_not_recorded() -> None:
+    business_id = BusinessId(uuid4())
+    uploader = RecordingUploader(SlackFileUploadResult(detail="slack rejected the file upload"))
+    ledger = InMemorySlackDeliveryLedger()
+    adapter = SlackOwnerReplyAdapter(
+        RecordingPoster(),
+        StaticRoutingResolver(SlackConversationRouting(channel=CHANNEL, thread_ts=ROOT_TS)),
+        ledger,
+        uploader=uploader,
+        attachments=StaticAttachmentSource(),
+    )
+    message = reply(business_id)
+
+    with pytest.raises(SlackDeliveryError):
+        await adapter.send(message.conversation_ref, message)
+
+    assert await ledger.find(delivery_key(message.conversation_ref, message)) is None
+
+
+@pytest.mark.asyncio
+async def test_text_only_reply_does_not_use_the_uploader() -> None:
+    business_id = BusinessId(uuid4())
+    poster = RecordingPoster()
+    uploader = RecordingUploader()
+    adapter = SlackOwnerReplyAdapter(
+        poster,
+        StaticRoutingResolver(SlackConversationRouting(channel=CHANNEL, thread_ts=ROOT_TS)),
+        InMemorySlackDeliveryLedger(),
+        uploader=uploader,
+        attachments=StaticAttachmentSource(),
+    )
+    conversation_ref = ConversationRef(
+        business_id=business_id, external_conversation_id=f"{CHANNEL}:{ROOT_TS}"
+    )
+    message = OutboundOwnerMessage(
+        business_id=business_id,
+        conversation_ref=conversation_ref,
+        parts=(TextPart(text="Just text."),),
+        correlation_id="text-1",
+    )
+
+    await adapter.send(conversation_ref, message)
+
+    assert uploader.requests == []
+    assert [request.text for request in poster.requests] == ["Just text."]

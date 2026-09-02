@@ -32,6 +32,7 @@ FieldNotePartId = NewType("FieldNotePartId", UUID)
 FIELD_NOTE_INTENT = WorkflowIntent("field_note.capture")
 FIELD_NOTE_TRIGGER_PREFIX = "field notes:"
 FIELD_NOTE_CLOSE_TRIGGER = "close notes"
+FIELD_NOTE_REPORT_APPROVE_TRIGGER = "approve report"
 FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE = "field_note.transcribe"
 FIELD_NOTE_TRANSCRIBE_COMMAND_NAMESPACE = UUID("b4a7fb38-8c21-4cb9-9de1-4ec9f0c2c7e6")
 FIELD_NOTE_REVIEW_COMMAND_TYPE = "field_note.review"
@@ -92,9 +93,25 @@ def has_field_note_trigger(message: NormalizedOwnerMessage) -> bool:
 def has_field_note_close_trigger(message: NormalizedOwnerMessage) -> bool:
     """Matches the explicit close command that ends a persisted field-note case."""
 
+    return _has_command(message, FIELD_NOTE_CLOSE_TRIGGER)
+
+
+def has_field_note_report_approve_trigger(message: NormalizedOwnerMessage) -> bool:
+    """Matches the owner's sign-off that publishes the current report as a document."""
+
+    return _has_command(message, FIELD_NOTE_REPORT_APPROVE_TRIGGER)
+
+
+def has_field_note_command_trigger(message: NormalizedOwnerMessage) -> bool:
+    """Any bare field-note command that acts on the conversation's existing case."""
+
+    return has_field_note_close_trigger(message) or has_field_note_report_approve_trigger(message)
+
+
+def _has_command(message: NormalizedOwnerMessage, command: str) -> bool:
     if not message.parts or not isinstance(message.parts[0], TextPart):
         return False
-    return message.parts[0].text.strip().lower() == FIELD_NOTE_CLOSE_TRIGGER
+    return message.parts[0].text.strip().lower() == command
 
 
 def validate_field_note_part_values(

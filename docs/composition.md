@@ -85,6 +85,7 @@ until `max_attempts` is exhausted.
 | `field_note.transcribe` | `TranscribeFieldNoteAudioService` | `TranscriptionPort` |
 | `field_note.review` | `CoordinateFieldNoteReviewService` | `CompletenessReviewPort` |
 | `field_notes_report.generate` | snapshot builder + `GenerateFieldNotesReportService` | `ChecklistEvidencePort`, `ReportGenerationPort` |
+| `field_notes_report.publish` | `PublishFieldNotesReportService` | `ReportArtifactRendererPort`, `ObjectStoragePort` (optional), `OwnerReplyPort` |
 
 `field_note.review` and `field_notes_report.generate` are new composition
 commands with deterministic UUIDv5 IDs and business-scoped deduplication keys
@@ -105,6 +106,11 @@ field notes: inbound
   -> field_notes_report.generate on COMPLETE or ALREADY_COMPLETE
   -> snapshot from persisted review, checklist, and answers
   -> report version
+  -> report text posted into the originating thread for the owner to review
+  -> owner sends `approve report`
+  -> field_notes_report.publish pinned to that exact report version
+  -> DOCX rendered, kept in object storage when configured, shared as a file
+     into the same channel/thread
   -> case stays open until the owner sends `close notes`
 ```
 
@@ -124,6 +130,27 @@ command's id and dedup key are derived from the case and the reviewed revision �
 stable persisted data, never wall-clock time — so the recovery path enqueues at
 most one report command per reviewed revision, and each new completed revision
 deterministically produces the next `FieldNotesReportVersion`.
+
+## Report review and publication (decided)
+
+The text report in the thread is the review step: the technician or owner reads
+it there and can add notes to the open case, which produces the next version.
+Nothing leaves the thread until the owner types `approve report`. Approval
+resolves the latest completed report version for the conversation's active case
+and enqueues `field_notes_report.publish`, whose command id and dedup key derive
+from that report version id, so replaying the approval or retrying the command
+resolves to the same publication. Publication renders the pinned version — never
+the newest one — into a generic editable DOCX with the standard library alone
+(`DocxReportRenderer`; letterhead templates are a documented follow-up), stores
+it under the business's object-storage prefix when a store is wired, and hands
+the owner-reply outbox an attachment whose opaque locator names the version.
+`SlackOwnerReplyAdapter` shares attachment parts as real files through Slack's
+external upload flow when an uploader and attachment source are composed, with
+the text parts as the file comment; `ReportArtifactAccess` serves those bytes by
+re-rendering the persisted version, which is byte-for-byte reproducible. The
+channel is the system of record: nothing is emailed by default, and `approve
+report` with no active case or no completed report replies with what is missing
+instead of failing. Publication does not close the case.
 
 ## Case closure is explicit (decided)
 
@@ -190,8 +217,10 @@ These need a product or provider decision and are wired only up to the port:
    what is missing, so evidence for satisfied items is attributed through
    `ChecklistEvidencePort`. The in-repo attributor is marker-based, mirroring
    `MarkerCompletenessReviewer`; an AI provider decision is still open.
-2. **Report distribution.** Report versions are persisted; no recipient,
-   channel, or delivery command exists yet.
+2. **Report distribution beyond the channel.** The approved DOCX lands in the
+   originating channel; email to a client or office inbox is opt-in and has no
+   command or recipient contract yet. Owner-supplied letterhead templates are
+   designed in [`docs/templates_and_site_plans.md`](templates_and_site_plans.md).
 3. **Permanent transcription or review failure.** Failures retry through the
    outbox and eventually dead-letter; no owner-facing failure message is
    defined.

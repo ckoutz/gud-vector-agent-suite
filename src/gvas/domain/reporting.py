@@ -17,6 +17,10 @@ _REPORT_NAMESPACE = UUID("7281d38a-7bbb-5d4b-bbf7-adb9de54dcf8")
 _REPORT_VERSION_NAMESPACE = UUID("58c1274a-bf3f-5b52-926b-abd5d4113cd3")
 FIELD_NOTES_REPORT_COMMAND_TYPE = "field_notes_report.generate"
 FIELD_NOTES_REPORT_COMMAND_NAMESPACE = UUID("c1d9a6f2-3b47-5e81-9a2c-6d4f8b0e7315")
+FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE = "field_notes_report.publish"
+FIELD_NOTES_REPORT_PUBLISH_COMMAND_NAMESPACE = UUID("a94e1c57-2d0b-5f36-8e7a-41c9d2b6f083")
+REPORT_ARTIFACT_LOCATOR_PREFIX = "field-notes-report"
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 class ReportDomainModel(BaseModel):
@@ -303,6 +307,53 @@ class FieldNotesReportRepository(Protocol):
         self, business_id: BusinessId, report_id: UUID
     ) -> FieldNotesReportVersion | None: ...
 
+    async def get_version(
+        self, business_id: BusinessId, report_version_id: UUID
+    ) -> FieldNotesReportVersion | None: ...
+
+
+class RenderedReportArtifact(ReportDomainModel):
+    """A report version projected into a file the owner can open and edit."""
+
+    content: bytes = Field(min_length=1)
+    media_type: str = Field(min_length=1)
+    filename: str = Field(min_length=1)
+
+
+class ReportArtifactRendererPort(Protocol):
+    """Projects a persisted report version into its owner-facing document.
+
+    The report document stays canonical; the artifact is derived from it on
+    demand, so the same version always renders to the same file.
+    """
+
+    def render(self, version: FieldNotesReportVersion) -> RenderedReportArtifact: ...
+
+
+class ReportArtifactLocator(ReportDomainModel):
+    """The opaque attachment locator for a published report version.
+
+    It names the tenant and the version so any channel adapter can ask for the
+    bytes through the neutral attachment port without a storage provider.
+    """
+
+    business_id: BusinessId
+    report_version_id: UUID
+
+    def encode(self) -> str:
+        return f"{REPORT_ARTIFACT_LOCATOR_PREFIX}:{self.business_id}:{self.report_version_id}"
+
+    @classmethod
+    def decode(cls, locator: str) -> "ReportArtifactLocator | None":
+        prefix, _, rest = locator.partition(":")
+        if prefix != REPORT_ARTIFACT_LOCATOR_PREFIX or not rest:
+            return None
+        business, _, version = rest.partition(":")
+        try:
+            return cls(business_id=BusinessId(UUID(business)), report_version_id=UUID(version))
+        except ValueError:
+            return None
+
 
 class ReportUnitOfWork(Protocol):
     reports: FieldNotesReportRepository
@@ -354,6 +405,32 @@ def field_notes_report_command(
             "completed_at": _aware(completed_at).isoformat(),
         },
         dedup_key=f"field_notes_report:{case_id}:{review_id}",
+    )
+
+
+def field_notes_report_publish_command(
+    business_id: BusinessId, case_id: UUID, report_version_id: UUID
+) -> OutboxCommand:
+    """Publishes one approved report version as a document in the case's channel.
+
+    The command identity is the approved version, so a repeated approval or a
+    replayed command reuses one command and one posted document.
+    """
+
+    return OutboxCommand(
+        command_id=OutboxCommandId(
+            uuid5(
+                FIELD_NOTES_REPORT_PUBLISH_COMMAND_NAMESPACE,
+                f"{business_id}:{report_version_id}",
+            )
+        ),
+        business_id=business_id,
+        command_type=FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE,
+        payload={
+            "field_note_case_id": str(case_id),
+            "report_version_id": str(report_version_id),
+        },
+        dedup_key=f"field_notes_report_publish:{report_version_id}",
     )
 
 
