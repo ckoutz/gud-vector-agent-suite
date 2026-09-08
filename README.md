@@ -202,8 +202,9 @@ GVAS still never invents a price: every unit price the model returns must
 appear literally in the owner's text (`250`, `250.00`, `$250`, `1,250`), and
 the appointment never contributes one. An item without such a price, or a
 request the model finds no items in, drafts nothing — the owner gets one
-question naming the items that need a price. Quantities default to 1, the
-currency is USD. The draft reply lists items and total as usual plus
+question naming the items that need a price. Quantities default to 1 and a
+larger one must also be written in the message; the currency is USD. The draft
+reply lists items, total and the note the customer will see, plus
 `Drafted from your message — check items before approving.`; approval is
 unchanged. A request written entirely in `key: value` lines with a mistake in
 it keeps the parser's message and never reaches the model. A model or API

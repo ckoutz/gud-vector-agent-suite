@@ -212,6 +212,16 @@ def written_amounts_minor(text: str) -> frozenset[int]:
     return frozenset(found)
 
 
+WRITTEN_COUNT_PATTERN: Final = re.compile(r"(?<![\d.,$])(\d{1,6})(?![\d.,])")
+
+
+def written_counts(text: str) -> frozenset[int]:
+    """Every whole number that appears literally in ``text`` (``2`` in
+    ``2 air samples``); a quantity above one must be among them."""
+
+    return frozenset(int(match.group(1)) for match in WRITTEN_COUNT_PATTERN.finditer(text))
+
+
 def written_amount_minor(value: str) -> int | None:
     """``$1,250.00`` -> 125000; ``None`` when ``value`` is not a single amount."""
 
@@ -324,6 +334,7 @@ def _priced_line_items(request_text: str, draft: FreeTextQuoteDraft) -> tuple[Qu
     if not draft.line_items:
         raise QuoteDraftRejectedError(f"No priced items were found in your message. {FORMAT_HELP}")
     written = written_amounts_minor(request_text)
+    counts = written_counts(request_text)
     line_items: list[QuoteLineItem] = []
     unpriced: list[str] = []
     for item in draft.line_items:
@@ -331,6 +342,11 @@ def _priced_line_items(request_text: str, draft: FreeTextQuoteDraft) -> tuple[Qu
         if minor is None or minor not in written:
             unpriced.append(item.description)
             continue
+        if item.quantity > 1 and item.quantity not in counts:
+            raise QuoteDraftRejectedError(
+                f"Your message does not say {item.quantity} × '{item.description}'."
+                " Send the quote again with the quantity written out."
+            )
         line_items.append(
             QuoteLineItem(
                 description=item.description, quantity=item.quantity, unit_price_minor=minor

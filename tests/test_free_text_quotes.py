@@ -191,6 +191,7 @@ async def test_free_text_with_literal_prices_drafts_and_flags_the_reply(
 
     assert "2 × Air sample" in text
     assert "Total: USD 450.00" in text
+    assert "Note to customer: We'll be there Tuesday" in text
     assert FREE_TEXT_DRAFT_NOTICE in text
     assert text.index(FREE_TEXT_DRAFT_NOTICE) < text.index("Reply with approve")
     assert model.requests[0].request_text == (
@@ -221,6 +222,18 @@ async def test_dollar_and_comma_amounts_and_default_quantity() -> None:
     ]
     assert proposal.currency == "USD"
     assert proposal.drafted_from_free_text
+
+
+async def test_quantity_not_in_text_is_refused() -> None:
+    model = ModelFake(FreeTextQuoteDraft(line_items=(item("Air sample", "125", 3),)))
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 3 × 'Air sample'"):
+        await drafter(model).draft(request("air samples at 125\ncustomer: bob@example.test"))
+
+
+async def test_quantity_is_not_read_from_a_price() -> None:
+    model = ModelFake(FreeTextQuoteDraft(line_items=(item("Air sample", "1,250", 250),)))
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 250"):
+        await drafter(model).draft(request("air sample $1,250\ncustomer: bob@example.test"))
 
 
 async def test_price_not_in_text_asks_once_and_drafts_nothing(
