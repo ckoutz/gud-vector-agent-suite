@@ -212,14 +212,27 @@ def written_amounts_minor(text: str) -> frozenset[int]:
     return frozenset(found)
 
 
-WRITTEN_COUNT_PATTERN: Final = re.compile(r"(?<![\d.,$])(\d{1,6})(?![\d.,])")
+WORD_PATTERN: Final = re.compile(r"[A-Za-z][A-Za-z-]*")
+WORD_STEM_LENGTH: Final = 4
 
 
-def written_counts(text: str) -> frozenset[int]:
-    """Every whole number that appears literally in ``text`` (``2`` in
-    ``2 air samples``); a quantity above one must be among them."""
+def quantity_is_written(text: str, quantity: int, description: str) -> bool:
+    """True when ``text`` says ``<quantity> <item>`` for this item: the number
+    stands alone (not inside ``$1,250`` or ``125.00``) and the next word starts
+    like a word of the description (``2 air samples`` for ``Air sample``).
+    A number written for another item, a price or a date does not count."""
 
-    return frozenset(int(match.group(1)) for match in WRITTEN_COUNT_PATTERN.finditer(text))
+    stems = {
+        word.casefold()[:WORD_STEM_LENGTH]
+        for word in WORD_PATTERN.findall(description)
+        if len(word) >= 3
+    }
+    pattern = re.compile(
+        rf"(?<![\d.,$]){quantity}(?![\d.,])\s*(?:x|×)?\s*({WORD_PATTERN.pattern})", re.IGNORECASE
+    )
+    return any(
+        match.group(1).casefold()[:WORD_STEM_LENGTH] in stems for match in pattern.finditer(text)
+    )
 
 
 def written_amount_minor(value: str) -> int | None:
@@ -334,7 +347,6 @@ def _priced_line_items(request_text: str, draft: FreeTextQuoteDraft) -> tuple[Qu
     if not draft.line_items:
         raise QuoteDraftRejectedError(f"No priced items were found in your message. {FORMAT_HELP}")
     written = written_amounts_minor(request_text)
-    counts = written_counts(request_text)
     line_items: list[QuoteLineItem] = []
     unpriced: list[str] = []
     for item in draft.line_items:
@@ -342,7 +354,9 @@ def _priced_line_items(request_text: str, draft: FreeTextQuoteDraft) -> tuple[Qu
         if minor is None or minor not in written:
             unpriced.append(item.description)
             continue
-        if item.quantity > 1 and item.quantity not in counts:
+        if item.quantity > 1 and not quantity_is_written(
+            request_text, item.quantity, item.description
+        ):
             raise QuoteDraftRejectedError(
                 f"Your message does not say {item.quantity} × '{item.description}'."
                 " Send the quote again with the quantity written out."

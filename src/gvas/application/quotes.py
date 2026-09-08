@@ -652,7 +652,7 @@ def _owner_quote_body(quote: Quote) -> str:
     )
     lines.append(f"Total: {format_money(draft.total_minor, draft.currency)}")
     if draft.owner_note:
-        lines.append(f"Note to customer: {draft.owner_note}")
+        lines.append(f"Note: {draft.owner_note}")
     if draft.drafted_from_free_text:
         lines.append(FREE_TEXT_DRAFT_NOTICE)
     lines.append("Reply with approve, reject, or correct: <changes>.")

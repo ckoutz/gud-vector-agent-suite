@@ -36,6 +36,7 @@ from gvas.infrastructure.quote_drafting import (
     DeterministicQuoteDrafter,
     ModelAssistedQuoteDrafter,
     is_structured_request,
+    quantity_is_written,
     written_amount_minor,
     written_amounts_minor,
 )
@@ -191,7 +192,7 @@ async def test_free_text_with_literal_prices_drafts_and_flags_the_reply(
 
     assert "2 × Air sample" in text
     assert "Total: USD 450.00" in text
-    assert "Note to customer: We'll be there Tuesday" in text
+    assert "Note: We'll be there Tuesday" in text
     assert FREE_TEXT_DRAFT_NOTICE in text
     assert text.index(FREE_TEXT_DRAFT_NOTICE) < text.index("Reply with approve")
     assert model.requests[0].request_text == (
@@ -234,6 +235,26 @@ async def test_quantity_is_not_read_from_a_price() -> None:
     model = ModelFake(FreeTextQuoteDraft(line_items=(item("Air sample", "1,250", 250),)))
     with pytest.raises(QuoteDraftRejectedError, match="does not say 250"):
         await drafter(model).draft(request("air sample $1,250\ncustomer: bob@example.test"))
+    model = ModelFake(FreeTextQuoteDraft(line_items=(item("Air sample", "125", 125),)))
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 125"):
+        await drafter(model).draft(request("air sample 125\ncustomer: bob@example.test"))
+
+
+async def test_quantity_is_not_borrowed_from_another_item() -> None:
+    model = ModelFake(
+        FreeTextQuoteDraft(line_items=(item("Air sample", "125", 3), item("Report", "200", 3)))
+    )
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 3 × 'Report'"):
+        await drafter(model).draft(
+            request("3 air samples at 125 and the report 200\ncustomer: bob@example.test")
+        )
+
+
+def test_quantity_is_written_reads_the_number_next_to_the_item() -> None:
+    assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample")
+    assert quantity_is_written("reports: 2 and 1 inspection", 2, "Report") is False
+    assert quantity_is_written("on 2 bedrooms, 2 samples", 2, "Mold sample")
+    assert quantity_is_written("$2,500 samples", 2, "Sample") is False
 
 
 async def test_price_not_in_text_asks_once_and_drafts_nothing(
