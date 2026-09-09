@@ -69,6 +69,7 @@ class QuotePaymentStatus(StrEnum):
     OPEN = "open"
     PAID = "paid"
     FAILED = "failed"
+    EXPIRED = "expired"
 
 
 class QuoteSendAction(StrEnum):

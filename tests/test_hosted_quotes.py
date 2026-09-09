@@ -6,7 +6,8 @@ import hmac
 import json
 import re
 import time
-from datetime import UTC, datetime
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import httpx
@@ -18,7 +19,10 @@ from composition_fakes import FAKE_NOW, OwnerReplyFake, TranscriptionFake
 from gvas.application.checklist_evidence import MarkerChecklistEvidenceAttributor
 from gvas.application.completeness_review import MarkerCompletenessReviewer
 from gvas.application.deterministic_report import DeterministicReportGenerator
-from gvas.application.public_quotes import checkout_line_items
+from gvas.application.public_quotes import (
+    UnknownPaymentSessionError,
+    checkout_line_items,
+)
 from gvas.application.quotes import SiteAwareQuoteDelivery
 from gvas.composition import Application, ApplicationPorts, build_application
 from gvas.domain.enums import DeliveryStatus
@@ -41,12 +45,14 @@ from gvas.domain.quotes import (
     new_claim_token,
     public_quote_id,
 )
+from gvas.domain.repositories import normalize_site_url
 from gvas.infrastructure.models import OutboundMessage, QuoteRecord
 from gvas.infrastructure.payment_models import QuotePayment
 from gvas.infrastructure.repositories import SqlBusinessRepository
 from gvas.infrastructure.stripe import StripeWebhookVerifier
 from gvas.infrastructure.stripe.api import StripeCheckout, checkout_form
 from gvas.infrastructure.stripe.config import StripeSettings
+from gvas.infrastructure.stripe.events import parse_checkout_event
 from gvas.infrastructure.stripe.signature import SIGNATURE_HEADER, StripeSignatureError
 from gvas.interfaces.http.app import create_app
 from gvas.interfaces.http.public import PerIpRateLimiter, create_public_router
@@ -78,6 +84,7 @@ def checkout_event(
     event_type: str = "checkout.session.completed",
     session_id: str = SESSION_ID,
     payment_intent: str | None = "pi_1",
+    payment_status: str = "paid",
 ) -> bytes:
     return json.dumps(
         {
@@ -87,6 +94,7 @@ def checkout_event(
                 "object": {
                     "id": session_id,
                     "payment_intent": payment_intent,
+                    "payment_status": payment_status,
                     "metadata": {},
                 }
             },
@@ -111,17 +119,34 @@ class HostedEmailDelivery:
         )
 
 
+CheckoutHook = Callable[[], Awaitable[None]]
+
+
 class CheckoutFake:
-    def __init__(self, session_id: str = SESSION_ID) -> None:
-        self.session_id = session_id
+    """Hands out canned sessions in order; ``hook`` runs inside the provider
+    call so a test can fire the webhook before the payment row exists."""
+
+    def __init__(
+        self,
+        sessions: list[tuple[str, str, datetime | None]] | None = None,
+        hook: CheckoutHook | None = None,
+    ) -> None:
+        self.sessions = list(sessions or [(SESSION_ID, CHECKOUT_URL, None)])
+        self.hook = hook
         self.requests: list[PaymentCheckoutRequest] = []
 
     async def create_checkout(self, request: PaymentCheckoutRequest) -> PaymentCheckoutResult:
         self.requests.append(request)
+        session_id, url, expires_at = self.sessions[
+            min(len(self.requests) - 1, len(self.sessions) - 1)
+        ]
+        if self.hook is not None:
+            await self.hook()
         return PaymentCheckoutResult(
-            session_id=self.session_id,
-            checkout_url=CHECKOUT_URL,
+            session_id=session_id,
+            checkout_url=url,
             payment_intent_id=None,
+            expires_at=expires_at,
         )
 
 
@@ -336,6 +361,60 @@ def test_rate_limiter_allows_burst_then_blocks() -> None:
     assert limiter.allow("1.2.3.4")
     assert not limiter.allow("1.2.3.4")
     assert limiter.allow("5.6.7.8")
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_keys_on_the_rightmost_forwarded_hop(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, _, _, claim_token = await hosted_quote(session_factory)
+
+    async def origins() -> frozenset[str]:
+        return frozenset()
+
+    app = create_app(
+        routers=(
+            create_public_router(
+                application.public_quotes,
+                rate_limiter=PerIpRateLimiter(per_minute=60, burst=1),
+            ),
+        ),
+        cors_origins=origins,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Rotating the caller-supplied leftmost entries cannot dodge the
+        # bucket: only the edge-appended rightmost hop counts.
+        first = await client.get(
+            f"/v1/quotes/{claim_token}", headers={"X-Forwarded-For": "spoof-1, 9.9.9.9"}
+        )
+        assert first.status_code == 200
+        spoofed = await client.get(
+            f"/v1/quotes/{claim_token}", headers={"X-Forwarded-For": "spoof-2, 9.9.9.9"}
+        )
+        assert spoofed.status_code == 429
+        other = await client.get(
+            f"/v1/quotes/{claim_token}", headers={"X-Forwarded-For": "spoof-3, 8.8.8.8"}
+        )
+        assert other.status_code == 200
+
+
+def test_site_urls_must_be_bare_origins() -> None:
+    assert normalize_site_url("HTTPS://GUDVECTOR.COM/") == "https://gudvector.com"
+    assert normalize_site_url("https://gudvector.com:8443") == "https://gudvector.com:8443"
+    for bad in (
+        "gudvector.com",
+        "ftp://gudvector.com",
+        "https://gudvector.com/path",
+        "https://gudvector.com?q=1",
+        "https://gudvector.com#frag",
+        "https://user:pass@gudvector.com",
+        "https://:badport",
+        "https:///nohost",
+    ):
+        with pytest.raises(ValueError):
+            normalize_site_url(bad)
 
 
 @pytest.mark.asyncio
@@ -616,3 +695,137 @@ async def test_site_aware_delivery_sends_hosted_quotes_to_email_and_others_to_po
     hosted = request.model_copy(update={"quote_url": f"{SITE_URL}/q/tok"})
     await composite.deliver(hosted)
     assert default.requests and len(portal.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_unpaid_completion_waits_for_the_async_outcome(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A delayed-method checkout reports completed before the money moves."""
+
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=CheckoutFake())
+    async with public_client(application, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 200
+        early = checkout_event(event_id="evt_unpaid", payment_status="unpaid")
+        answered = await client.post(
+            "/webhooks/stripe", content=early, headers={SIGNATURE_HEADER: sign(early)}
+        )
+        assert answered.status_code == 200
+        got = await client.get(f"/v1/quotes/{claim_token}")
+        assert got.json()["quote"]["status"] == "accepted"
+        settled = checkout_event(
+            event_id="evt_settled",
+            event_type="checkout.session.async_payment_succeeded",
+        )
+        done = await client.post(
+            "/webhooks/stripe", content=settled, headers={SIGNATURE_HEADER: sign(settled)}
+        )
+        assert done.status_code == 200
+        got = await client.get(f"/v1/quotes/{claim_token}")
+        assert got.json()["quote"]["status"] == "paid"
+
+
+@pytest.mark.asyncio
+async def test_webhook_before_the_payment_record_retries_later(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Stripe can answer the webhook before accept commits the session row."""
+
+    checkout = CheckoutFake()
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=checkout)
+    early = checkout_event(event_id="evt_early")
+
+    async def fire_webhook_early() -> None:
+        with pytest.raises(UnknownPaymentSessionError):
+            await application.public_quotes.record_payment_event(parse_checkout_event(early))
+
+    checkout.hook = fire_webhook_early
+    async with public_client(application, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 200
+        # The premature delivery was refused, not recorded: a redelivery works.
+        delivered = await client.post(
+            "/webhooks/stripe", content=early, headers={SIGNATURE_HEADER: sign(early)}
+        )
+        assert delivered.status_code == 200
+        assert delivered.json() == {"status": "recorded"}
+        got = await client.get(f"/v1/quotes/{claim_token}")
+        assert got.json()["quote"]["status"] == "paid"
+
+
+@pytest.mark.asyncio
+async def test_webhook_for_an_unknown_session_is_a_503_retry(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, _, _, _ = await hosted_quote(session_factory, checkout=CheckoutFake())
+    async with public_client(application, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as client:
+        body = checkout_event(session_id="cs_never_created")
+        response = await client.post(
+            "/webhooks/stripe", content=body, headers={SIGNATURE_HEADER: sign(body)}
+        )
+        assert response.status_code == 503
+        # Nothing was recorded, so a redelivery is free to keep retrying.
+        again = await client.post(
+            "/webhooks/stripe", content=body, headers={SIGNATURE_HEADER: sign(body)}
+        )
+        assert again.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_expired_session_is_retired_and_a_fresh_one_opens(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    expired_session = (
+        "cs_test_expired",
+        "https://checkout.stripe.com/c/pay/cs_test_expired",
+        NOW - timedelta(hours=1),
+    )
+    fresh_session = (
+        "cs_test_fresh",
+        "https://checkout.stripe.com/c/pay/cs_test_fresh",
+        None,
+    )
+    checkout = CheckoutFake(sessions=[expired_session, fresh_session])
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=checkout)
+    async with public_client(application) as client:
+        first = await client.post(f"/v1/quotes/{claim_token}/accept")
+        assert first.status_code == 200
+        assert first.json() == {"checkoutUrl": expired_session[1]}
+        second = await client.post(f"/v1/quotes/{claim_token}/accept")
+        assert second.status_code == 200
+        assert second.json() == {"checkoutUrl": fresh_session[1]}
+    assert len(checkout.requests) == 2
+    assert checkout.requests[0].idempotency_key != checkout.requests[1].idempotency_key
+    assert checkout.requests[1].idempotency_key.endswith(":attempt-2")
+    async with session_factory() as session:
+        payments = (
+            await session.scalars(select(QuotePayment).order_by(QuotePayment.created_at))
+        ).all()
+    assert [p.status for p in payments] == ["expired", "open"]
+
+
+@pytest.mark.asyncio
+async def test_failed_payment_lets_the_customer_try_again(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    checkout = CheckoutFake(
+        sessions=[(SESSION_ID, CHECKOUT_URL, None), ("cs_test_2", CHECKOUT_URL + "2", None)]
+    )
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=checkout)
+    async with public_client(application, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 200
+        failed = checkout_event(
+            event_id="evt_failed", event_type="checkout.session.async_payment_failed"
+        )
+        answered = await client.post(
+            "/webhooks/stripe", content=failed, headers={SIGNATURE_HEADER: sign(failed)}
+        )
+        assert answered.status_code == 200
+        assert answered.json() == {"status": "recorded"}
+        retry = await client.post(f"/v1/quotes/{claim_token}/accept")
+        assert retry.status_code == 200
+        assert retry.json() == {"checkoutUrl": CHECKOUT_URL + "2"}
+    async with session_factory() as session:
+        payments = (
+            await session.scalars(select(QuotePayment).order_by(QuotePayment.created_at))
+        ).all()
+    assert [p.status for p in payments] == ["failed", "open"]

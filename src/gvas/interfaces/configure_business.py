@@ -59,11 +59,9 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         except ValueError as error:
             raise ConfigureBusinessInputError(f"--site-url: {error}") from error
     calendly_url = _optional(arguments.calendly_url)
-    if calendly_url is not None:
-        try:
-            calendly_url = normalize_site_url(calendly_url)
-        except ValueError as error:
-            raise ConfigureBusinessInputError(f"--calendly-url: {error}") from error
+    if calendly_url is not None and not calendly_url.lower().startswith(("http://", "https://")):
+        # Not an origin: booking links carry a path, so only scheme-checked.
+        raise ConfigureBusinessInputError("--calendly-url must be an absolute http(s) URL")
     if all(
         value is None
         for value in (

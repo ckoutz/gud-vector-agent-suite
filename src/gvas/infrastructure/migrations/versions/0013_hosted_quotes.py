@@ -47,6 +47,7 @@ def upgrade() -> None:
         sa.Column("checkout_session_id", sa.String(length=255), nullable=False),
         sa.Column("checkout_url", sa.String(length=2048), nullable=False),
         sa.Column("payment_intent_id", sa.String(length=255), nullable=True),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("amount_cents", sa.BigInteger(), nullable=False),
         sa.Column("currency", sa.String(length=3), nullable=False),
         sa.Column("status", sa.String(length=50), nullable=False),

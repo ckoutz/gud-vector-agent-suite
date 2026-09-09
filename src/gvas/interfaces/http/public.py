@@ -7,7 +7,7 @@ details, and nothing about other customers. Errors are generic on purpose —
 an unknown or expired token and a real miss are the same 404.
 
 Rate limiting is a per-client-IP token bucket held in process; behind a proxy
-the client ip is the leftmost ``X-Forwarded-For`` value when present.
+the client ip is the rightmost ``X-Forwarded-For`` value when present.
 """
 
 import logging
@@ -24,6 +24,7 @@ from gvas.application.public_quotes import (
     OpenCheckoutUnavailableError,
     PublicQuoteService,
     QuoteNotFoundError,
+    UnknownPaymentSessionError,
 )
 from gvas.domain.payments import PaymentCheckoutError
 from gvas.domain.quotes import InvalidQuoteTransitionError
@@ -82,9 +83,13 @@ class PerIpRateLimiter:
 
 
 def _client_ip(request: Request) -> str:
+    """The rightmost ``X-Forwarded-For`` hop: the entry the edge in front of
+    us appended. The leftmost is caller-controlled and would let a client
+    rotate the header to dodge the bucket."""
+
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        return forwarded.split(",")[-1].strip()
     if request.client is not None:
         return request.client.host
     return "unknown"
@@ -230,7 +235,10 @@ def create_public_router(
             event = parse_checkout_event(body)
         except StripeEventError:
             return JSONResponse({"status": "invalid_payload"}, status_code=400)
-        recorded = await service.record_payment_event(event)
+        try:
+            recorded = await service.record_payment_event(event)
+        except UnknownPaymentSessionError:
+            return JSONResponse({"status": "retry later"}, status_code=503)
         return JSONResponse({"status": "recorded" if recorded else "ignored"}, status_code=200)
 
     return router

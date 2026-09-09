@@ -9,6 +9,7 @@ carry the status code only.
 """
 
 import logging
+from datetime import UTC, datetime
 from typing import Final
 
 import httpx
@@ -36,6 +37,7 @@ class _CheckoutSessionResponse(BaseModel):
     id: str
     url: str | None = None
     payment_intent: str | None = None
+    expires_at: int | None = None
 
 
 def checkout_form(request: PaymentCheckoutRequest) -> dict[str, str]:
@@ -99,4 +101,9 @@ class StripeCheckout:
             session_id=parsed.id,
             checkout_url=parsed.url,
             payment_intent_id=parsed.payment_intent,
+            expires_at=(
+                datetime.fromtimestamp(parsed.expires_at, UTC)
+                if parsed.expires_at is not None
+                else None
+            ),
         )

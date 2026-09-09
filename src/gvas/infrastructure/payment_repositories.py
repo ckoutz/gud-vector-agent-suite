@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,10 @@ from gvas.infrastructure.payment_models import PaymentProviderEvent, QuotePaymen
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _aware_or_none(value: datetime | None) -> datetime | None:
+    return None if value is None else _aware(value)
 
 
 class SqlQuotePaymentRepository:
@@ -28,6 +32,7 @@ class SqlQuotePaymentRepository:
             checkout_session_id=row.checkout_session_id,
             checkout_url=row.checkout_url,
             payment_intent_id=row.payment_intent_id,
+            expires_at=_aware_or_none(row.expires_at),
             amount_minor=row.amount_cents,
             currency=row.currency,
             status=QuotePaymentStatus(row.status),
@@ -50,6 +55,19 @@ class SqlQuotePaymentRepository:
         )
         return None if row is None else self._record(row)
 
+    async def count_for_quote(self, business_id: BusinessId, quote_id: QuoteId) -> int:
+        return (
+            await self.session.scalar(
+                select(func.count())
+                .select_from(QuotePayment)
+                .where(
+                    QuotePayment.business_id == business_id,
+                    QuotePayment.quote_id == quote_id,
+                )
+            )
+            or 0
+        )
+
     async def find_by_checkout_session(self, checkout_session_id: str) -> QuotePaymentRecord | None:
         row = await self.session.scalar(
             select(QuotePayment).where(QuotePayment.checkout_session_id == checkout_session_id)
@@ -65,6 +83,7 @@ class SqlQuotePaymentRepository:
             checkout_session_id=record.checkout_session_id,
             checkout_url=record.checkout_url,
             payment_intent_id=record.payment_intent_id,
+            expires_at=record.expires_at,
             amount_cents=record.amount_minor,
             currency=record.currency,
             status=record.status.value,
@@ -89,6 +108,7 @@ class SqlQuotePaymentRepository:
         row.checkout_session_id = record.checkout_session_id
         row.checkout_url = record.checkout_url
         row.payment_intent_id = record.payment_intent_id
+        row.expires_at = record.expires_at
         row.amount_cents = record.amount_minor
         row.currency = record.currency
         row.status = record.status.value

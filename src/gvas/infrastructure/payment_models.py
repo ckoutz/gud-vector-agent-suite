@@ -43,6 +43,7 @@ class QuotePayment(Base):
     checkout_session_id: Mapped[str] = mapped_column(String(255), nullable=False)
     checkout_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     payment_intent_id: Mapped[str | None] = mapped_column(String(255))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)

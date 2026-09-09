@@ -19,7 +19,9 @@ CHECKOUT_COMPLETED: Final = "checkout.session.completed"
 CHECKOUT_ASYNC_SUCCEEDED: Final = "checkout.session.async_payment_succeeded"
 CHECKOUT_ASYNC_FAILED: Final = "checkout.session.async_payment_failed"
 
-#: Events whose payment has settled.
+#: ``payment_status`` values meaning the session's money has settled.
+SETTLED_PAYMENT_STATUSES: Final = frozenset({"paid", "no_payment_required"})
+#: Events whose payment has settled without needing a status check.
 PAYMENT_SUCCEEDED_EVENTS: Final = frozenset({CHECKOUT_COMPLETED, CHECKOUT_ASYNC_SUCCEEDED})
 #: Every event type the webhook endpoint subscribes to.
 HANDLED_EVENTS: Final = frozenset(
@@ -36,6 +38,7 @@ class _StripeSession(BaseModel):
 
     id: str
     payment_intent: str | None = None
+    payment_status: str | None = None
     metadata: dict[str, str] = {}
 
 
@@ -61,7 +64,13 @@ def parse_checkout_event(body: bytes) -> PaymentWebhookEvent:
     except (ValueError, ValidationError) as error:
         raise StripeEventError("stripe event is not readable") from error
     session = parsed.data.object
-    if parsed.type in PAYMENT_SUCCEEDED_EVENTS:
+    if parsed.type == CHECKOUT_COMPLETED and (
+        session.payment_status not in SETTLED_PAYMENT_STATUSES
+    ):
+        # A completed session can still be unpaid when the customer chose a
+        # delayed method; the async outcome event carries the real answer.
+        outcome = PaymentEventOutcome.OTHER
+    elif parsed.type in PAYMENT_SUCCEEDED_EVENTS:
         outcome = PaymentEventOutcome.SUCCEEDED
     elif parsed.type == CHECKOUT_ASYNC_FAILED:
         outcome = PaymentEventOutcome.FAILED

@@ -1,6 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -30,12 +31,30 @@ from gvas.domain.quotes import QuoteRepository
 
 
 def normalize_site_url(value: str) -> str:
-    """One spelling for a business's public origin so links and CORS agree."""
+    """One spelling for a business's public origin so links and CORS agree.
 
-    normalized = value.strip().rstrip("/")
-    if not normalized.lower().startswith(("http://", "https://")):
+    Strictly an origin: scheme + host (optional port), no path, query,
+    fragment or credentials — anything more would break both the
+    ``<site>/q/<token>`` link shape and CORS origin matching.
+    """
+
+    try:
+        parts = urlsplit(value.strip())
+    except ValueError as error:
+        raise ValueError("site url is not a parseable URL") from error
+    if parts.scheme.lower() not in ("http", "https"):
         raise ValueError("site url must be an absolute http(s) origin")
-    return normalized
+    try:
+        host = parts.hostname
+        parts.port  # noqa: B018 - property access raises on a malformed port
+    except ValueError as error:
+        raise ValueError("site url has a malformed host or port") from error
+    if not host or parts.username or parts.password:
+        raise ValueError("site url must be a bare host with no credentials")
+    if parts.path not in ("", "/") or parts.query or parts.fragment:
+        raise ValueError("site url must be an origin: no path, query or fragment")
+    netloc = parts.netloc.lower()
+    return f"{parts.scheme.lower()}://{netloc}"
 
 
 class BusinessRecord(BaseModel):

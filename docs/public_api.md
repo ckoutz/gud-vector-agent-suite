@@ -100,7 +100,12 @@ limited.
 Subscribed events: `checkout.session.completed`,
 `checkout.session.async_payment_succeeded`,
 `checkout.session.async_payment_failed`. Signature-verified with
-`Stripe-Signature` (5-minute tolerance); the first delivery of an event marks
-the payment and the quote `paid` and enqueues an owner notice in the
-conversation where the quote was approved. Replays are answered `200`
-`{"status": "ignored"}` without redoing work.
+`Stripe-Signature` (5-minute tolerance). A `completed` event only settles the
+quote when the session's `payment_status` is `paid`/`no_payment_required` —
+for delayed methods the async outcome events carry the answer. The first
+delivery of a settling event marks the payment and the quote `paid` and
+enqueues an owner notice in the conversation where the quote was approved.
+Replays are answered `200` `{"status": "ignored"}` without redoing work; an
+event naming a checkout session not yet recorded is answered `503` so Stripe
+retries it. An unpaid session that expires past its `expires_at` is retired
+and the next `accept` opens a fresh one.

@@ -58,6 +58,9 @@ class PaymentCheckoutResult(PaymentModel):
     session_id: str = Field(min_length=1)
     checkout_url: str = Field(min_length=1)
     payment_intent_id: str | None = None
+    # When the provider abandons an unpaid session; None means it does not
+    # expire on its own.
+    expires_at: datetime | None = None
 
 
 class PaymentCheckoutError(RuntimeError):
@@ -102,15 +105,18 @@ class QuotePaymentRecord(PaymentModel):
     checkout_session_id: str = Field(min_length=1)
     checkout_url: str = Field(min_length=1)
     payment_intent_id: str | None = None
+    expires_at: datetime | None = None
     amount_minor: int = Field(ge=0)
     currency: str = Field(min_length=3, max_length=3)
     status: QuotePaymentStatus = QuotePaymentStatus.OPEN
     created_at: datetime
     updated_at: datetime
 
-    @field_validator("created_at", "updated_at")
+    @field_validator("created_at", "updated_at", "expires_at")
     @classmethod
-    def timestamps_are_aware(cls, value: datetime) -> datetime:
+    def timestamps_are_aware(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return value
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("payment timestamps must be timezone-aware")
         return value
@@ -118,6 +124,14 @@ class QuotePaymentRecord(PaymentModel):
     @property
     def is_open(self) -> bool:
         return self.status is QuotePaymentStatus.OPEN
+
+    def is_expired(self, now: datetime) -> bool:
+        """An open session the provider has already abandoned: unusable even
+        though the provider never told us so directly."""
+
+        return self.status is QuotePaymentStatus.OPEN and (
+            self.expires_at is not None and self.expires_at <= now
+        )
 
     def mark_paid(self, payment_intent_id: str | None, now: datetime) -> "QuotePaymentRecord":
         if self.status is QuotePaymentStatus.PAID:
@@ -138,6 +152,11 @@ class QuotePaymentRecord(PaymentModel):
             return self
         return self.model_copy(update={"status": QuotePaymentStatus.FAILED, "updated_at": now})
 
+    def mark_expired(self, now: datetime) -> "QuotePaymentRecord":
+        if self.status is not QuotePaymentStatus.OPEN:
+            return self
+        return self.model_copy(update={"status": QuotePaymentStatus.EXPIRED, "updated_at": now})
+
 
 class InvalidPaymentTransitionError(ValueError):
     pass
@@ -150,11 +169,16 @@ class QuotePaymentConflictError(RuntimeError):
 class QuotePaymentRepository(Protocol):
     async def find_open(
         self, business_id: BusinessId, quote_id: QuoteId
-    ) -> QuotePaymentRecord | None: ...
+    ) -> QuotePaymentRecord | None:
+        """The newest attempt still marked open; ``is_expired`` decides whether
+        it is still usable."""
+        ...
 
     async def find_by_checkout_session(
         self, checkout_session_id: str
     ) -> QuotePaymentRecord | None: ...
+
+    async def count_for_quote(self, business_id: BusinessId, quote_id: QuoteId) -> int: ...
 
     async def create(self, record: QuotePaymentRecord) -> None:
         """Raises :class:`QuotePaymentConflictError` when the session id is taken."""

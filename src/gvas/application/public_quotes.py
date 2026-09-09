@@ -27,6 +27,7 @@ from gvas.domain.payments import (
 )
 from gvas.domain.ports import PaymentCheckoutPort
 from gvas.domain.quotes import (
+    InvalidQuoteTransitionError,
     Quote,
     QuoteConcurrencyError,
     QuoteDraftProposal,
@@ -46,6 +47,16 @@ class QuoteNotFoundError(ValueError):
 
 class OpenCheckoutUnavailableError(RuntimeError):
     """Accepting is configured off: no checkout provider is wired."""
+
+
+class UnknownPaymentSessionError(RuntimeError):
+    """A webhook named a checkout session we have not recorded yet.
+
+    The provider can deliver its event before ``accept_quote`` commits the
+    session row; answering 2xx would consume the event forever, so the
+    endpoint answers 503 and the provider's retry lands after the record
+    exists.
+    """
 
 
 class PublicQuoteView:
@@ -176,13 +187,18 @@ class PublicQuoteService:
             open_payment = await unit_of_work.quote_payments.find_open(
                 quote.business_id, quote.quote_id
             )
+            if open_payment is not None and open_payment.is_expired(_now()):
+                # The provider abandons unpaid sessions without telling us;
+                # retire the attempt and open a fresh one below.
+                await unit_of_work.quote_payments.save(open_payment.mark_expired(_now()))
+                open_payment = None
             if open_payment is not None:
                 if accepted is not quote:
-                    await unit_of_work.quotes.save(accepted, expected_version=quote.version)
+                    await self._tolerate_race(unit_of_work, quote, accepted)
                 await unit_of_work.commit()
                 return open_payment.checkout_url
             if accepted is not quote:
-                await unit_of_work.quotes.save(accepted, expected_version=quote.version)
+                await self._tolerate_race(unit_of_work, quote, accepted)
             draft = accepted.draft
             business = await self._business(unit_of_work, quote.business_id)
             if draft is None or accepted.claim_token is None:
@@ -190,6 +206,17 @@ class PublicQuoteService:
             quote_url = accepted.quote_url(business.site_url or "")
             items = checkout_line_items(draft)
             currency = draft.currency
+            # One idempotency scope per attempt: the first accept reuses the
+            # delivery key; a regenerated session (the previous one expired)
+            # must not replay the provider's earlier answer.
+            attempt = await unit_of_work.quote_payments.count_for_quote(
+                quote.business_id, quote.quote_id
+            )
+            idempotency_key = (
+                f"quote-delivery:{quote.quote_id}"
+                if attempt == 0
+                else f"quote-delivery:{quote.quote_id}:attempt-{attempt + 1}"
+            )
             request = PaymentCheckoutRequest(
                 business_id=quote.business_id,
                 quote_id=quote.quote_id,
@@ -198,7 +225,7 @@ class PublicQuoteService:
                 line_items=items,
                 success_url=f"{quote_url}?paid=1",
                 cancel_url=quote_url,
-                idempotency_key=f"quote-delivery:{quote.quote_id}",
+                idempotency_key=idempotency_key,
                 metadata={
                     "gvas_quote_id": public_quote_id(quote.quote_id),
                     "business_id": str(quote.business_id),
@@ -215,6 +242,7 @@ class PublicQuoteService:
                 checkout_session_id=result.session_id,
                 checkout_url=result.checkout_url,
                 payment_intent_id=result.payment_intent_id,
+                expires_at=result.expires_at,
                 amount_minor=draft.total_minor,
                 currency=currency,
                 created_at=_now(),
@@ -238,7 +266,15 @@ class PublicQuoteService:
             quote = await self._find_claimable(unit_of_work, claim_token)
             declined = quote.record_customer_decline(_now())
             if declined is not quote:
-                await unit_of_work.quotes.save(declined, expected_version=quote.version)
+                try:
+                    await unit_of_work.quotes.save(declined, expected_version=quote.version)
+                except QuoteConcurrencyError as error:
+                    # The quote moved underneath this request (a racing accept
+                    # or a payment); reporting a decline that did not persist
+                    # would lie, so the caller retries against fresh state.
+                    raise InvalidQuoteTransitionError(
+                        "the quote changed while declining; retry the request"
+                    ) from error
             await unit_of_work.commit()
             return (
                 declined.customer_status.value
@@ -282,9 +318,10 @@ class PublicQuoteService:
                 event.checkout_session_id
             )
             if payment is None:
-                logger.warning("payment event %s matched no checkout session", event.event_type)
-                await unit_of_work.commit()
-                return True
+                # Raise instead of committing: the session row may still be on
+                # its way (accept commits it after the provider call), and a
+                # failed response lets the provider retry once it exists.
+                raise UnknownPaymentSessionError(event.checkout_session_id)
             now = _now()
             if event.outcome is PaymentEventOutcome.FAILED:
                 await unit_of_work.quote_payments.save(payment.mark_failed(now))
@@ -351,6 +388,17 @@ class PublicQuoteService:
             raise QuoteNotFoundError("unknown or expired quote link")
         return quote
 
+    @staticmethod
+    async def _tolerate_race(unit_of_work: UnitOfWork, quote: Quote, updated: Quote) -> None:
+        """Losing the optimistic write means a racing request already moved
+        the quote — both sides converge on the same provider identity, so the
+        loser simply continues."""
+
+        try:
+            await unit_of_work.quotes.save(updated, expected_version=quote.version)
+        except QuoteConcurrencyError:
+            logger.info("a racing request already moved the quote forward")
+
     async def _business(self, unit_of_work: UnitOfWork, business_id: BusinessId) -> BusinessRecord:
         business = await unit_of_work.businesses.get(business_id)
         if business is None:
@@ -365,6 +413,7 @@ def _now() -> datetime:
 __all__ = [
     "OpenCheckoutUnavailableError",
     "PublicQuoteService",
+    "UnknownPaymentSessionError",
     "PublicQuoteView",
     "QuoteNotFoundError",
     "checkout_line_items",
