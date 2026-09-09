@@ -12,6 +12,8 @@ QuoteId = NewType("QuoteId", UUID)
 CustomerId = NewType("CustomerId", UUID)
 ServiceRequestId = NewType("ServiceRequestId", UUID)
 SubscriptionId = NewType("SubscriptionId", UUID)
+IntakeConversationId = NewType("IntakeConversationId", UUID)
+IntakeMessageId = NewType("IntakeMessageId", UUID)
 MessageKey = NewType("MessageKey", str)
 WorkflowIntent = NewType("WorkflowIntent", str)
 

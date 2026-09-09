@@ -36,6 +36,7 @@ from gvas.composition.report_publication import ReportArtifactAccess
 from gvas.config import (
     CostCeilingSettings,
     DatabaseUrlError,
+    IntakeSettings,
     ObjectStorageSettings,
     OpenAISettings,
     PublicApiSettings,
@@ -52,6 +53,7 @@ from gvas.domain.ports import (
 )
 from gvas.domain.usage import UsageCeilingGuard, UsageCeilings
 from gvas.infrastructure.calendly.api import CalendlyAppointmentLookup
+from gvas.infrastructure.calendly.availability import CalendlyAvailability
 from gvas.infrastructure.calendly.config import (
     CalendlyInstallationError,
     CalendlySettings,
@@ -62,6 +64,7 @@ from gvas.infrastructure.delivery_ledger import SqlChannelDeliveryLedger
 from gvas.infrastructure.object_storage import R2ObjectStorage
 from gvas.infrastructure.openai_checklist_evidence import OpenAIChecklistEvidenceAnnotator
 from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGuard
+from gvas.infrastructure.openai_intake_agent import OpenAIIntakeAgent
 from gvas.infrastructure.openai_quote_drafting import OpenAIFreeTextQuoteDrafter
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
 from gvas.infrastructure.owner_reply_routing import ChannelOwnerReplyRouter
@@ -147,6 +150,7 @@ class ProductionSettings:
     stripe: StripeSettings = field(default_factory=StripeSettings)
     public_api: PublicApiSettings = field(default_factory=PublicApiSettings)
     cost_ceilings: CostCeilingSettings = field(default_factory=CostCeilingSettings)
+    intake: IntakeSettings = field(default_factory=IntakeSettings)
 
     def usage_ceilings(self) -> UsageCeilings:
         return UsageCeilings(
@@ -169,6 +173,7 @@ def load_production_settings() -> ProductionSettings:
         stripe=StripeSettings(),
         public_api=PublicApiSettings(),
         cost_ceilings=CostCeilingSettings(),
+        intake=IntakeSettings(),
     )
     missing = [
         name
@@ -395,6 +400,16 @@ def build_production_ports(
         if settings.calendly.is_configured
         else None
     )
+    availability = (
+        CalendlyAvailability(settings.calendly, client) if settings.calendly.is_configured else None
+    )
+    intake_agent = (
+        OpenAIIntakeAgent(settings.openai, client, usage_ledger=usage_ledger)
+        if settings.openai.is_configured
+        else None
+    )
+    if intake_agent is None:
+        logger.warning("openai not configured; the website booking chat is off")
     quote_drafting: QuoteDraftingPort = DeterministicQuoteDrafter()
     if settings.openai.is_configured:
         quote_drafting = ModelAssistedQuoteDrafter(
@@ -408,6 +423,9 @@ def build_production_ports(
         owner_replies=ChannelOwnerReplyRouter(session_factory, owner_replies),
         quote_drafting=quote_drafting,
         appointment_lookup=appointment_lookup,
+        availability=availability,
+        intake_agent=intake_agent,
+        customer_email=resend_quotes,
         quote_delivery=quote_delivery,
         customer_text=customer_text,
         payment_checkout=payment_checkout,
@@ -445,6 +463,7 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
         session_factory=session_factory,
         lease_ttl=timedelta(seconds=resolved.worker.lease_seconds),
         ceilings=resolved.usage_ceilings(),
+        intake_settings=resolved.intake,
     )
     routers = [build_slack_event_router(application.ingest_service, resolved.slack)]
     if resolved.telnyx.is_configured:
@@ -464,12 +483,14 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
                 else None
             ),
             rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
+            intake=application.intake,
         )
     )
     routers.append(
         create_portal_router(
             application.portal,
             rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
+            intake=application.intake,
         )
     )
     return ProductionRuntime(

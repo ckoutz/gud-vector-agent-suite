@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from gvas.application.intake import IntakeLimitError, IntakeService
 from gvas.application.portal import (
     BillingPortalUnavailableError,
     PortalAuthenticationError,
@@ -26,7 +27,11 @@ from gvas.domain.customers import SERVICE_REQUEST_MAX_CHARS
 from gvas.domain.enums import CustomerQuoteStatus
 from gvas.domain.payments import PaymentCheckoutError, QuoteSubscriptionRecord
 from gvas.domain.quotes import Quote, normalize_customer_email, public_quote_id
-from gvas.interfaces.http.public import PerIpRateLimiter, client_ip
+from gvas.interfaces.http.public import (
+    PerIpRateLimiter,
+    client_ip,
+    intake_start_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +133,7 @@ def create_portal_router(
     *,
     rate_limiter: PerIpRateLimiter | None = None,
     login_rate_limiter: PerIpRateLimiter | None = None,
+    intake: IntakeService | None = None,
 ) -> APIRouter:
     router = APIRouter()
     limiter = rate_limiter or PerIpRateLimiter(per_minute=120, burst=30)
@@ -224,6 +230,18 @@ def create_portal_router(
             return JSONResponse({"detail": "message is required"}, status_code=422)
         await service.submit_request(context, body.message, body.preferredDates)
         return JSONResponse({}, status_code=202)
+
+    if intake is not None:
+
+        @router.post("/v1/portal/intake/conversations", dependencies=limited, status_code=201)
+        async def create_portal_intake_conversation(
+            context: PortalContext = Depends(authenticated),  # noqa: B008
+        ) -> JSONResponse:
+            try:
+                start = await intake.start_portal_conversation(context.business, context.customer)
+            except IntakeLimitError:
+                return JSONResponse({"detail": "rate limited"}, status_code=429)
+            return JSONResponse(intake_start_payload(start), status_code=201)
 
     return router
 

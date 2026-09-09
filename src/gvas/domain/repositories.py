@@ -24,6 +24,7 @@ from gvas.domain.identifiers import (
     WorkflowIntent,
     WorkflowRunId,
 )
+from gvas.domain.intake import IntakeConversationRepository, IntakeMessageRepository
 from gvas.domain.messages import (
     ChannelEndpointRef,
     ConversationRef,
@@ -233,6 +234,12 @@ class InboundMessageRepository(Protocol):
         message_key: MessageKey,
     ) -> InboundProcessingRecord | None: ...
 
+    async def find_latest_for_business(
+        self, business_id: BusinessId
+    ) -> InboundProcessingRecord | None:
+        """The business's newest inbound message, whichever channel it rode."""
+        ...
+
 
 class OutboundMessageRepository(Protocol):
     """Outbound links must reference the same business as the reply."""
@@ -303,6 +310,8 @@ class UnitOfWork(Protocol):
     portal_sessions: PortalSessionRepository
     service_requests: ServiceRequestRepository
     quote_subscriptions: QuoteSubscriptionRepository
+    intake_conversations: IntakeConversationRepository
+    intake_messages: IntakeMessageRepository
 
     async def __aenter__(self) -> "UnitOfWork": ...
 

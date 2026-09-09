@@ -21,6 +21,13 @@ from gvas.application.field_notes import (
     FieldNoteIntentContribution,
 )
 from gvas.application.ingestion import IngestOwnerMessageService
+from gvas.application.intake import (
+    ArrangeIntakeBookingService,
+    BookingDecisionHandler,
+    IntakeService,
+    SendIntakeCustomerEmailService,
+    SendIntakeCustomerTextService,
+)
 from gvas.application.outbox_service import OutboxService
 from gvas.application.owner_reply_delivery import DeliverOwnerReplyService
 from gvas.application.plan_custody import (
@@ -54,15 +61,17 @@ from gvas.composition.report_publication import (
 )
 from gvas.composition.review import CoordinateFieldNoteReviewService
 from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
-from gvas.config import Settings
+from gvas.config import IntakeSettings, Settings
 from gvas.domain.completeness import CompletenessReviewPort
 from gvas.domain.ports import (
     AppointmentLookupPort,
     AttachmentAccessPort,
+    AvailabilityPort,
     BillingAccountPort,
     ChecklistEvidencePort,
     CustomerQuoteDeliveryPort,
     CustomerTextDeliveryPort,
+    IntakeAgentPort,
     IntentResolutionPort,
     ObjectStoragePort,
     OwnerReplyPort,
@@ -118,6 +127,13 @@ class ApplicationPorts:
     billing_accounts: BillingAccountPort | None = None
     # When present the worker sends portal magic-link e-mails.
     portal_login_email: PortalLoginEmailPort | None = None
+    # Website booking chat: the model that answers turns, the calendar that
+    # reports openings and books approved slots, and the plain e-mail sender
+    # for customer notices (kept apart from quote_delivery, which may route to
+    # an external portal).
+    intake_agent: IntakeAgentPort | None = None
+    availability: AvailabilityPort | None = None
+    customer_email: CustomerQuoteDeliveryPort | None = None
     # The ledger the metered adapters write to; the ceiling guard reads the same
     # one. Defaults to the SQL ledger on the application's sessions.
     usage_ledger: UsageLedgerPort | None = None
@@ -152,6 +168,7 @@ class Application:
     report_artifacts: ReportArtifactAccess
     public_quotes: PublicQuoteService
     portal: PortalService
+    intake: IntakeService | None
     failure_notice_service: NotifyExhaustedCommandService
     usage_ledger: UsageLedgerPort
     usage_ceilings: UsageCeilings
@@ -176,6 +193,7 @@ def build_application(
     engine: AsyncEngine | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     ceilings: UsageCeilings | None = None,
+    intake_settings: IntakeSettings | None = None,
 ) -> Application:
     resolved_engine = engine
     if resolved_engine is None and session_factory is None:
@@ -227,6 +245,21 @@ def build_application(
         ports.quote_drafting,
         appointment_lookup=ports.appointment_lookup,
     )
+    booking_handler = BookingDecisionHandler(unit_of_work_factory, now=now)
+    resolved_intake_settings = intake_settings or IntakeSettings()
+    intake_service = (
+        IntakeService(
+            unit_of_work_factory,
+            agent=ports.intake_agent,
+            availability=ports.availability,
+            ceiling=ceiling_guard,
+            max_conversations_per_day=resolved_intake_settings.max_conversations_per_day,
+            max_user_messages=resolved_intake_settings.max_messages_per_conversation,
+            now=now,
+        )
+        if ports.intake_agent is not None
+        else None
+    )
     public_quotes = PublicQuoteService(
         unit_of_work_factory,
         checkout=ports.payment_checkout,
@@ -236,6 +269,7 @@ def build_application(
     router = WorkflowRouter(
         [
             quote_handler,
+            booking_handler,
             field_note_handler,
             WorkflowConflictHandler(),
             UnmatchedMessageHandler(),
@@ -327,6 +361,19 @@ def build_application(
         ceiling_notices=failure_notices,
         quote_text=quote_text,
         portal_login_email=ports.portal_login_email,
+        intake_booking=ArrangeIntakeBookingService(
+            unit_of_work_factory, availability=ports.availability, now=now
+        ),
+        intake_email=(
+            SendIntakeCustomerEmailService(ports.customer_email)
+            if ports.customer_email is not None
+            else None
+        ),
+        intake_text=(
+            SendIntakeCustomerTextService(ports.customer_text)
+            if ports.customer_text is not None
+            else None
+        ),
     )
     return Application(
         engine=resolved_engine,
@@ -356,6 +403,7 @@ def build_application(
         report_artifacts=report_artifacts,
         public_quotes=public_quotes,
         portal=portal,
+        intake=intake_service,
         failure_notice_service=failure_notices,
         usage_ledger=usage_ledger,
         usage_ceilings=usage_ceilings,

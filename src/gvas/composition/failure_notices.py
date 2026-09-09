@@ -27,6 +27,11 @@ from gvas.domain.field_notes import (
     FieldNoteCaseId,
 )
 from gvas.domain.identifiers import BusinessId, ConversationId, MessageId, QuoteId
+from gvas.domain.intake import (
+    INTAKE_BOOKING_ARRANGE_COMMAND_TYPE,
+    INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
+    INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
+)
 from gvas.domain.messages import ConversationRef, OutboundOwnerMessage, TextPart
 from gvas.domain.outbox import (
     OWNER_MESSAGE_PROCESS_COMMAND_TYPE,
@@ -133,7 +138,28 @@ FAILURE_GUIDANCE: Final[dict[str, tuple[str, str]]] = {
         "The published report could not be emailed to the requested address.",
         SEND_REPORT_AGAIN_IN_THREAD,
     ),
+    INTAKE_BOOKING_ARRANGE_COMMAND_TYPE: (
+        "An approved website booking could not be arranged with the calendar.",
+        "Schedule the customer yourself; the request stays approved.",
+    ),
+    INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE: (
+        "An email to a website-booking customer could not be sent.",
+        "Email the customer yourself.",
+    ),
+    INTAKE_CUSTOMER_TEXT_COMMAND_TYPE: (
+        "A text to a website-booking customer could not be sent.",
+        "Text the customer yourself.",
+    ),
 }
+
+
+INTAKE_COMMAND_TYPES: Final = frozenset(
+    {
+        INTAKE_BOOKING_ARRANGE_COMMAND_TYPE,
+        INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
+        INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -209,6 +235,8 @@ class NotifyExhaustedCommandService:
             return await self._inbound_anchor(command)
         if command.command_type in {QUOTE_DELIVERY_COMMAND_TYPE, QUOTE_TEXT_COMMAND_TYPE}:
             return await self._quote_anchor(command)
+        if command.command_type in INTAKE_COMMAND_TYPES:
+            return await self._intake_anchor(command)
         return await self._field_note_anchor(command)
 
     async def _quote(self, command: OutboxCommand) -> Quote | None:
@@ -256,6 +284,24 @@ class NotifyExhaustedCommandService:
             conversation_id=quote.conversation_id,
             conversation_ref=quote.conversation_ref,
             inbound_message_id=source.inbound_message_id,
+        )
+
+    async def _intake_anchor(self, command: OutboxCommand) -> ConversationAnchor | None:
+        """Intake commands carry no owner conversation; the notice goes to the
+        business's most recent owner thread, like the booking notices."""
+
+        async with self._messages() as unit_of_work:
+            record = await unit_of_work.inbound_messages.find_latest_for_business(
+                command.business_id
+            )
+            await unit_of_work.commit()
+        if record is None:
+            return None
+        return ConversationAnchor(
+            business_id=record.business_id,
+            conversation_id=record.conversation_id,
+            conversation_ref=record.message.conversation_ref,
+            inbound_message_id=record.inbound_message_id,
         )
 
     async def _field_note_anchor(self, command: OutboxCommand) -> ConversationAnchor | None:
