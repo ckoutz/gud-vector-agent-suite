@@ -20,7 +20,6 @@ from gvas.domain.identifiers import BusinessId, ConversationId, MessageKey, Quot
 from gvas.domain.intents import IntentResolution
 from gvas.domain.messages import (
     ConversationRef,
-    CustomerDeliveryLineItem,
     CustomerDeliveryRequest,
     CustomerRecipient,
     CustomerTextRequest,
@@ -48,14 +47,16 @@ from gvas.domain.quotes import (
     QuoteSendAssessment,
     QuoteSendPolicy,
     customer_quote_text,
+    delivery_line_items,
     has_customer_line,
+    new_claim_token,
     new_quote,
     quote_delivery_command,
     quote_text_command,
     quote_trigger_request_text,
     requested_customer_name,
 )
-from gvas.domain.repositories import UnitOfWork
+from gvas.domain.repositories import BusinessRecord, UnitOfWork
 from gvas.domain.workflows import WorkflowContext, WorkflowResult
 
 logger = logging.getLogger(__name__)
@@ -391,17 +392,31 @@ class DeliverApprovedQuoteService:
         if quote.status is not QuoteStatus.APPROVED or quote.draft is None:
             return QuoteDeliveryOutcome(QuoteDeliveryStatus.NOT_APPROVED, quote_id)
 
+        business = await self._business(quote.business_id)
+        if business is not None and business.site_url and quote.claim_token is None:
+            # Quotes approved before claim tokens existed get one on delivery.
+            quote = await self._issue_claim_token(quote)
+        quote_url = None
+        business_name = None
+        if business is not None and business.site_url:
+            quote_url = quote.quote_url(business.site_url)
+            business_name = business.display_name or business.name
+        subject = f"Your quote from {business_name}" if business_name is not None else "Your quote"
         draft = quote.draft
+        if draft is None:
+            return QuoteDeliveryOutcome(QuoteDeliveryStatus.NOT_APPROVED, quote_id)
         receipt = await self._delivery_port.deliver(
             CustomerDeliveryRequest(
                 business_id=quote.business_id,
                 recipient=draft.recipient,
                 idempotency_key=f"quote-delivery:{quote.quote_id}",
-                subject="Your quote",
+                subject=subject,
                 body_text=_customer_quote_body(draft),
                 links=tuple(link.reference for link in draft.hosted_links),
-                line_items=_delivery_line_items(draft),
+                line_items=delivery_line_items(draft),
                 currency=draft.currency,
+                quote_url=quote_url,
+                business_name=business_name,
                 note=draft.owner_note,
             )
         )
@@ -426,6 +441,19 @@ class DeliverApprovedQuoteService:
             }:
                 raise
         return QuoteDeliveryOutcome(QuoteDeliveryStatus.COMPLETED, quote_id)
+
+    async def _business(self, business_id: BusinessId) -> BusinessRecord | None:
+        async with self._unit_of_work_factory() as unit_of_work:
+            business = await unit_of_work.businesses.get(business_id)
+            await unit_of_work.commit()
+        return business
+
+    async def _issue_claim_token(self, quote: Quote) -> Quote:
+        issued = quote.issue_claim_token(new_claim_token(), quote.updated_at)
+        async with self._unit_of_work_factory() as unit_of_work:
+            await unit_of_work.quotes.save(issued, expected_version=quote.version)
+            await unit_of_work.commit()
+        return issued
 
     def _will_text(self, quote: Quote) -> bool:
         if not self._texts_customers or quote.draft is None or quote.delivery_receipt is None:
@@ -464,6 +492,29 @@ class DeliverApprovedQuoteService:
         await unit_of_work.outbox.enqueue(
             owner_reply_command(quote.business_id, outbound_message_id)
         )
+
+
+class SiteAwareQuoteDelivery:
+    """Picks the delivery backend per request.
+
+    A request carrying a hosted ``quote_url`` goes to the default adapter,
+    which renders the hosted link into the customer email. A request without
+    one goes to the external portal when it is wired; with neither in play the
+    default adapter's generic email is sent.
+    """
+
+    def __init__(
+        self,
+        default: CustomerQuoteDeliveryPort,
+        portal: CustomerQuoteDeliveryPort | None = None,
+    ) -> None:
+        self._default = default
+        self._portal = portal
+
+    async def deliver(self, request: CustomerDeliveryRequest) -> DeliveryReceipt:
+        if request.quote_url is None and self._portal is not None:
+            return await self._portal.deliver(request)
+        return await self._default.deliver(request)
 
 
 class QuoteTextStatus(StrEnum):
@@ -658,33 +709,6 @@ def _owner_quote_body(quote: Quote) -> str:
         lines.append(FREE_TEXT_DRAFT_NOTICE)
     lines.append("Reply with approve, reject, or correct: <changes>.")
     return "\n".join(lines)
-
-
-def _delivery_line_items(draft: QuoteDraftProposal) -> tuple[CustomerDeliveryLineItem, ...]:
-    """The draft's items, with tax and discount as lines of their own so the
-    structured total equals ``draft.total_minor``."""
-
-    items = [
-        CustomerDeliveryLineItem(
-            description=item.description,
-            quantity=item.quantity,
-            unit_price_minor=item.unit_price_minor,
-        )
-        for item in draft.line_items
-    ]
-    if draft.tax_minor:
-        items.append(
-            CustomerDeliveryLineItem(
-                description="Tax", quantity=1, unit_price_minor=draft.tax_minor
-            )
-        )
-    if draft.discount_minor:
-        items.append(
-            CustomerDeliveryLineItem(
-                description="Discount", quantity=1, unit_price_minor=-draft.discount_minor
-            )
-        )
-    return tuple(items)
 
 
 def quote_delivered_reply(

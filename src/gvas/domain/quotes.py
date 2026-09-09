@@ -1,4 +1,7 @@
+import hashlib
+import hmac
 import re
+import secrets
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID, uuid5
@@ -7,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from gvas.domain.appointments import Appointment
 from gvas.domain.enums import (
+    CustomerQuoteStatus,
     DeliveryStatus,
     HostedLinkKind,
     QuoteSendAction,
@@ -22,6 +26,7 @@ from gvas.domain.identifiers import (
 )
 from gvas.domain.messages import (
     ConversationRef,
+    CustomerDeliveryLineItem,
     CustomerRecipient,
     DeliveryReceipt,
     NormalizedOwnerMessage,
@@ -40,6 +45,14 @@ QUOTE_TEXT_COMMAND_TYPE = "customer_quote.text"
 QUOTE_ID_NAMESPACE = UUID("391d4c69-e58a-4621-ad77-1f45ac243ae2")
 QUOTE_DELIVERY_COMMAND_NAMESPACE = UUID("e940a293-273c-4914-b17b-63ac10db4db4")
 QUOTE_TEXT_COMMAND_NAMESPACE = UUID("5c1f0b7e-2d84-4f6a-9b3e-8a7d6c5e4f30")
+#: Derives the public-facing quote identity; the row id never leaves the system.
+PUBLIC_QUOTE_ID_NAMESPACE = UUID("7f2c9d3b-4e5a-4b1c-8d2e-3f4a5b6c7d80")
+#: Bytes of entropy in a claim token; ``token_urlsafe`` keeps it URL-safe.
+CLAIM_TOKEN_BYTES = 32
+#: A claim only answers while the owner side of the quote is still honoured.
+QUOTE_CLAIMABLE_STATUSES = frozenset(
+    {QuoteStatus.APPROVED, QuoteStatus.DELIVERY_PENDING, QuoteStatus.DELIVERED}
+)
 #: One GSM-7 segment; the customer text must never need a second one.
 SMS_SEGMENT_LIMIT = 160
 CUSTOMER_TEXT_PREFIX = "Your Güd Vector quote for "
@@ -180,6 +193,31 @@ class QuoteSendDecision(QuoteModel):
     detail: str | None = None
 
 
+def new_claim_token() -> str:
+    """The customer-facing quote token: high-entropy, URL-safe, unguessable."""
+
+    return secrets.token_urlsafe(CLAIM_TOKEN_BYTES)
+
+
+def hash_claim_token(claim_token: str) -> str:
+    """The lookup key persisted for a claim token; the raw token alone opens
+    the quote, so the store keeps only its digest."""
+
+    return hashlib.sha256(claim_token.encode()).hexdigest()
+
+
+def claim_token_matches(claim_token: str, stored_hash: str) -> bool:
+    """Constant-time check of a presented token against a stored digest."""
+
+    return hmac.compare_digest(hash_claim_token(claim_token), stored_hash)
+
+
+def public_quote_id(quote_id: QuoteId) -> str:
+    """The opaque identifier a site may show or pass back; not the row id."""
+
+    return f"gvq_{uuid5(PUBLIC_QUOTE_ID_NAMESPACE, str(quote_id)).hex}"
+
+
 class Quote(QuoteModel):
     quote_id: QuoteId
     business_id: BusinessId
@@ -195,14 +233,20 @@ class Quote(QuoteModel):
     delivery_receipt: DeliveryReceipt | None = None
     customer_appointment: Appointment | None = None
     customer_candidates: tuple[Appointment, ...] | None = None
+    # The customer-facing credential: issued on approval, kept raw so the
+    # hosted link can be rebuilt at delivery time; only the hash is indexed.
+    claim_token: str | None = None
+    claim_token_hash: str | None = None
+    customer_status: CustomerQuoteStatus | None = None
+    approved_at: datetime | None = None
     version: int = Field(default=1, ge=1)
     created_at: datetime
     updated_at: datetime
 
-    @field_validator("created_at", "updated_at")
+    @field_validator("created_at", "updated_at", "approved_at")
     @classmethod
-    def timestamps_are_aware(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
+    def timestamps_are_aware(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
             raise ValueError("quote timestamps must be timezone-aware")
         return value
 
@@ -231,6 +275,16 @@ class Quote(QuoteModel):
             raise ValueError("customer candidates exist exactly while a selection is awaited")
         if self.customer_candidates is not None and len(self.customer_candidates) < 2:
             raise ValueError("a customer selection needs at least two candidates")
+        if (self.claim_token is None) != (self.claim_token_hash is None):
+            raise ValueError("claim token and its hash must be set together")
+        if self.claim_token is not None and self.claim_token_hash != hash_claim_token(
+            self.claim_token
+        ):
+            raise ValueError("claim token hash must be the token's digest")
+        if self.customer_status is not None and self.claim_token_hash is None:
+            raise ValueError("a customer status requires an issued claim token")
+        if self.customer_status is not None and self.status not in QUOTE_CLAIMABLE_STATUSES:
+            raise ValueError("customer status requires an approved quote")
         return self
 
     @property
@@ -316,16 +370,119 @@ class Quote(QuoteModel):
             raise InvalidQuoteTransitionError(f"cannot pick a customer in {self.status}")
         return self.model_copy(update={"customer_appointment": appointment})
 
-    def approve(self, message_key: MessageKey, now: datetime) -> "Quote":
+    def approve(
+        self, message_key: MessageKey, now: datetime, *, claim_token: str | None = None
+    ) -> "Quote":
+        """Approving issues the customer claim token once; a corrected quote
+        that is re-approved keeps the token already issued so a link the
+        customer may already hold keeps working."""
+
         self._require_awaiting_approval()
+        update: dict[str, object] = {
+            "status": QuoteStatus.APPROVED,
+            "last_message_key": message_key,
+            "approved_at": self.approved_at or now,
+            "updated_at": now,
+            "version": self.version + 1,
+        }
+        if self.claim_token_hash is None:
+            token = claim_token if claim_token is not None else new_claim_token()
+            update["claim_token"] = token
+            update["claim_token_hash"] = hash_claim_token(token)
+        return self.model_copy(update=update)
+
+    def issue_claim_token(self, claim_token: str, now: datetime) -> "Quote":
+        """Mint the token a claimable quote predating claim tokens is missing."""
+
+        if not self.is_claimable():
+            raise InvalidQuoteTransitionError(f"cannot issue a claim token in {self.status}")
+        if self.claim_token_hash is not None:
+            raise InvalidQuoteTransitionError("quote already holds a claim token")
         return self.model_copy(
             update={
-                "status": QuoteStatus.APPROVED,
-                "last_message_key": message_key,
+                "claim_token": claim_token,
+                "claim_token_hash": hash_claim_token(claim_token),
                 "updated_at": now,
                 "version": self.version + 1,
             }
         )
+
+    def _require_claimable(self) -> None:
+        if self.claim_token_hash is None or self.status not in QUOTE_CLAIMABLE_STATUSES:
+            raise InvalidQuoteTransitionError(
+                f"quote has no claimable customer state in {self.status}"
+            )
+
+    def record_customer_view(self, now: datetime) -> "Quote":
+        """The first successful customer fetch flips ``None`` to ``viewed``."""
+
+        self._require_claimable()
+        if self.customer_status is not None:
+            return self
+        return self.model_copy(
+            update={
+                "customer_status": CustomerQuoteStatus.VIEWED,
+                "updated_at": now,
+                "version": self.version + 1,
+            }
+        )
+
+    def record_customer_accept(self, now: datetime) -> "Quote":
+        self._require_claimable()
+        if self.customer_status is CustomerQuoteStatus.ACCEPTED:
+            return self
+        if self.customer_status in {
+            CustomerQuoteStatus.PAID,
+            CustomerQuoteStatus.DECLINED,
+        }:
+            raise InvalidQuoteTransitionError(
+                f"customer cannot accept a {self.customer_status} quote"
+            )
+        return self.model_copy(
+            update={
+                "customer_status": CustomerQuoteStatus.ACCEPTED,
+                "updated_at": now,
+                "version": self.version + 1,
+            }
+        )
+
+    def record_customer_decline(self, now: datetime) -> "Quote":
+        self._require_claimable()
+        if self.customer_status is CustomerQuoteStatus.PAID:
+            raise InvalidQuoteTransitionError("customer cannot decline a paid quote")
+        if self.customer_status is CustomerQuoteStatus.DECLINED:
+            return self
+        return self.model_copy(
+            update={
+                "customer_status": CustomerQuoteStatus.DECLINED,
+                "updated_at": now,
+                "version": self.version + 1,
+            }
+        )
+
+    def record_customer_payment(self, now: datetime) -> "Quote":
+        """A confirmed payment wins over every earlier customer status."""
+
+        self._require_claimable()
+        if self.customer_status is CustomerQuoteStatus.PAID:
+            return self
+        return self.model_copy(
+            update={
+                "customer_status": CustomerQuoteStatus.PAID,
+                "updated_at": now,
+                "version": self.version + 1,
+            }
+        )
+
+    def is_claimable(self) -> bool:
+        return self.claim_token_hash is not None and self.status in QUOTE_CLAIMABLE_STATUSES
+
+    def quote_url(self, site_url: str) -> str:
+        """The customer-facing link on the business's own site."""
+
+        if self.claim_token is None:
+            raise InvalidQuoteTransitionError("quote holds no claim token")
+        return f"{site_url.rstrip('/')}/q/{self.claim_token}"
 
     def reject(self, message_key: MessageKey, now: datetime) -> "Quote":
         self._require_awaiting_approval()
@@ -399,6 +556,8 @@ class QuoteRepository(Protocol):
         conversation_id: ConversationId,
         message_key: MessageKey,
     ) -> Quote | None: ...
+
+    async def get_by_claim_hash(self, claim_token_hash: str) -> Quote | None: ...
 
     async def add(self, quote: Quote) -> None: ...
 
@@ -519,6 +678,33 @@ def quote_text_command(quote: Quote) -> OutboxCommand:
         payload={"quote_id": str(quote.quote_id)},
         dedup_key=f"quote_text:{quote.quote_id}",
     )
+
+
+def delivery_line_items(draft: QuoteDraftProposal) -> tuple[CustomerDeliveryLineItem, ...]:
+    """The draft's items, with tax and discount as lines of their own so the
+    structured total equals ``draft.total_minor``."""
+
+    items = [
+        CustomerDeliveryLineItem(
+            description=item.description,
+            quantity=item.quantity,
+            unit_price_minor=item.unit_price_minor,
+        )
+        for item in draft.line_items
+    ]
+    if draft.tax_minor:
+        items.append(
+            CustomerDeliveryLineItem(
+                description="Tax", quantity=1, unit_price_minor=draft.tax_minor
+            )
+        )
+    if draft.discount_minor:
+        items.append(
+            CustomerDeliveryLineItem(
+                description="Discount", quantity=1, unit_price_minor=-draft.discount_minor
+            )
+        )
+    return tuple(items)
 
 
 def customer_quote_text(draft: QuoteDraftProposal, link: str) -> str:

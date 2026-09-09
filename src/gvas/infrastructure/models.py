@@ -27,8 +27,18 @@ class Business(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     slug: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Hosted-quote config: the client site's public origin, the customer-facing
+    # name, a booking link, the publishable key, and the future connected
+    # account id (stored now, used when connected payments arrive).
+    site_url: Mapped[str | None] = mapped_column(String(2048))
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    calendly_url: Mapped[str | None] = mapped_column(String(2048))
+    stripe_account_id: Mapped[str | None] = mapped_column(String(255))
+    public_key: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (Index("uq_businesses_public_key", "public_key", unique=True),)
 
 
 class OwnerChannelEndpoint(Base):
@@ -286,6 +296,11 @@ class QuoteRecord(Base):
         ),
         Index("ix_quotes_business_id", "business_id"),
         Index("ix_quotes_conversation_id", "conversation_id"),
+        Index(
+            "ix_quotes_claim_token_hash",
+            "claim_token_hash",
+            unique=True,
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -305,6 +320,10 @@ class QuoteRecord(Base):
     delivery_receipt: Mapped[dict[str, JsonValue] | None] = mapped_column(json_type)
     customer_appointment: Mapped[dict[str, JsonValue] | None] = mapped_column(json_type)
     customer_candidates: Mapped[list[JsonValue] | None] = mapped_column(json_type)
+    claim_token: Mapped[str | None] = mapped_column(String(512))
+    claim_token_hash: Mapped[str | None] = mapped_column(String(64))
+    customer_status: Mapped[str | None] = mapped_column(String(50))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     version: Mapped[int] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -314,6 +333,7 @@ class QuoteRecord(Base):
 from gvas.infrastructure import completeness_models as completeness_models  # noqa: E402, F401
 from gvas.infrastructure import delivery_models as delivery_models  # noqa: E402, F401
 from gvas.infrastructure import field_note_models as field_note_models  # noqa: E402, F401
+from gvas.infrastructure import payment_models as payment_models  # noqa: E402, F401
 from gvas.infrastructure import plan_models as plan_models  # noqa: E402, F401
 from gvas.infrastructure import template_models as template_models  # noqa: E402, F401
 from gvas.infrastructure import usage_models as usage_models  # noqa: E402, F401

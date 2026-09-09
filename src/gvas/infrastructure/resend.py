@@ -92,14 +92,28 @@ class ResendQuoteDeliveryAdapter(_ResendEmailClient):
             raise ResendDeliveryError("resend delivers to email recipients only")
         if request.attachments:
             raise ResendDeliveryError("quote emails do not carry attachments")
-        return await self._send(
+        receipt = await self._send(
             request.recipient.address,
             request.subject or "Your quote",
             self._body(request),
             request.idempotency_key,
         )
+        if request.quote_url is not None:
+            receipt = receipt.model_copy(
+                update={"customer_link": request.quote_url, "emailed": True}
+            )
+        return receipt
 
     def _body(self, request: CustomerDeliveryRequest) -> str:
+        if request.quote_url is not None:
+            sender = request.business_name or "Your provider"
+            return "\n\n".join(
+                [
+                    f"{sender} sent you a quote.",
+                    request.body_text,
+                    f"View and pay your quote: {request.quote_url}",
+                ]
+            )
         links = [self._resolve_link(reference) for reference in request.links]
         if not links:
             return request.body_text

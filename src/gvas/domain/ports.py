@@ -16,6 +16,7 @@ from gvas.domain.messages import (
     TranscriptResult,
 )
 from gvas.domain.object_storage import ObjectCustodyRequest, StoredObject
+from gvas.domain.payments import PaymentCheckoutRequest, PaymentCheckoutResult
 from gvas.domain.quotes import QuoteDraftProposal, QuoteDraftRequest
 from gvas.domain.reporting import (
     ChecklistEvidence,
@@ -60,6 +61,17 @@ class TranscriptionPort(Protocol):
 
 class CustomerQuoteDeliveryPort(Protocol):
     async def deliver(self, request: CustomerDeliveryRequest) -> DeliveryReceipt: ...
+
+
+class PaymentCheckoutPort(Protocol):
+    """Opens one hosted checkout session for an accepted quote.
+
+    Implementations must honour ``idempotency_key`` so a retried call returns
+    the session already opened. Errors raise ``PaymentCheckoutError`` with
+    provider credentials and raw responses stripped out.
+    """
+
+    async def create_checkout(self, request: PaymentCheckoutRequest) -> PaymentCheckoutResult: ...
 
 
 class CustomerTextDeliveryPort(Protocol):

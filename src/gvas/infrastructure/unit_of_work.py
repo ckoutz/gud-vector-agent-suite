@@ -6,6 +6,7 @@ from gvas.domain.completeness_repositories import (
     FieldNoteReviewRepository,
     FollowUpQuestionRepository,
 )
+from gvas.domain.payments import PaymentEventRepository, QuotePaymentRepository
 from gvas.domain.quotes import QuoteRepository
 from gvas.domain.repositories import (
     BusinessRepository,
@@ -26,6 +27,10 @@ from gvas.infrastructure.completeness_repositories import (
     SqlChecklistDefinitionRepository,
     SqlFieldNoteReviewRepository,
     SqlFollowUpQuestionRepository,
+)
+from gvas.infrastructure.payment_repositories import (
+    SqlPaymentEventRepository,
+    SqlQuotePaymentRepository,
 )
 from gvas.infrastructure.repositories import (
     SqlBusinessRepository,
@@ -53,6 +58,8 @@ class SqlUnitOfWork:
     workflow_runs: WorkflowRunRepository
     outbox: OutboxRepository
     quotes: QuoteRepository
+    quote_payments: QuotePaymentRepository
+    payment_events: PaymentEventRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -68,6 +75,8 @@ class SqlUnitOfWork:
         self.workflow_runs = SqlWorkflowRunRepository(self._session)
         self.outbox = SqlOutboxRepository(self._session)
         self.quotes = SqlQuoteRepository(self._session)
+        self.quote_payments = SqlQuotePaymentRepository(self._session)
+        self.payment_events = SqlPaymentEventRepository(self._session)
         return self
 
     async def __aexit__(

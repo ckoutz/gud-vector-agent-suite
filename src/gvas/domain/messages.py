@@ -203,6 +203,11 @@ class CustomerDeliveryRequest(DomainModel):
     # the quote themselves rather than forwarding the text.
     line_items: tuple[CustomerDeliveryLineItem, ...] = Field(default_factory=tuple)
     currency: str | None = None
+    # Set when the quote is hosted on the business's own site: the adapter is
+    # asked to render the link into the message and report it on the receipt.
+    quote_url: str | None = None
+    # The name the customer-facing message should come from, when configured.
+    business_name: str | None = None
     note: str | None = None
 
 
