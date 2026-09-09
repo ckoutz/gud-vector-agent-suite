@@ -33,6 +33,7 @@ owner literally wrote, otherwise nothing is drafted and the owner is asked.
 
 import logging
 import re
+from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Final
@@ -212,6 +213,65 @@ def written_amounts_minor(text: str) -> frozenset[int]:
     return frozenset(found)
 
 
+WORD_PATTERN: Final = re.compile(r"[A-Za-z][A-Za-z-]*")
+COUNTED_ATTRIBUTE_PATTERN: Final = re.compile(r"\d[\d.,]*\s*(?:x|×)?\s*[A-Za-z][A-Za-z-]*")
+WORD_STEM_LENGTH: Final = 4
+
+
+def quantity_is_written(
+    text: str, quantity: int, description: str, quantity_text: str | None
+) -> bool:
+    """True when the owner wrote ``quantity_text`` (the drafter's source for the
+    quantity, ``"2 air samples"``) and it really counts this item: it appears
+    in ``text`` with the number standing alone (not inside ``$1,250`` or
+    ``125.00``), and every word after the number starts like a word of the
+    description that is not itself counted there. ``"2 bedrooms"`` for
+    ``Inspection for 2 bedrooms`` describes the job, not how many are billed,
+    and ``"2 mold inspections"`` does not count ``Mold remediation``."""
+
+    return quantity_source_occurrences(text, quantity, description, quantity_text) > 0
+
+
+def quantity_source_occurrences(
+    text: str, quantity: int, description: str, quantity_text: str | None
+) -> int:
+    """How many times ``quantity_text`` occurs in ``text`` as a count of this
+    item (see ``quantity_is_written``); 0 when it is not one."""
+
+    if quantity_text is None:
+        return 0
+    span = " ".join(quantity_text.split())
+    match = re.fullmatch(
+        rf"{quantity}(?![\d.,])\s*(?:x|×)?\s*({WORD_PATTERN.pattern}(?:\s+{WORD_PATTERN.pattern})*)",
+        span,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return 0
+    uncounted = COUNTED_ATTRIBUTE_PATTERN.sub(" ", description)
+    stems = {
+        word.casefold()[:WORD_STEM_LENGTH]
+        for word in WORD_PATTERN.findall(uncounted)
+        if len(word) >= 3
+    }
+    words = [
+        word.casefold()[:WORD_STEM_LENGTH]
+        for word in WORD_PATTERN.findall(match.group(1))
+        if len(word) >= 3
+    ]
+    if not words or any(word not in stems for word in words):
+        return 0
+    haystack = " ".join(text.split()).casefold()
+    needle = span.casefold()
+    occurrences = 0
+    start = haystack.find(needle)
+    while start != -1:
+        if start == 0 or haystack[start - 1] not in "0123456789.,$":
+            occurrences += 1
+        start = haystack.find(needle, start + 1)
+    return occurrences
+
+
 def written_amount_minor(value: str) -> int | None:
     """``$1,250.00`` -> 125000; ``None`` when ``value`` is not a single amount."""
 
@@ -326,11 +386,24 @@ def _priced_line_items(request_text: str, draft: FreeTextQuoteDraft) -> tuple[Qu
     written = written_amounts_minor(request_text)
     line_items: list[QuoteLineItem] = []
     unpriced: list[str] = []
+    used_quantity_texts: Counter[str] = Counter()
     for item in draft.line_items:
         minor = None if item.unit_price is None else written_amount_minor(item.unit_price)
         if minor is None or minor not in written:
             unpriced.append(item.description)
             continue
+        quantity_text = " ".join((item.quantity_text or "").split()).casefold()
+        # One written count serves one item: "2 inspections" cannot count both
+        # "Mold inspection" and "Radon inspection" unless it was written twice.
+        if item.quantity > 1 and used_quantity_texts[quantity_text] >= quantity_source_occurrences(
+            request_text, item.quantity, item.description, item.quantity_text
+        ):
+            raise QuoteDraftRejectedError(
+                f"Your message does not say {item.quantity} × '{item.description}'."
+                " Send the quote again with the quantity written out."
+            )
+        if item.quantity > 1:
+            used_quantity_texts[quantity_text] += 1
         line_items.append(
             QuoteLineItem(
                 description=item.description, quantity=item.quantity, unit_price_minor=minor

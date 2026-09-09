@@ -36,6 +36,7 @@ from gvas.infrastructure.quote_drafting import (
     DeterministicQuoteDrafter,
     ModelAssistedQuoteDrafter,
     is_structured_request,
+    quantity_is_written,
     written_amount_minor,
     written_amounts_minor,
 )
@@ -56,8 +57,15 @@ LEAK_MARKER = "provider-detail-never-shown"
 STRUCTURED = "quote:\ncustomer: bob@example.test\ncurrency: USD\nitem: 1 | Air sampling | 125.00"
 
 
-def item(description: str, price: str | None, quantity: int = 1) -> FreeTextQuoteItem:
-    return FreeTextQuoteItem(description=description, quantity=quantity, unit_price=price)
+def item(
+    description: str, price: str | None, quantity: int = 1, quantity_text: str | None = None
+) -> FreeTextQuoteItem:
+    return FreeTextQuoteItem(
+        description=description,
+        quantity=quantity,
+        quantity_text=quantity_text,
+        unit_price=price,
+    )
 
 
 class ModelFake:
@@ -173,7 +181,7 @@ async def test_free_text_with_literal_prices_drafts_and_flags_the_reply(
 ) -> None:
     model = ModelFake(
         FreeTextQuoteDraft(
-            line_items=(item("Air sample", "125", 2), item("Report", "200")),
+            line_items=(item("Air sample", "125", 2, "2 air samples"), item("Report", "200")),
             owner_note="We'll be there Tuesday",
             ambiguities=("'200' read as the report's price",),
         )
@@ -191,6 +199,7 @@ async def test_free_text_with_literal_prices_drafts_and_flags_the_reply(
 
     assert "2 × Air sample" in text
     assert "Total: USD 450.00" in text
+    assert "Note: We'll be there Tuesday" in text
     assert FREE_TEXT_DRAFT_NOTICE in text
     assert text.index(FREE_TEXT_DRAFT_NOTICE) < text.index("Reply with approve")
     assert model.requests[0].request_text == (
@@ -221,6 +230,120 @@ async def test_dollar_and_comma_amounts_and_default_quantity() -> None:
     ]
     assert proposal.currency == "USD"
     assert proposal.drafted_from_free_text
+
+
+async def test_quantity_not_in_text_is_refused() -> None:
+    model = ModelFake(FreeTextQuoteDraft(line_items=(item("Air sample", "125", 3),)))
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 3 × 'Air sample'"):
+        await drafter(model).draft(request("air samples at 125\ncustomer: bob@example.test"))
+    model = ModelFake(
+        FreeTextQuoteDraft(line_items=(item("Air sample", "125", 3, "3 air samples"),))
+    )
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 3 × 'Air sample'"):
+        await drafter(model).draft(request("air samples at 125\ncustomer: bob@example.test"))
+
+
+async def test_quantity_is_not_read_from_a_job_attribute() -> None:
+    model = ModelFake(
+        FreeTextQuoteDraft(line_items=(item("Inspection for 2 bedrooms", "250", 2, "2 bedrooms"),))
+    )
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 2 × 'Inspection"):
+        await drafter(model).draft(
+            request("inspection for 2 bedrooms 250\ncustomer: bob@example.test")
+        )
+
+
+async def test_quantity_is_not_read_from_a_price() -> None:
+    model = ModelFake(
+        FreeTextQuoteDraft(line_items=(item("Air sample", "1,250", 250, "250 air sample"),))
+    )
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 250"):
+        await drafter(model).draft(request("air sample $1,250\ncustomer: bob@example.test"))
+    model = ModelFake(
+        FreeTextQuoteDraft(line_items=(item("Air sample", "125", 125, "air sample 125"),))
+    )
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 125"):
+        await drafter(model).draft(request("air sample 125\ncustomer: bob@example.test"))
+
+
+async def test_quantity_is_not_borrowed_from_another_item() -> None:
+    model = ModelFake(
+        FreeTextQuoteDraft(
+            line_items=(
+                item("Air sample", "125", 3, "3 air samples"),
+                item("Report", "200", 3, "3 air samples"),
+            )
+        )
+    )
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 3 × 'Report'"):
+        await drafter(model).draft(
+            request("3 air samples at 125 and the report 200\ncustomer: bob@example.test")
+        )
+
+
+async def test_quantity_source_must_name_its_own_item() -> None:
+    model = ModelFake(
+        FreeTextQuoteDraft(
+            line_items=(
+                item("Mold inspection", "250", 2, "2 mold inspections"),
+                item("Mold remediation", "900", 2, "2 mold inspections"),
+            )
+        )
+    )
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 2 × 'Mold remediation'"):
+        await drafter(model).draft(
+            request("2 mold inspections 250, mold remediation 900\ncustomer: bob@example.test")
+        )
+    model = ModelFake(
+        FreeTextQuoteDraft(
+            line_items=(
+                item("Mold inspection", "250", 2, "2 inspections"),
+                item("Radon inspection", "300", 2, "2 inspections"),
+            )
+        )
+    )
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 2 × 'Radon inspection'"):
+        await drafter(model).draft(
+            request("2 inspections: mold 250 and radon 300\ncustomer: bob@example.test")
+        )
+
+
+async def test_quantity_written_twice_counts_two_items() -> None:
+    model = ModelFake(
+        FreeTextQuoteDraft(
+            line_items=(
+                item("Filter (furnace)", "40", 2, "2 filters"),
+                item("Filter (return)", "60", 2, "2 filters"),
+            )
+        )
+    )
+    proposal = await drafter(model).draft(
+        request("2 filters for the furnace 40 and 2 filters at the return 60\ncustomer: b@x.test")
+    )
+    assert [li.quantity for li in proposal.line_items] == [2, 2]
+
+
+def test_quantity_is_written_checks_the_drafters_source_words() -> None:
+    assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", "3 x air samples")
+    assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", None) is False
+    assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", "3 x reports") is False
+    assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", "3 x") is False
+    assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", "3 x at") is False
+    assert quantity_is_written("reports: 2 and 1 inspection", 2, "Report", "reports: 2") is False
+    assert quantity_is_written("on 2 bedrooms, 2 samples", 2, "Mold sample", "2 samples")
+    assert (
+        quantity_is_written("on 2 bedrooms, 2 samples", 2, "Sample, 2 bedrooms", "2 bedrooms")
+        is False
+    )
+    assert (
+        quantity_is_written("2 mold inspections", 2, "Mold remediation", "2 mold inspections")
+        is False
+    )
+    assert quantity_is_written(
+        "2 mold inspections", 2, "Mold inspection - attic", "2 mold inspections"
+    )
+    assert quantity_is_written("$2,500 samples", 2, "Sample", "2,500 samples") is False
+    assert quantity_is_written("$2,500 samples", 2, "Sample", "500 samples") is False
 
 
 async def test_price_not_in_text_asks_once_and_drafts_nothing(
@@ -374,8 +497,18 @@ async def test_openai_drafter_sends_text_and_appointment_as_schema_request() -> 
             json=completion(
                 {
                     "items": [
-                        {"description": " Mold  inspection ", "quantity": 0, "unit_price": "350"},
-                        {"description": "Report", "quantity": 1, "unit_price": ""},
+                        {
+                            "description": " Mold  inspection ",
+                            "quantity": 0,
+                            "quantity_text": "",
+                            "unit_price": "350",
+                        },
+                        {
+                            "description": "Report",
+                            "quantity": 2,
+                            "quantity_text": " 2  reports ",
+                            "unit_price": "",
+                        },
                         {"description": "   ", "quantity": 1, "unit_price": "1"},
                     ],
                     "owner_note": "",
@@ -403,7 +536,7 @@ async def test_openai_drafter_sends_text_and_appointment_as_schema_request() -> 
         )
 
     assert draft == FreeTextQuoteDraft(
-        line_items=(item("Mold inspection", "350"), item("Report", None)),
+        line_items=(item("Mold inspection", "350"), item("Report", None, 2, "2 reports")),
         owner_note=None,
         ambiguities=("report has no price",),
     )
@@ -416,6 +549,8 @@ async def test_openai_drafter_sends_text_and_appointment_as_schema_request() -> 
     assert "seed" in body
     assert body["response_format"]["type"] == "json_schema"
     assert body["response_format"]["json_schema"]["strict"] is True
+    item_schema = body["response_format"]["json_schema"]["schema"]["properties"]["items"]["items"]
+    assert "quantity_text" in item_schema["required"]
     user_content = json.loads(body["messages"][1]["content"])
     assert user_content["request_text"] == "mold inspection 350 and the report"
     assert user_content["appointment"] == {
