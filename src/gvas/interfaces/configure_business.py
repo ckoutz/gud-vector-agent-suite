@@ -14,10 +14,12 @@ generated; it is printed so it can be copied into the site's frontend config.
 
 import argparse
 import asyncio
+import re
 import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from gvas.config import Settings
@@ -27,6 +29,10 @@ from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
 
 PUBLIC_KEY_PREFIX = "gvb_"
+
+#: A public key travels as a single URL path segment, so only unreserved
+#: characters are allowed; the column caps it at 255 characters.
+PUBLIC_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]{0,254}")
 
 
 class ConfigureBusinessInputError(ValueError):
@@ -59,9 +65,17 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         except ValueError as error:
             raise ConfigureBusinessInputError(f"--site-url: {error}") from error
     calendly_url = _optional(arguments.calendly_url)
-    if calendly_url is not None and not calendly_url.lower().startswith(("http://", "https://")):
-        # Not an origin: booking links carry a path, so only scheme-checked.
-        raise ConfigureBusinessInputError("--calendly-url must be an absolute http(s) URL")
+    if calendly_url is not None:
+        # Not an origin: booking links legitimately carry a path, so the
+        # check only demands an absolute http(s) URL with a real host.
+        try:
+            parts = urlsplit(calendly_url)
+            host = parts.hostname
+            parts.port  # noqa: B018 - property access raises on a malformed port
+        except ValueError as error:
+            raise ConfigureBusinessInputError("--calendly-url is not a parseable URL") from error
+        if parts.scheme.lower() not in ("http", "https") or not host:
+            raise ConfigureBusinessInputError("--calendly-url must be an absolute http(s) URL")
     if all(
         value is None
         for value in (
@@ -73,13 +87,18 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         )
     ):
         raise ConfigureBusinessInputError("nothing to configure; pass at least one option")
+    public_key = _optional(arguments.public_key)
+    if public_key is not None and PUBLIC_KEY_PATTERN.fullmatch(public_key) is None:
+        raise ConfigureBusinessInputError(
+            "--public-key must be a single URL-safe path segment (letters, digits and . _ ~ -)"
+        )
     return ConfigureBusinessRequest(
         business_id=business_id,
         site_url=site_url,
         display_name=_optional(arguments.display_name),
         calendly_url=calendly_url,
         stripe_account_id=_optional(arguments.stripe_account_id),
-        public_key=_optional(arguments.public_key),
+        public_key=public_key,
     )
 
 

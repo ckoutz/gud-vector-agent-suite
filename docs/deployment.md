@@ -159,7 +159,9 @@ undoes the other, and owner failure notices stay sanitized.
   --site-url https://gudvector.com --display-name "Güd Vector"
   --calendly-url https://calendly.com/gudvector` stores the site settings and
   prints a `public_key` (auto-generated `gvb_…` when none exists) for the
-  site's booking-link call. `--stripe-account-id` stores a future Stripe
+  site's booking-link call. `--site-url` must be a bare `https` origin —
+  claim tokens travel in those links, so plain `http` is only accepted for
+  local development hosts. `--stripe-account-id` stores a future Stripe
   Connect account id; it is stored only. Run it from the Railway shell after
   the migration like `gvas-bootstrap`.
 - **Stripe** (`GVAS_STRIPE_SECRET_KEY`, `GVAS_STRIPE_WEBHOOK_SECRET`) is an

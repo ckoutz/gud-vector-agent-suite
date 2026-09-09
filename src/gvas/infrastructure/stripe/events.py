@@ -68,8 +68,9 @@ def parse_checkout_event(body: bytes) -> PaymentWebhookEvent:
         session.payment_status not in SETTLED_PAYMENT_STATUSES
     ):
         # A completed session can still be unpaid when the customer chose a
-        # delayed method; the async outcome event carries the real answer.
-        outcome = PaymentEventOutcome.OTHER
+        # delayed method; the async outcome event carries the real answer, so
+        # the attempt is pinned rather than left expirable.
+        outcome = PaymentEventOutcome.PENDING
     elif parsed.type in PAYMENT_SUCCEEDED_EVENTS:
         outcome = PaymentEventOutcome.SUCCEEDED
     elif parsed.type == CHECKOUT_ASYNC_FAILED:

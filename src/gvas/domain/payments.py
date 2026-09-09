@@ -75,6 +75,7 @@ class PaymentEventOutcome(StrEnum):
     """What one provider event means for the checkout attempt it names."""
 
     SUCCEEDED = "succeeded"
+    PENDING = "pending"  # completed but the money has not settled yet
     FAILED = "failed"
     OTHER = "other"
 
@@ -136,8 +137,13 @@ class QuotePaymentRecord(PaymentModel):
     def mark_paid(self, payment_intent_id: str | None, now: datetime) -> "QuotePaymentRecord":
         if self.status is QuotePaymentStatus.PAID:
             return self
-        # An async attempt can fail first and still settle later.
-        if self.status not in (QuotePaymentStatus.OPEN, QuotePaymentStatus.FAILED):
+        # An async attempt can fail first and still settle later, and a
+        # pending one settles once its delayed payment lands.
+        if self.status not in (
+            QuotePaymentStatus.OPEN,
+            QuotePaymentStatus.PENDING,
+            QuotePaymentStatus.FAILED,
+        ):
             raise InvalidPaymentTransitionError(f"payment cannot be paid from {self.status}")
         return self.model_copy(
             update={
@@ -157,6 +163,14 @@ class QuotePaymentRecord(PaymentModel):
             return self
         return self.model_copy(update={"status": QuotePaymentStatus.EXPIRED, "updated_at": now})
 
+    def mark_pending(self, now: datetime) -> "QuotePaymentRecord":
+        """Checkout completed but the payment is still settling: the attempt
+        can no longer expire and resolves only as paid or failed."""
+
+        if self.status is not QuotePaymentStatus.OPEN:
+            return self
+        return self.model_copy(update={"status": QuotePaymentStatus.PENDING, "updated_at": now})
+
 
 class InvalidPaymentTransitionError(ValueError):
     pass
@@ -170,8 +184,9 @@ class QuotePaymentRepository(Protocol):
     async def find_open(
         self, business_id: BusinessId, quote_id: QuoteId
     ) -> QuotePaymentRecord | None:
-        """The newest attempt still marked open; ``is_expired`` decides whether
-        it is still usable."""
+        """The newest attempt still in play — open, or completed and awaiting
+        asynchronous settlement; ``is_expired`` decides whether an open one is
+        still usable."""
         ...
 
     async def find_by_checkout_session(

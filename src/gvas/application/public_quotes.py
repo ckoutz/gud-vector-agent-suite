@@ -176,7 +176,10 @@ class PublicQuoteService:
         provider call happens between two transactions: the first records the
         customer status, the second records the session — a crash or a racing
         accept reuses the same provider idempotency key, so the same session
-        comes back and the unique ``checkout_session_id`` settles it.
+        comes back and the unique ``checkout_session_id`` settles it. A lost
+        optimistic write answers 409 instead of continuing from stale state:
+        a racing decline must not produce a payable session, and the retried
+        accept simply returns the open one a winning accept already made.
         """
 
         if self._checkout is None:
@@ -194,11 +197,11 @@ class PublicQuoteService:
                 open_payment = None
             if open_payment is not None:
                 if accepted is not quote:
-                    await self._tolerate_race(unit_of_work, quote, accepted)
+                    await self._save_customer_move(unit_of_work, quote, accepted)
                 await unit_of_work.commit()
                 return open_payment.checkout_url
             if accepted is not quote:
-                await self._tolerate_race(unit_of_work, quote, accepted)
+                await self._save_customer_move(unit_of_work, quote, accepted)
             draft = accepted.draft
             business = await self._business(unit_of_work, quote.business_id)
             if draft is None or accepted.claim_token is None:
@@ -323,6 +326,12 @@ class PublicQuoteService:
                 # failed response lets the provider retry once it exists.
                 raise UnknownPaymentSessionError(event.checkout_session_id)
             now = _now()
+            if event.outcome is PaymentEventOutcome.PENDING:
+                # Checkout completed but a delayed payment is still settling:
+                # pin the attempt so expiry cannot retire it in between.
+                await unit_of_work.quote_payments.save(payment.mark_pending(now))
+                await unit_of_work.commit()
+                return True
             if event.outcome is PaymentEventOutcome.FAILED:
                 await unit_of_work.quote_payments.save(payment.mark_failed(now))
                 await unit_of_work.commit()
@@ -389,15 +398,17 @@ class PublicQuoteService:
         return quote
 
     @staticmethod
-    async def _tolerate_race(unit_of_work: UnitOfWork, quote: Quote, updated: Quote) -> None:
-        """Losing the optimistic write means a racing request already moved
-        the quote — both sides converge on the same provider identity, so the
-        loser simply continues."""
+    async def _save_customer_move(unit_of_work: UnitOfWork, quote: Quote, updated: Quote) -> None:
+        """Losing the optimistic write means a racing request changed the
+        quote first — a decline is not an accept, so the loser stops and the
+        caller retries against the fresh row."""
 
         try:
             await unit_of_work.quotes.save(updated, expected_version=quote.version)
-        except QuoteConcurrencyError:
-            logger.info("a racing request already moved the quote forward")
+        except QuoteConcurrencyError as error:
+            raise InvalidQuoteTransitionError(
+                "the quote changed while accepting; retry the request"
+            ) from error
 
     async def _business(self, unit_of_work: UnitOfWork, business_id: BusinessId) -> BusinessRecord:
         business = await unit_of_work.businesses.get(business_id)

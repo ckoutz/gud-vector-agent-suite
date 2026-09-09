@@ -48,7 +48,12 @@ class SqlQuotePaymentRepository:
             .where(
                 QuotePayment.business_id == business_id,
                 QuotePayment.quote_id == quote_id,
-                QuotePayment.status == QuotePaymentStatus.OPEN.value,
+                QuotePayment.status.in_(
+                    (
+                        QuotePaymentStatus.OPEN.value,
+                        QuotePaymentStatus.PENDING.value,
+                    )
+                ),
             )
             .order_by(QuotePayment.created_at.desc())
             .limit(1)

@@ -100,9 +100,11 @@ limited.
 Subscribed events: `checkout.session.completed`,
 `checkout.session.async_payment_succeeded`,
 `checkout.session.async_payment_failed`. Signature-verified with
-`Stripe-Signature` (5-minute tolerance). A `completed` event only settles the
-quote when the session's `payment_status` is `paid`/`no_payment_required` —
-for delayed methods the async outcome events carry the answer. The first
+`Stripe-Signature` (5-minute tolerance). A `completed` event settles the quote
+only when the session's `payment_status` is `paid`/`no_payment_required`; an
+unsettled completion pins the payment attempt as `pending` (it can no longer
+expire) until `checkout.session.async_payment_succeeded` or
+`..._async_payment_failed` resolves it. The first
 delivery of a settling event marks the payment and the quote `paid` and
 enqueues an owner notice in the conversation where the quote was approved.
 Replays are answered `200` `{"status": "ignored"}` without redoing work; an

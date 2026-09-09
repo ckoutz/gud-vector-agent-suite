@@ -6,6 +6,7 @@ import hmac
 import json
 import re
 import time
+from argparse import Namespace
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -38,6 +39,7 @@ from gvas.domain.payments import (
     PaymentLineItem,
 )
 from gvas.domain.quotes import (
+    QuoteConcurrencyError,
     QuoteDraftProposal,
     QuoteLineItem,
     claim_token_matches,
@@ -48,12 +50,19 @@ from gvas.domain.quotes import (
 from gvas.domain.repositories import normalize_site_url
 from gvas.infrastructure.models import OutboundMessage, QuoteRecord
 from gvas.infrastructure.payment_models import QuotePayment
-from gvas.infrastructure.repositories import SqlBusinessRepository
+from gvas.infrastructure.repositories import (
+    SqlBusinessRepository,
+    SqlQuoteRepository,
+)
 from gvas.infrastructure.stripe import StripeWebhookVerifier
 from gvas.infrastructure.stripe.api import StripeCheckout, checkout_form
 from gvas.infrastructure.stripe.config import StripeSettings
 from gvas.infrastructure.stripe.events import parse_checkout_event
 from gvas.infrastructure.stripe.signature import SIGNATURE_HEADER, StripeSignatureError
+from gvas.interfaces.configure_business import (
+    ConfigureBusinessInputError,
+    build_request,
+)
 from gvas.interfaces.http.app import create_app
 from gvas.interfaces.http.public import PerIpRateLimiter, create_public_router
 from test_composition import Clock, inbound, seed_business
@@ -403,9 +412,13 @@ async def test_rate_limit_keys_on_the_rightmost_forwarded_hop(
 def test_site_urls_must_be_bare_origins() -> None:
     assert normalize_site_url("HTTPS://GUDVECTOR.COM/") == "https://gudvector.com"
     assert normalize_site_url("https://gudvector.com:8443") == "https://gudvector.com:8443"
+    # Claim tokens ride in these links, so cleartext only passes for local dev.
+    assert normalize_site_url("http://localhost:3000") == "http://localhost:3000"
+    assert normalize_site_url("http://127.0.0.1:3000") == "http://127.0.0.1:3000"
     for bad in (
         "gudvector.com",
         "ftp://gudvector.com",
+        "http://gudvector.com",
         "https://gudvector.com/path",
         "https://gudvector.com?q=1",
         "https://gudvector.com#frag",
@@ -701,9 +714,12 @@ async def test_site_aware_delivery_sends_hosted_quotes_to_email_and_others_to_po
 async def test_unpaid_completion_waits_for_the_async_outcome(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """A delayed-method checkout reports completed before the money moves."""
+    """A delayed-method checkout reports completed before the money moves, and
+    the pending attempt can no longer expire out from under the settlement."""
 
-    application, _, _, claim_token = await hosted_quote(session_factory, checkout=CheckoutFake())
+    pending_session = (SESSION_ID, CHECKOUT_URL, NOW - timedelta(hours=1))
+    checkout = CheckoutFake(sessions=[pending_session])
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=checkout)
     async with public_client(application, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as client:
         assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 200
         early = checkout_event(event_id="evt_unpaid", payment_status="unpaid")
@@ -711,8 +727,15 @@ async def test_unpaid_completion_waits_for_the_async_outcome(
             "/webhooks/stripe", content=early, headers={SIGNATURE_HEADER: sign(early)}
         )
         assert answered.status_code == 200
+        assert answered.json() == {"status": "recorded"}
         got = await client.get(f"/v1/quotes/{claim_token}")
         assert got.json()["quote"]["status"] == "accepted"
+        # The session's own expiry passed, but a completed delayed payment is
+        # pinned: re-accepting returns it instead of opening a second charge.
+        again = await client.post(f"/v1/quotes/{claim_token}/accept")
+        assert again.status_code == 200
+        assert again.json() == {"checkoutUrl": CHECKOUT_URL}
+        assert len(checkout.requests) == 1
         settled = checkout_event(
             event_id="evt_settled",
             event_type="checkout.session.async_payment_succeeded",
@@ -723,6 +746,9 @@ async def test_unpaid_completion_waits_for_the_async_outcome(
         assert done.status_code == 200
         got = await client.get(f"/v1/quotes/{claim_token}")
         assert got.json()["quote"]["status"] == "paid"
+    async with session_factory() as session:
+        payments = (await session.scalars(select(QuotePayment))).all()
+    assert [p.status for p in payments] == ["paid"]
 
 
 @pytest.mark.asyncio
@@ -829,3 +855,58 @@ async def test_failed_payment_lets_the_customer_try_again(
             await session.scalars(select(QuotePayment).order_by(QuotePayment.created_at))
         ).all()
     assert [p.status for p in payments] == ["failed", "open"]
+
+
+@pytest.mark.asyncio
+async def test_accept_losing_a_concurrent_write_answers_409(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A racing decline or accept must not produce a payable session from stale
+    state: the loser answers 409 and a retry converges on the persisted row."""
+
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=CheckoutFake())
+    real_save = SqlQuoteRepository.save
+    calls = 0
+
+    async def fail_once(self: SqlQuoteRepository, quote: object, *, expected_version: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise QuoteConcurrencyError("a racing write won")
+        await real_save(self, quote, expected_version=expected_version)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(SqlQuoteRepository, "save", fail_once)
+    async with public_client(application) as client:
+        conflicted = await client.post(f"/v1/quotes/{claim_token}/accept")
+        assert conflicted.status_code == 409
+        # The retry lands on the committed state and opens checkout normally.
+        retried = await client.post(f"/v1/quotes/{claim_token}/accept")
+        assert retried.status_code == 200
+        assert retried.json() == {"checkoutUrl": CHECKOUT_URL}
+
+
+def test_configure_rejects_unusable_public_keys_and_booking_links() -> None:
+    def arguments(**overrides: str | None) -> Namespace:
+        base: dict[str, str | None] = {
+            "business_id": str(uuid4()),
+            "site_url": None,
+            "display_name": None,
+            "calendly_url": CALENDLY_URL,
+            "stripe_account_id": None,
+            "public_key": "gvb_ok-1.~_x",
+        }
+        base.update(overrides)
+        return Namespace(**base)
+
+    request = build_request(arguments())
+    assert request.public_key == "gvb_ok-1.~_x"
+    assert request.calendly_url == CALENDLY_URL
+    # A booking link is a URL with a path, not an origin.
+    assert build_request(arguments(calendly_url="https://calendly.com/x?foo=1"))
+    for bad_key in ("has/slash", "has space", "x" * 300, "-leading-dash"):
+        with pytest.raises(ConfigureBusinessInputError):
+            build_request(arguments(public_key=bad_key))
+    for bad_link in ("calendly.com/x", "https://", "ftp://calendly.com/x", "https://:xx/x"):
+        with pytest.raises(ConfigureBusinessInputError):
+            build_request(arguments(calendly_url=bad_link))

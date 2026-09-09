@@ -67,6 +67,7 @@ class QuotePaymentStatus(StrEnum):
     terminal state."""
 
     OPEN = "open"
+    PENDING = "pending"  # checkout completed; a delayed method is still settling
     PAID = "paid"
     FAILED = "failed"
     EXPIRED = "expired"

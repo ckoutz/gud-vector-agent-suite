@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import StrEnum
+from ipaddress import ip_address
 from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -35,7 +36,9 @@ def normalize_site_url(value: str) -> str:
 
     Strictly an origin: scheme + host (optional port), no path, query,
     fragment or credentials — anything more would break both the
-    ``<site>/q/<token>`` link shape and CORS origin matching.
+    ``<site>/q/<token>`` link shape and CORS origin matching. Claim tokens
+    ride in those links, so a real site must use ``https``; plain ``http``
+    only passes for a local development host.
     """
 
     try:
@@ -53,8 +56,19 @@ def normalize_site_url(value: str) -> str:
         raise ValueError("site url must be a bare host with no credentials")
     if parts.path not in ("", "/") or parts.query or parts.fragment:
         raise ValueError("site url must be an origin: no path, query or fragment")
+    if parts.scheme.lower() == "http" and not _is_local_host(host):
+        raise ValueError("site url must use https outside local development")
     netloc = parts.netloc.lower()
     return f"{parts.scheme.lower()}://{netloc}"
+
+
+def _is_local_host(host: str) -> bool:
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class BusinessRecord(BaseModel):
