@@ -18,6 +18,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from gvas.config import OpenAISettings
+from gvas.domain.enums import BillingInterval
 from gvas.domain.quotes import (
     FreeTextQuoteDraft,
     FreeTextQuoteDraftingError,
@@ -61,12 +62,15 @@ Rules:
   item (scheduling remarks, conditions); empty string when there is none.
 - ambiguities lists, briefly, anything you were unsure about (an amount that
   could be a total rather than a unit price, an item without a price, ...).
+- billing is "month" or "year" ONLY when the owner literally wrote a recurrence
+  word ("per month", "monthly", "/mo", "yearly", "annual"); otherwise an empty
+  string. Never infer recurrence from the kind of service.
 Return an empty items list when the text contains no billable item."""
 
 RESPONSE_SCHEMA: Final[dict[str, Any]] = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["items", "owner_note", "ambiguities"],
+    "required": ["items", "owner_note", "ambiguities", "billing"],
     "properties": {
         "items": {
             "type": "array",
@@ -84,6 +88,7 @@ RESPONSE_SCHEMA: Final[dict[str, Any]] = {
         },
         "owner_note": {"type": "string"},
         "ambiguities": {"type": "array", "items": {"type": "string"}},
+        "billing": {"type": "string", "enum": ["", "month", "year"]},
     },
 }
 
@@ -103,6 +108,7 @@ class _ReportedDraft(BaseModel):
     items: tuple[_ReportedItem, ...] = Field(default_factory=tuple)
     owner_note: str = ""
     ambiguities: tuple[str, ...] = Field(default_factory=tuple)
+    billing: str = ""
 
 
 class OpenAIFreeTextQuoteDrafter:
@@ -217,7 +223,14 @@ def _draft(response: httpx.Response) -> FreeTextQuoteDraft:
         for entry in reported.ambiguities[:MAX_AMBIGUITIES]
         if _squash(entry)
     )
-    return FreeTextQuoteDraft(line_items=items, owner_note=note or None, ambiguities=ambiguities)
+    interval = (
+        BillingInterval(reported.billing)
+        if reported.billing in {member.value for member in BillingInterval}
+        else None
+    )
+    return FreeTextQuoteDraft(
+        line_items=items, owner_note=note or None, ambiguities=ambiguities, interval=interval
+    )
 
 
 def _squash(value: str) -> str:

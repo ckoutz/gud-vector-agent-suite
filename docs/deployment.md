@@ -170,12 +170,14 @@ undoes the other, and owner failure notices stay sanitized.
   webhook; one set fails startup; neither leaves everything else working but
   `accept` answers `503`.
 - **Webhook**: subscribe `checkout.session.completed`,
-  `checkout.session.async_payment_succeeded` and
-  `checkout.session.async_payment_failed` at
+  `checkout.session.async_payment_succeeded`,
+  `checkout.session.async_payment_failed` and, for recurring quotes,
+  `invoice.paid`, `invoice.payment_failed`, `customer.subscription.updated`
+  and `customer.subscription.deleted` at
   `https://<web-service-domain>/webhooks/stripe`; the endpoint verifies
   `Stripe-Signature` (HMAC-SHA256 v1, 5-minute tolerance) and is replay-safe
   on event id (`payment_provider_events` ledger).
-- **CORS**: the public routes allow `GET`/`POST` from the configured
+- **CORS**: the public routes allow `GET`/`POST`/`DELETE` from the configured
   `site_url`s plus `GVAS_PUBLIC_CORS_EXTRA_ORIGINS` (comma-separated, for
   previews like `https://gudvector-site.vercel.app`). Claim-token routes are
   rate-limited per IP (`GVAS_PUBLIC_RATE_LIMIT_PER_MINUTE`, default 120).
@@ -183,6 +185,54 @@ undoes the other, and owner failure notices stay sanitized.
   quote claim-token columns (lookups run against the SHA-256
   `claim_token_hash`, so a token guess is rejected in constant time),
   `quote_payments` and the webhook event ledger; the usual `gvas-migrate`
+  pre-deploy applies it.
+
+## Customer portal and recurring quotes (optional)
+
+Built on the hosted-quote setup above (`site_url`, Resend, Stripe); no new
+environment variables. Contract in `docs/public_api.md` ("Customer portal
+API").
+
+- **Customers**: approving or delivering a quote to an email upserts a
+  `customers` row for `(business, lowercased email)` and links
+  `quotes.customer_id`. Existing quotes are linked lazily when the owner next
+  approves for that address or when the customer first signs in; no data
+  migration is needed.
+- **Magic links**: `POST /v1/businesses/{public_key}/portal/login` always
+  answers `202 {}`; a known customer gets a Resend email (`Sign in to your
+  <displayName> account`) with `<site_url>/portal/login?token=…` through the
+  outbox (`portal_login_email` command; the worker dispatches it like quote
+  emails). Tokens are `secrets.token_urlsafe(32)`, stored as SHA-256 hashes,
+  single-use, 15 minutes; sessions 30 days, revocable. The login route is
+  throttled at 5/hour per client IP and per `(business, email)`.
+- **Recurring quotes**: `billing: monthly|yearly` in the structured `quote:`;
+  the free-text drafter sets an interval only when the owner literally wrote
+  one (`per month`, `monthly`, `/mo`, `yearly`, `annual`, …) — same never-invent
+  rule as prices. The approval preview shows `Billing: monthly`. `accept` on a
+  recurring quote creates a Stripe Customer per `(business, customer)` once
+  (`customers.stripe_customer_id`) and a `mode=subscription` Checkout Session
+  with inline `price_data` (`usd`, `recurring[interval]`), same metadata and
+  `Idempotency-Key` scheme as one-time payments.
+- **Subscription lifecycle**: `checkout.session.completed` for
+  `mode=subscription` marks the quote paid and inserts `quote_subscriptions`;
+  `invoice.paid` / `invoice.payment_failed` /
+  `customer.subscription.updated` / `customer.subscription.deleted` update the
+  row and post an owner notice ("Subscription for <customer> renewed $X",
+  "… payment failed", "… cancelled") in the quote's conversation. All of them
+  are replay-safe on the `payment_provider_events` ledger; an event for a
+  subscription that is not one of ours is recorded and ignored.
+- **Billing Portal**: `POST /v1/portal/billing-portal` creates a Stripe
+  Billing Portal session (`return_url` `<site_url>/portal`). Configure the
+  portal's features (cancel, update payment method) in the Stripe Dashboard
+  under Settings → Billing → Customer portal; the default configuration is
+  used.
+- **Service requests**: `POST /v1/portal/requests` stores a
+  `service_requests` row (`source=portal`, `status=new`) and tells the owner
+  through the conversation of the customer's latest quote.
+- **Migration**: `0014_customer_portal` adds `customers`,
+  `portal_login_tokens`, `portal_sessions`, `service_requests`,
+  `quote_subscriptions` and the `quotes.customer_id` / `billing` / `interval`
+  columns (existing rows default to one-time); the usual `gvas-migrate`
   pre-deploy applies it.
 
 ## Customer portal quote handoff (optional)

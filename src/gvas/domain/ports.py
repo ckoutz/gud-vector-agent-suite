@@ -1,6 +1,7 @@
 from typing import Protocol
 
 from gvas.domain.appointments import AppointmentLookupPort as AppointmentLookupPort
+from gvas.domain.customers import PortalLoginEmailRequest
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intents import IntentResolution
 from gvas.domain.messages import (
@@ -16,7 +17,14 @@ from gvas.domain.messages import (
     TranscriptResult,
 )
 from gvas.domain.object_storage import ObjectCustodyRequest, StoredObject
-from gvas.domain.payments import PaymentCheckoutRequest, PaymentCheckoutResult
+from gvas.domain.payments import (
+    BillingCustomerRequest,
+    BillingCustomerResult,
+    BillingPortalRequest,
+    BillingPortalResult,
+    PaymentCheckoutRequest,
+    PaymentCheckoutResult,
+)
 from gvas.domain.quotes import QuoteDraftProposal, QuoteDraftRequest
 from gvas.domain.reporting import (
     ChecklistEvidence,
@@ -72,6 +80,24 @@ class PaymentCheckoutPort(Protocol):
     """
 
     async def create_checkout(self, request: PaymentCheckoutRequest) -> PaymentCheckoutResult: ...
+
+
+class BillingAccountPort(Protocol):
+    """Provider-side customers and the self-service billing portal.
+
+    Same rules as :class:`PaymentCheckoutPort`: idempotent on the key,
+    errors raise ``PaymentCheckoutError`` with nothing sensitive inside.
+    """
+
+    async def create_customer(self, request: BillingCustomerRequest) -> BillingCustomerResult: ...
+
+    async def create_billing_portal_session(
+        self, request: BillingPortalRequest
+    ) -> BillingPortalResult: ...
+
+
+class PortalLoginEmailPort(Protocol):
+    async def send_login_link(self, request: PortalLoginEmailRequest) -> DeliveryReceipt: ...
 
 
 class CustomerTextDeliveryPort(Protocol):

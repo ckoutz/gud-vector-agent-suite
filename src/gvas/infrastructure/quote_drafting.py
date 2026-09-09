@@ -11,8 +11,10 @@ owner-facing message.
     item: 2 | Air sampling | 125.00
     item: 1 | Report | 200.00
     note: on-site visit scheduled for Tuesday
+    billing: monthly
 
-``customer``, ``currency`` and at least one ``item`` are required; ``customer``
+``customer``, ``currency`` and at least one ``item`` are required; ``billing``
+is optional (``monthly`` or ``yearly``) and makes the quote recur; ``customer``
 may instead arrive as ``request.recipient`` when the workflow resolved it from an
 appointment, and an explicit line still wins. ``for`` is accepted and ignored
 here (the workflow consumes it). Keys and
@@ -38,7 +40,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Final
 
-from gvas.domain.enums import HostedLinkKind, RecipientAddressKind
+from gvas.domain.enums import (
+    BillingInterval,
+    HostedLinkKind,
+    QuoteBilling,
+    RecipientAddressKind,
+)
 from gvas.domain.messages import CustomerRecipient
 from gvas.domain.money import (
     UnsupportedCurrencyError,
@@ -81,7 +88,27 @@ FREE_TEXT_CEILING_REACHED: Final = (
     f"The monthly limit for drafting quotes from free text is reached. {FORMAT_HELP}"
 )
 STRUCTURED_LINE_KEYS: Final = frozenset(
-    {*CUSTOMER_LINE_KEYS, CUSTOMER_NAME_LINE_KEY, "currency", "item", "note", "quote"}
+    {*CUSTOMER_LINE_KEYS, CUSTOMER_NAME_LINE_KEY, "billing", "currency", "item", "note", "quote"}
+)
+BILLING_VALUES: Final[dict[str, BillingInterval]] = {
+    "monthly": BillingInterval.MONTH,
+    "month": BillingInterval.MONTH,
+    "yearly": BillingInterval.YEAR,
+    "annual": BillingInterval.YEAR,
+    "annually": BillingInterval.YEAR,
+    "year": BillingInterval.YEAR,
+}
+#: The only wording that makes a free-text quote recur; the model may confirm
+#: an interval but never introduce one the owner did not write.
+RECURRENCE_PATTERNS: Final[tuple[tuple[re.Pattern[str], BillingInterval], ...]] = (
+    (
+        re.compile(r"\b(per month|monthly|a month|each month)\b|/\s?mo\b", re.I),
+        BillingInterval.MONTH,
+    ),
+    (
+        re.compile(r"\b(per year|yearly|annual(?:ly)?|a year|each year)\b|/\s?yr\b", re.I),
+        BillingInterval.YEAR,
+    ),
 )
 #: Amounts as an owner writes them: ``250``, ``250.00``, ``$250``, ``1,250``.
 WRITTEN_AMOUNT_PATTERN: Final = re.compile(
@@ -133,6 +160,7 @@ class DeterministicQuoteDrafter:
         recipient: CustomerRecipient | None = request.recipient
         currency: str | None = None
         note: str | None = None
+        interval: BillingInterval | None = None
         line_items: list[QuoteLineItem] = []
         for line in request.request_text.splitlines():
             entry = line.strip()
@@ -157,6 +185,8 @@ class DeterministicQuoteDrafter:
                 line_items.append(_parse_item(content))
             elif field == "note":
                 note = content or None
+            elif field == "billing":
+                interval = _parse_billing(content)
             elif field == "quote":
                 continue
             else:
@@ -188,6 +218,8 @@ class DeterministicQuoteDrafter:
                     kind=HostedLinkKind.SIGNUP, reference=self._portal_link_reference
                 ),
             ),
+            billing=QuoteBilling.RECURRING if interval is not None else QuoteBilling.ONE_TIME,
+            interval=interval,
         )
 
 
@@ -335,6 +367,9 @@ class ModelAssistedQuoteDrafter:
             logger.warning("free-text quote drafting failed for %s: %s", request.quote_id, error)
             raise QuoteDraftRejectedError(FREE_TEXT_UNAVAILABLE) from error
         line_items = _priced_line_items(free_text, draft)
+        interval = written_recurrence(free_text)
+        if draft.interval is not None and interval is None:
+            logger.info("free-text draft proposed recurrence the owner did not write; ignored")
         return QuoteDraftProposal(
             quote_id=request.quote_id,
             business_id=request.business_id,
@@ -349,7 +384,25 @@ class ModelAssistedQuoteDrafter:
             ),
             risk_flags=draft.ambiguities,
             drafted_from_free_text=True,
+            billing=QuoteBilling.RECURRING if interval is not None else QuoteBilling.ONE_TIME,
+            interval=interval,
         )
+
+
+def written_recurrence(text: str) -> BillingInterval | None:
+    """The recurrence the owner literally wrote, or None for a one-time quote.
+
+    Like prices, recurrence is never inferred: the model's ``interval`` is
+    ignored unless the owner's own words name that interval.
+    """
+
+    found = {interval for pattern, interval in RECURRENCE_PATTERNS if pattern.search(text)}
+    if len(found) > 1:
+        raise QuoteDraftRejectedError(
+            "Your message mentions both monthly and yearly billing. Send the quote again"
+            " with one billing interval."
+        )
+    return next(iter(found), None)
 
 
 def _split_customer_lines(request: QuoteDraftRequest) -> tuple[CustomerRecipient, str]:
@@ -422,6 +475,18 @@ def _parse_email(value: str) -> str:
             else "The quote needs a customer email address."
         )
     return value
+
+
+def _parse_billing(value: str) -> BillingInterval | None:
+    key = value.strip().casefold()
+    if key in {"", "once", "one_time", "one-time", "one time"}:
+        return None
+    interval = BILLING_VALUES.get(key)
+    if interval is None:
+        raise QuoteDraftRejectedError(
+            f"'{value}' is not a valid billing value. Use 'billing: monthly' or 'billing: yearly'."
+        )
+    return interval
 
 
 def _parse_currency(value: str) -> str:

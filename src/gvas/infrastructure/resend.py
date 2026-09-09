@@ -14,6 +14,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from gvas.config import ResendSettings
+from gvas.domain.customers import PortalLoginEmailRequest
 from gvas.domain.enums import DeliveryStatus, RecipientAddressKind
 from gvas.domain.messages import CustomerDeliveryRequest, DeliveryReceipt
 from gvas.domain.reporting import ReportEmailRequest
@@ -123,6 +124,26 @@ class ResendQuoteDeliveryAdapter(_ResendEmailClient):
         if reference == PORTAL_LOGIN_LINK_REFERENCE:
             return self._settings.portal_url
         raise ResendDeliveryError("quote carries an unknown hosted link reference")
+
+
+class ResendPortalLoginEmailAdapter(_ResendEmailClient):
+    """Sends the customer portal magic link. The link is the only copy of
+    the raw token, so it appears in the e-mail body and nowhere else."""
+
+    async def send_login_link(self, request: PortalLoginEmailRequest) -> DeliveryReceipt:
+        return await self._send(
+            request.to,
+            request.subject,
+            "\n\n".join(
+                [
+                    f"Sign in to your {request.business_display_name} account"
+                    " with the link below. It works once and expires in 15 minutes.",
+                    request.login_url,
+                    "If you did not ask for this e-mail you can ignore it.",
+                ]
+            ),
+            request.idempotency_key,
+        )
 
 
 class ResendReportEmailAdapter(_ResendEmailClient):
