@@ -275,6 +275,96 @@ class FieldNoteReportVersion(Base):
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class Customer(Base):
+    """A portal identity: one row per ``(business, lowercased e-mail)``."""
+
+    __tablename__ = "customers"
+    __table_args__ = (
+        UniqueConstraint("business_id", "id", name="uq_customers_business_id_id"),
+        UniqueConstraint("business_id", "email", name="uq_customers_business_id_email"),
+        Index("ix_customers_business_id", "business_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(255))
+    phone: Mapped[str | None] = mapped_column(String(64))
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PortalLoginTokenRecord(Base):
+    """One magic link; only the SHA-256 digest of the token is stored."""
+
+    __tablename__ = "portal_login_tokens"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["business_id", "customer_id"],
+            ["customers.business_id", "customers.id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_portal_login_tokens_business_id_customer_id", "business_id", "customer_id"),
+    )
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[UUID] = mapped_column(nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PortalSessionRecord(Base):
+    __tablename__ = "portal_sessions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["business_id", "customer_id"],
+            ["customers.business_id", "customers.id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_portal_sessions_business_id_customer_id", "business_id", "customer_id"),
+    )
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[UUID] = mapped_column(nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ServiceRequestRecord(Base):
+    """A customer's ask for new work; ``source`` says which surface sent it."""
+
+    __tablename__ = "service_requests"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["business_id", "customer_id"],
+            ["customers.business_id", "customers.id"],
+            ondelete="CASCADE",
+        ),
+        Index("ix_service_requests_business_id_customer_id", "business_id", "customer_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    customer_id: Mapped[UUID] = mapped_column(nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    preferred_dates: Mapped[str | None] = mapped_column(String(512))
+    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class QuoteRecord(Base):
     __tablename__ = "quotes"
     __table_args__ = (
@@ -301,6 +391,7 @@ class QuoteRecord(Base):
             "claim_token_hash",
             unique=True,
         ),
+        Index("ix_quotes_business_id_customer_id", "business_id", "customer_id"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
@@ -324,6 +415,13 @@ class QuoteRecord(Base):
     claim_token_hash: Mapped[str | None] = mapped_column(String(64))
     customer_status: Mapped[str | None] = mapped_column(String(50))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # A plain FK: a composite ``SET NULL`` would also null ``business_id``.
+    # Repositories always pair it with ``business_id`` in their predicates.
+    customer_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL")
+    )
+    billing: Mapped[str] = mapped_column(String(20), nullable=False, default="one_time")
+    billing_interval: Mapped[str | None] = mapped_column(String(10))
     version: Mapped[int] = mapped_column(nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

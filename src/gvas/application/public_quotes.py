@@ -11,21 +11,24 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from gvas.domain.customer_linking import enqueue_quote_owner_notice, link_quote_customer
+from gvas.domain.customers import CustomerRecord
 from gvas.domain.enums import CustomerQuoteStatus, QuotePaymentStatus
-from gvas.domain.identifiers import BusinessId
-from gvas.domain.messages import OutboundOwnerMessage, TextPart
+from gvas.domain.identifiers import BusinessId, SubscriptionId
 from gvas.domain.money import format_money
-from gvas.domain.outbox import owner_reply_command
 from gvas.domain.payments import (
     STRIPE_PROVIDER,
+    BillingCustomerRequest,
     PaymentCheckoutRequest,
     PaymentEventOutcome,
     PaymentLineItem,
     PaymentWebhookEvent,
     QuotePaymentConflictError,
     QuotePaymentRecord,
+    QuoteSubscriptionRecord,
+    SubscriptionEventData,
 )
-from gvas.domain.ports import PaymentCheckoutPort
+from gvas.domain.ports import BillingAccountPort, PaymentCheckoutPort
 from gvas.domain.quotes import (
     InvalidQuoteTransitionError,
     Quote,
@@ -50,13 +53,19 @@ class OpenCheckoutUnavailableError(RuntimeError):
 
 
 class UnknownPaymentSessionError(RuntimeError):
-    """A webhook named a checkout session we have not recorded yet.
+    """A webhook named a checkout session (or a subscription born from one
+    of our checkouts) we have not recorded yet.
 
     The provider can deliver its event before ``accept_quote`` commits the
     session row; answering 2xx would consume the event forever, so the
     endpoint answers 503 and the provider's retry lands after the record
     exists.
     """
+
+
+#: Metadata key stamped on every checkout and copied by the provider onto the
+#: subscription and its invoices; its presence says a record is ours.
+QUOTE_METADATA_KEY = "gvas_quote_id"
 
 
 class PublicQuoteView:
@@ -90,6 +99,8 @@ class PublicQuoteView:
         self.total_cents = draft.total_minor
         self.currency = draft.currency
         self.note = draft.owner_note
+        self.billing = draft.billing.value
+        self.interval = None if draft.interval is None else draft.interval.value
         self.created_at = quote.created_at
         self.approved_at = quote.approved_at
 
@@ -109,6 +120,8 @@ class PublicQuoteView:
                 "totalCents": self.total_cents,
                 "currency": self.currency,
                 "note": self.note,
+                "billing": self.billing,
+                "interval": self.interval,
                 "createdAt": self.created_at.isoformat(),
                 "approvedAt": (
                     self.approved_at.isoformat() if self.approved_at is not None else None
@@ -148,9 +161,11 @@ class PublicQuoteService:
         self,
         unit_of_work_factory: Callable[[], UnitOfWork],
         checkout: PaymentCheckoutPort | None = None,
+        billing_accounts: BillingAccountPort | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._checkout = checkout
+        self._billing_accounts = billing_accounts
 
     async def fetch_quote(self, claim_token: str) -> PublicQuoteView:
         """Return the projection; the first successful fetch marks the quote
@@ -211,11 +226,18 @@ class PublicQuoteService:
                     await self._save_customer_move(unit_of_work, quote, accepted)
                 await unit_of_work.commit()
                 return open_payment.checkout_url
-            if accepted is not quote:
-                await self._save_customer_move(unit_of_work, quote, accepted)
             draft = accepted.draft
             if draft is None or accepted.claim_token is None:
                 raise QuoteNotFoundError("quote is not ready")
+            customer: CustomerRecord | None = None
+            if draft.is_recurring:
+                if self._billing_accounts is None:
+                    raise OpenCheckoutUnavailableError("subscription checkout is not configured")
+                accepted, customer = await link_quote_customer(unit_of_work, accepted, _now())
+                if customer is None:
+                    raise QuoteNotFoundError("recurring quotes need an e-mail recipient")
+            if accepted is not quote:
+                await self._save_customer_move(unit_of_work, quote, accepted)
             quote_url = accepted.quote_url(business.site_url or "")
             items = checkout_line_items(draft)
             currency = draft.currency
@@ -230,21 +252,27 @@ class PublicQuoteService:
                 if attempt == 0
                 else f"quote-delivery:{quote.quote_id}:attempt-{attempt + 1}"
             )
-            request = PaymentCheckoutRequest(
-                business_id=quote.business_id,
-                quote_id=quote.quote_id,
-                client_reference=public_quote_id(quote.quote_id),
-                currency=currency,
-                line_items=items,
-                success_url=f"{quote_url}?paid=1",
-                cancel_url=quote_url,
-                idempotency_key=idempotency_key,
-                metadata={
-                    "gvas_quote_id": public_quote_id(quote.quote_id),
-                    "business_id": str(quote.business_id),
-                },
-            )
+            metadata = {
+                QUOTE_METADATA_KEY: public_quote_id(quote.quote_id),
+                "business_id": str(quote.business_id),
+            }
             await unit_of_work.commit()
+        customer_ref: str | None = None
+        if customer is not None:
+            customer_ref = await self._ensure_billing_customer(customer, metadata)
+        request = PaymentCheckoutRequest(
+            business_id=quote.business_id,
+            quote_id=quote.quote_id,
+            client_reference=public_quote_id(quote.quote_id),
+            currency=currency,
+            line_items=items,
+            success_url=f"{quote_url}?paid=1",
+            cancel_url=quote_url,
+            idempotency_key=idempotency_key,
+            metadata=metadata,
+            recurring_interval=draft.interval,
+            customer_ref=customer_ref,
+        )
         result = await self._checkout.create_checkout(request)
         async with self._unit_of_work_factory() as unit_of_work:
             record = QuotePaymentRecord(
@@ -273,6 +301,41 @@ class PublicQuoteService:
                 return existing.checkout_url
             await unit_of_work.commit()
             return record.checkout_url
+
+    async def _ensure_billing_customer(
+        self, customer: CustomerRecord, metadata: dict[str, str]
+    ) -> str:
+        """The provider-side customer for this (business, customer), created on
+        first use. The idempotency key is the customer id, so a crash between
+        the provider call and the write yields the same provider customer."""
+
+        if customer.stripe_customer_id is not None:
+            return customer.stripe_customer_id
+        if self._billing_accounts is None:
+            raise OpenCheckoutUnavailableError("subscription checkout is not configured")
+        created = await self._billing_accounts.create_customer(
+            BillingCustomerRequest(
+                business_id=customer.business_id,
+                customer_id=customer.customer_id,
+                email=customer.email,
+                name=customer.display_name,
+                phone=customer.phone,
+                idempotency_key=f"billing-customer:{customer.customer_id}",
+                metadata={
+                    "business_id": str(customer.business_id),
+                    "gvas_customer_id": str(customer.customer_id),
+                },
+            )
+        )
+        async with self._unit_of_work_factory() as unit_of_work:
+            await unit_of_work.customers.set_stripe_customer_id(
+                customer.business_id, customer.customer_id, created.customer_ref
+            )
+            fresh = await unit_of_work.customers.get(customer.business_id, customer.customer_id)
+            await unit_of_work.commit()
+        if fresh is not None and fresh.stripe_customer_id is not None:
+            return fresh.stripe_customer_id
+        return created.customer_ref
 
     async def decline_quote(self, claim_token: str) -> str:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -325,6 +388,10 @@ class PublicQuoteService:
             if not recorded:
                 await unit_of_work.commit()
                 return False
+            if event.outcome in SUBSCRIPTION_OUTCOMES:
+                await self._apply_subscription_event(unit_of_work, event)
+                await unit_of_work.commit()
+                return True
             if event.checkout_session_id is None:
                 await unit_of_work.commit()
                 return True
@@ -371,47 +438,140 @@ class PublicQuoteService:
                 await unit_of_work.commit()
                 return True
             paid = quote.record_customer_payment(now)
+            if event.subscription is not None:
+                paid, _ = await link_quote_customer(unit_of_work, paid, now)
             if paid is not quote:
                 await unit_of_work.quotes.save(paid, expected_version=quote.version)
+            if event.subscription is not None:
+                await self._record_new_subscription(unit_of_work, paid, event.subscription, now)
             await self._enqueue_paid_notice(unit_of_work, paid)
             await unit_of_work.commit()
             return True
+
+    async def _record_new_subscription(
+        self,
+        unit_of_work: UnitOfWork,
+        quote: Quote,
+        data: SubscriptionEventData,
+        now: datetime,
+    ) -> None:
+        """A subscription-mode checkout completed: the quote is now a
+        subscription. A lifecycle event that raced ahead may already have
+        created the row, in which case it only absorbs the new fields."""
+
+        draft = quote.draft
+        if draft is None or draft.interval is None or quote.customer_id is None:
+            logger.warning("subscription checkout completed for a quote without recurring terms")
+            return
+        existing = await unit_of_work.quote_subscriptions.find_by_subscription_ref(
+            data.subscription_ref
+        )
+        if existing is not None:
+            await unit_of_work.quote_subscriptions.save(existing.apply(data, now))
+            return
+        record = QuoteSubscriptionRecord(
+            subscription_id=SubscriptionId(uuid4()),
+            business_id=quote.business_id,
+            quote_id=quote.quote_id,
+            customer_id=quote.customer_id,
+            provider=STRIPE_PROVIDER,
+            subscription_ref=data.subscription_ref,
+            status=data.status or "active",
+            interval=data.interval or draft.interval,
+            amount_minor=data.amount_minor if data.amount_minor is not None else draft.total_minor,
+            currency=(data.currency or draft.currency).upper(),
+            current_period_end=data.current_period_end,
+            cancel_at_period_end=bool(data.cancel_at_period_end),
+            created_at=now,
+            updated_at=now,
+        )
+        try:
+            await unit_of_work.quote_subscriptions.create(record)
+        except QuotePaymentConflictError:
+            raced = await unit_of_work.quote_subscriptions.find_by_subscription_ref(
+                data.subscription_ref
+            )
+            if raced is not None:
+                await unit_of_work.quote_subscriptions.save(raced.apply(data, now))
+
+    async def _apply_subscription_event(
+        self, unit_of_work: UnitOfWork, event: PaymentWebhookEvent
+    ) -> None:
+        """Fold a lifecycle event into the subscription row and tell the owner.
+
+        A subscription we do not know is ours when it carries our quote
+        metadata — then the checkout completion is still in flight and the
+        event is retried; otherwise it belongs to something else in the same
+        provider account and is recorded as seen.
+        """
+
+        data = event.subscription
+        if data is None:
+            return
+        now = _now()
+        subscription = await unit_of_work.quote_subscriptions.find_by_subscription_ref(
+            data.subscription_ref
+        )
+        if subscription is None:
+            if QUOTE_METADATA_KEY in event.metadata:
+                raise UnknownPaymentSessionError(data.subscription_ref)
+            logger.info("ignoring %s for a subscription that is not a quote", event.event_type)
+            return
+        updated = subscription.apply(data, now)
+        await unit_of_work.quote_subscriptions.save(updated)
+        quote = await unit_of_work.quotes.get(subscription.business_id, subscription.quote_id)
+        if quote is None:
+            return
+        customer = await unit_of_work.customers.get(
+            subscription.business_id, subscription.customer_id
+        )
+        who = (customer.display_name or customer.email) if customer is not None else "customer"
+        amount = format_money(updated.amount_minor, updated.currency)
+        if event.outcome is PaymentEventOutcome.SUBSCRIPTION_RENEWED:
+            paid = data.amount_minor if data.amount_minor is not None else updated.amount_minor
+            text = f"Subscription for {who} renewed {format_money(paid, updated.currency)}"
+        elif event.outcome is PaymentEventOutcome.SUBSCRIPTION_PAYMENT_FAILED:
+            text = f"Subscription for {who} payment failed ({amount} {updated.interval.value}ly)"
+        elif event.outcome is PaymentEventOutcome.SUBSCRIPTION_CANCELLED:
+            text = f"Subscription for {who} cancelled ({amount} {updated.interval.value}ly)"
+        else:
+            return
+        await self._enqueue_owner_notice(
+            unit_of_work,
+            quote,
+            correlation_id=f"subscription:{updated.subscription_id}:{event.event_id}",
+            text=text,
+        )
 
     async def _enqueue_paid_notice(self, unit_of_work: UnitOfWork, quote: Quote) -> None:
         """Tell the owner the money landed, in the conversation where the
         quote was approved. The correlation id makes the notice replay-safe
         beyond the event ledger."""
 
-        source = await unit_of_work.inbound_messages.find_by_key(
-            quote.business_id, quote.conversation_id, quote.source_message_key
-        )
-        if source is None:
-            logger.warning("paid notice has no anchor message for the quote")
-            return
-        correlation_id = f"quote:{quote.quote_id}:paid"
-        existing = await unit_of_work.outbound_messages.find_by_correlation(
-            quote.business_id, quote.conversation_id, correlation_id
-        )
-        if existing is not None:
-            return
         draft = quote.draft
         customer = ""
         total = ""
         if draft is not None:
             customer = f" for {draft.recipient.display_name or 'customer'}"
             total = f" — {format_money(draft.total_minor, draft.currency)} paid"
-        message = OutboundOwnerMessage(
-            business_id=quote.business_id,
-            conversation_ref=quote.conversation_ref,
-            parts=(TextPart(text=f"Quote {public_quote_id(quote.quote_id)}{customer}{total}"),),
-            correlation_id=correlation_id,
+            if draft.interval is not None:
+                total += f" ({draft.interval.value}ly subscription started)"
+        await self._enqueue_owner_notice(
+            unit_of_work,
+            quote,
+            correlation_id=f"quote:{quote.quote_id}:paid",
+            text=f"Quote {public_quote_id(quote.quote_id)}{customer}{total}",
         )
-        outbound_message_id = await unit_of_work.outbound_messages.create(
-            message, quote.conversation_id, source.inbound_message_id
+
+    @staticmethod
+    async def _enqueue_owner_notice(
+        unit_of_work: UnitOfWork, quote: Quote, *, correlation_id: str, text: str
+    ) -> None:
+        sent = await enqueue_quote_owner_notice(
+            unit_of_work, quote, correlation_id=correlation_id, text=text
         )
-        await unit_of_work.outbox.enqueue(
-            owner_reply_command(quote.business_id, outbound_message_id)
-        )
+        if not sent:
+            logger.warning("owner notice has no anchor message for the quote")
 
     async def _find_claimable(self, unit_of_work: UnitOfWork, claim_token: str) -> Quote:
         quote = await unit_of_work.quotes.get_by_claim_hash(hash_claim_token(claim_token))
@@ -453,6 +613,16 @@ class PublicQuoteService:
         if business.site_url is None:
             raise QuoteNotFoundError("unknown or expired quote link")
         return business
+
+
+SUBSCRIPTION_OUTCOMES = frozenset(
+    {
+        PaymentEventOutcome.SUBSCRIPTION_RENEWED,
+        PaymentEventOutcome.SUBSCRIPTION_PAYMENT_FAILED,
+        PaymentEventOutcome.SUBSCRIPTION_UPDATED,
+        PaymentEventOutcome.SUBSCRIPTION_CANCELLED,
+    }
+)
 
 
 def _now() -> datetime:

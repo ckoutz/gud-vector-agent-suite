@@ -12,6 +12,7 @@ from gvas.domain.enums import DeliveryStatus, OutboxStatus, WorkflowRunStatus
 from gvas.domain.identifiers import (
     BusinessId,
     ConversationId,
+    CustomerId,
     EndpointId,
     MessageId,
     MessageKey,
@@ -34,7 +35,12 @@ from gvas.domain.outbox import (
     OutboxCommand,
     OutboxRecord,
 )
-from gvas.domain.quotes import Quote, QuoteConcurrencyError
+from gvas.domain.quotes import (
+    QUOTE_CLAIMABLE_STATUSES,
+    Quote,
+    QuoteConcurrencyError,
+    normalize_customer_email,
+)
 from gvas.domain.repositories import (
     BusinessRecord,
     CrossBusinessReferenceError,
@@ -694,6 +700,7 @@ class SqlQuoteRepository:
                 "claim_token_hash": row.claim_token_hash,
                 "customer_status": row.customer_status,
                 "approved_at": _aware_or_none(row.approved_at),
+                "customer_id": row.customer_id,
                 "version": row.version,
                 "created_at": created_at,
                 "updated_at": updated_at,
@@ -719,6 +726,13 @@ class SqlQuoteRepository:
                 quote.customer_status.value if quote.customer_status is not None else None
             ),
             "approved_at": quote.approved_at,
+            "customer_id": quote.customer_id,
+            "billing": (quote.draft.billing.value if quote.draft is not None else "one_time"),
+            "billing_interval": (
+                quote.draft.interval.value
+                if quote.draft is not None and quote.draft.interval is not None
+                else None
+            ),
         }
 
     async def get(self, business_id: BusinessId, quote_id: QuoteId) -> Quote | None:
@@ -761,6 +775,35 @@ class SqlQuoteRepository:
             select(QuoteRecord).where(QuoteRecord.claim_token_hash == claim_token_hash)
         )
         return None if row is None else self._quote(row)
+
+    async def list_for_customer(
+        self, business_id: BusinessId, customer_id: CustomerId
+    ) -> tuple[Quote, ...]:
+        rows = await self.session.scalars(
+            select(QuoteRecord)
+            .where(
+                QuoteRecord.business_id == business_id,
+                QuoteRecord.customer_id == customer_id,
+            )
+            .order_by(QuoteRecord.created_at.desc())
+        )
+        return tuple(self._quote(row) for row in rows)
+
+    async def list_unlinked_for_email(
+        self, business_id: BusinessId, email: str
+    ) -> tuple[Quote, ...]:
+        # The recipient lives inside the draft document, so the tenant's
+        # unlinked claimable quotes are narrowed in SQL and matched here.
+        rows = await self.session.scalars(
+            select(QuoteRecord).where(
+                QuoteRecord.business_id == business_id,
+                QuoteRecord.customer_id.is_(None),
+                QuoteRecord.status.in_([status.value for status in QUOTE_CLAIMABLE_STATUSES]),
+            )
+        )
+        wanted = normalize_customer_email(email)
+        quotes = (self._quote(row) for row in rows)
+        return tuple(quote for quote in quotes if quote.recipient_email == wanted)
 
     async def add(self, quote: Quote) -> None:
         conversation = await self.session.scalar(
