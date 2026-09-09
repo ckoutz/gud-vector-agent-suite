@@ -281,6 +281,33 @@ async def test_quantity_is_not_borrowed_from_another_item() -> None:
         )
 
 
+async def test_quantity_source_must_name_its_own_item() -> None:
+    model = ModelFake(
+        FreeTextQuoteDraft(
+            line_items=(
+                item("Mold inspection", "250", 2, "2 mold inspections"),
+                item("Mold remediation", "900", 2, "2 mold inspections"),
+            )
+        )
+    )
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 2 × 'Mold remediation'"):
+        await drafter(model).draft(
+            request("2 mold inspections 250, mold remediation 900\ncustomer: bob@example.test")
+        )
+    model = ModelFake(
+        FreeTextQuoteDraft(
+            line_items=(
+                item("Mold inspection", "250", 2, "2 inspections"),
+                item("Radon inspection", "300", 2, "2 inspections"),
+            )
+        )
+    )
+    with pytest.raises(QuoteDraftRejectedError, match="does not say 2 × 'Radon inspection'"):
+        await drafter(model).draft(
+            request("2 inspections: mold 250 and radon 300\ncustomer: bob@example.test")
+        )
+
+
 def test_quantity_is_written_checks_the_drafters_source_words() -> None:
     assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", "3 x air samples")
     assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", None) is False
@@ -290,6 +317,13 @@ def test_quantity_is_written_checks_the_drafters_source_words() -> None:
     assert (
         quantity_is_written("on 2 bedrooms, 2 samples", 2, "Sample, 2 bedrooms", "2 bedrooms")
         is False
+    )
+    assert (
+        quantity_is_written("2 mold inspections", 2, "Mold remediation", "2 mold inspections")
+        is False
+    )
+    assert quantity_is_written(
+        "2 mold inspections", 2, "Mold inspection - attic", "2 mold inspections"
     )
     assert quantity_is_written("$2,500 samples", 2, "Sample", "2,500 samples") is False
     assert quantity_is_written("$2,500 samples", 2, "Sample", "500 samples") is False

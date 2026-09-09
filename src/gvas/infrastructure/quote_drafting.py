@@ -223,15 +223,18 @@ def quantity_is_written(
     """True when the owner wrote ``quantity_text`` (the drafter's source for the
     quantity, ``"2 air samples"``) and it really counts this item: it appears
     in ``text`` with the number standing alone (not inside ``$1,250`` or
-    ``125.00``), and the word after the number starts like a word of the
+    ``125.00``), and every word after the number starts like a word of the
     description that is not itself counted there. ``"2 bedrooms"`` for
-    ``Inspection for 2 bedrooms`` describes the job, not how many are billed."""
+    ``Inspection for 2 bedrooms`` describes the job, not how many are billed,
+    and ``"2 mold inspections"`` does not count ``Mold remediation``."""
 
     if quantity_text is None:
         return False
     span = " ".join(quantity_text.split())
     match = re.fullmatch(
-        rf"{quantity}(?![\d.,])\s*(?:x|×)?\s*({WORD_PATTERN.pattern})\b.*", span, re.IGNORECASE
+        rf"{quantity}(?![\d.,])\s*(?:x|×)?\s*({WORD_PATTERN.pattern}(?:\s+{WORD_PATTERN.pattern})*)",
+        span,
+        re.IGNORECASE,
     )
     if match is None:
         return False
@@ -249,7 +252,11 @@ def quantity_is_written(
         for word in WORD_PATTERN.findall(uncounted)
         if len(word) >= 3
     }
-    return match.group(1).casefold()[:WORD_STEM_LENGTH] in stems
+    return all(
+        word.casefold()[:WORD_STEM_LENGTH] in stems
+        for word in WORD_PATTERN.findall(match.group(1))
+        if len(word) >= 3
+    )
 
 
 def written_amount_minor(value: str) -> int | None:
@@ -366,18 +373,27 @@ def _priced_line_items(request_text: str, draft: FreeTextQuoteDraft) -> tuple[Qu
     written = written_amounts_minor(request_text)
     line_items: list[QuoteLineItem] = []
     unpriced: list[str] = []
+    used_quantity_texts: set[str] = set()
     for item in draft.line_items:
         minor = None if item.unit_price is None else written_amount_minor(item.unit_price)
         if minor is None or minor not in written:
             unpriced.append(item.description)
             continue
-        if item.quantity > 1 and not quantity_is_written(
-            request_text, item.quantity, item.description, item.quantity_text
+        quantity_text = " ".join((item.quantity_text or "").split()).casefold()
+        # The same words cannot count two items ("2 inspections" for both
+        # "Mold inspection" and "Radon inspection").
+        if item.quantity > 1 and (
+            quantity_text in used_quantity_texts
+            or not quantity_is_written(
+                request_text, item.quantity, item.description, item.quantity_text
+            )
         ):
             raise QuoteDraftRejectedError(
                 f"Your message does not say {item.quantity} × '{item.description}'."
                 " Send the quote again with the quantity written out."
             )
+        if item.quantity > 1:
+            used_quantity_texts.add(quantity_text)
         line_items.append(
             QuoteLineItem(
                 description=item.description, quantity=item.quantity, unit_price_minor=minor
