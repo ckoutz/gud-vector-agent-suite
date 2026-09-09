@@ -141,7 +141,8 @@ link, and GVAS texts the same link through Telnyx when the customer has a
 phone number and `GVAS_TELNYX_*` is set.
 
 - **Base URL**: `GVAS_PORTAL_BASE_URL`, e.g. `https://gudvector.com`; the
-  adapter posts to `{base}/api/quotes`.
+  adapter posts to `{base}/api/quotes` with the items, customer and, when the
+  approved quote has one, the customer note (`note`).
 - **Token**: `GVAS_PORTAL_API_TOKEN` is sent only as a bearer header to the
   portal. The portal must have `PORTAL_API_TOKEN` set to the same value, or
   every create is refused with 401 and the quote dead-letters after retries.

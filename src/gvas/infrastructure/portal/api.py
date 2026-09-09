@@ -217,6 +217,8 @@ def portal_payload(request: CustomerDeliveryRequest) -> dict[str, object]:
         payload["customerPhone"] = phone
     if recipient.service_address:
         payload["serviceAddress"] = recipient.service_address
+    if request.note:
+        payload["note"] = request.note
     return payload
 
 
