@@ -142,6 +142,9 @@ class FreeTextQuoteItem(QuoteModel):
 
     description: str = Field(min_length=1)
     quantity: int = Field(default=1, ge=1)
+    # The owner's words that state the quantity, copied from the request
+    # (``"2 air samples"``); ``None`` when the quantity is the default.
+    quantity_text: str | None = None
     unit_price: str | None = None
 
 

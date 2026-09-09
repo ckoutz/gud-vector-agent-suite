@@ -213,26 +213,43 @@ def written_amounts_minor(text: str) -> frozenset[int]:
 
 
 WORD_PATTERN: Final = re.compile(r"[A-Za-z][A-Za-z-]*")
+COUNTED_ATTRIBUTE_PATTERN: Final = re.compile(r"\d[\d.,]*\s*(?:x|×)?\s*[A-Za-z][A-Za-z-]*")
 WORD_STEM_LENGTH: Final = 4
 
 
-def quantity_is_written(text: str, quantity: int, description: str) -> bool:
-    """True when ``text`` says ``<quantity> <item>`` for this item: the number
-    stands alone (not inside ``$1,250`` or ``125.00``) and the next word starts
-    like a word of the description (``2 air samples`` for ``Air sample``).
-    A number written for another item, a price or a date does not count."""
+def quantity_is_written(
+    text: str, quantity: int, description: str, quantity_text: str | None
+) -> bool:
+    """True when the owner wrote ``quantity_text`` (the drafter's source for the
+    quantity, ``"2 air samples"``) and it really counts this item: it appears
+    in ``text`` with the number standing alone (not inside ``$1,250`` or
+    ``125.00``), and the word after the number starts like a word of the
+    description that is not itself counted there. ``"2 bedrooms"`` for
+    ``Inspection for 2 bedrooms`` describes the job, not how many are billed."""
 
+    if quantity_text is None:
+        return False
+    span = " ".join(quantity_text.split())
+    match = re.fullmatch(
+        rf"{quantity}(?![\d.,])\s*(?:x|×)?\s*({WORD_PATTERN.pattern})\b.*", span, re.IGNORECASE
+    )
+    if match is None:
+        return False
+    haystack = " ".join(text.split()).casefold()
+    start = haystack.find(span.casefold())
+    while start != -1:
+        if start == 0 or haystack[start - 1] not in "0123456789.,$":
+            break
+        start = haystack.find(span.casefold(), start + 1)
+    if start == -1:
+        return False
+    uncounted = COUNTED_ATTRIBUTE_PATTERN.sub(" ", description)
     stems = {
         word.casefold()[:WORD_STEM_LENGTH]
-        for word in WORD_PATTERN.findall(description)
+        for word in WORD_PATTERN.findall(uncounted)
         if len(word) >= 3
     }
-    pattern = re.compile(
-        rf"(?<![\d.,$]){quantity}(?![\d.,])\s*(?:x|×)?\s*({WORD_PATTERN.pattern})", re.IGNORECASE
-    )
-    return any(
-        match.group(1).casefold()[:WORD_STEM_LENGTH] in stems for match in pattern.finditer(text)
-    )
+    return match.group(1).casefold()[:WORD_STEM_LENGTH] in stems
 
 
 def written_amount_minor(value: str) -> int | None:
@@ -355,7 +372,7 @@ def _priced_line_items(request_text: str, draft: FreeTextQuoteDraft) -> tuple[Qu
             unpriced.append(item.description)
             continue
         if item.quantity > 1 and not quantity_is_written(
-            request_text, item.quantity, item.description
+            request_text, item.quantity, item.description, item.quantity_text
         ):
             raise QuoteDraftRejectedError(
                 f"Your message does not say {item.quantity} × '{item.description}'."
