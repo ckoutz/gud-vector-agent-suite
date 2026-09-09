@@ -133,6 +133,32 @@ whole days; businesses carry no timezone yet, so day boundaries are UTC.
   quote; the owner gets one reply asking to include `customer:` this time and
   the worker logs a sanitized warning.
 
+## Website booking intake (optional — needs OpenAI and Calendly)
+
+The chat widget routes in `docs/public_api.md` are live when
+`GVAS_OPENAI_API_KEY` is set; without OpenAI the intake routes are not
+mounted. Slot offers come from Calendly: for each business in
+`GVAS_CALENDLY_INSTALLATIONS` the adapter lists the user's event types
+(`GET /event_types?user=<user_uri>`) and reads openings from
+`GET /event_type_available_times?event_type=…&start_time=…&end_time=…`
+(the provider's max window is 31 days; we ask for 14 and paged), localized to
+the Calendly user's timezone; without
+Calendly the chat still collects the request but answers "the owner will
+confirm a time" instead of offering slots.
+
+On `approve booking <ref>` the adapter first tries direct invitee creation
+(`POST /invitees`, Scheduling API — available on paid Calendly plans); on a
+4xx it mints a single-use scheduling link (`POST /scheduling_links`,
+`max_event_count=1`) prefilled with the customer's name, email and chosen
+slot, then emails (and texts, when a phone was collected and `GVAS_TELNYX_*`
+is set) the customer to confirm. If the worker dies mid-booking, the retried
+command first reconciles via `GET /scheduled_events` (invitee email + slot
+window) so the approval can never book twice. The same `GVAS_CALENDLY_TOKEN`
+covers all of these calls — no extra scopes. `GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY`
+(default 50) and `GVAS_INTAKE_MAX_MESSAGES_PER_CONVERSATION` (default 30) cap
+intake churn per business; `0` disables each cap. Model calls also consume
+the `GVAS_COST_CEILING_REVIEW_TOKENS` monthly budget.
+
 ## Hosted customer quotes (optional)
 
 GVAS is the system of record for the customer-facing quote page; a client
@@ -315,7 +341,9 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_STRIPE_SECRET_KEY` | Optional set; sent only as a bearer header to `api.stripe.com` |
 | `GVAS_STRIPE_WEBHOOK_SECRET` | Optional set; `Stripe-Signature` verification on `/webhooks/stripe` |
 | `GVAS_PUBLIC_CORS_EXTRA_ORIGINS` | Optional; comma-separated extra CORS origins for the public API (e.g. a preview deployment) |
-| `GVAS_PUBLIC_RATE_LIMIT_PER_MINUTE` | Default 120; per-IP limit on the public claim-token and booking routes |
+| `GVAS_PUBLIC_RATE_LIMIT_PER_MINUTE` | Default 120; per-IP limit on the public claim-token, booking and intake routes |
+| `GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY` | Default 50 per business per UTC day; `0` is unlimited |
+| `GVAS_INTAKE_MAX_MESSAGES_PER_CONVERSATION` | Default 30 customer messages; `0` is unlimited |
 | `GVAS_CALENDLY_TOKEN` | Optional set; personal access token, bearer header only |
 | `GVAS_CALENDLY_INSTALLATIONS` | Optional set; `business_uuid=https://api.calendly.com/users/<uuid>` |
 | `GVAS_CALENDLY_API_BASE_URL`, `GVAS_CALENDLY_API_TIMEOUT_SECONDS`, `GVAS_CALENDLY_PAGE_SIZE` | Defaults suffice |

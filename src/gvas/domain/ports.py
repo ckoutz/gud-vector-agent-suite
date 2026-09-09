@@ -1,8 +1,16 @@
+from datetime import datetime
 from typing import Protocol
 
 from gvas.domain.appointments import AppointmentLookupPort as AppointmentLookupPort
 from gvas.domain.customers import PortalLoginEmailRequest
 from gvas.domain.identifiers import BusinessId
+from gvas.domain.intake import (
+    AvailableSlot,
+    BookingRequest,
+    BookingResult,
+    IntakeTurn,
+    IntakeTurnRequest,
+)
 from gvas.domain.intents import IntentResolution
 from gvas.domain.messages import (
     AttachmentPayload,
@@ -135,3 +143,39 @@ class ChecklistEvidenceAnnotatorPort(Protocol):
 
 class QuoteDraftingPort(Protocol):
     async def draft(self, request: QuoteDraftRequest) -> QuoteDraftProposal: ...
+
+
+class IntakeAgentPort(Protocol):
+    """One turn of the website booking agent.
+
+    The implementation is the review model behind a strict JSON schema; the
+    service layer still guards the reply (no prices, no invented availability)
+    so a misbehaving model cannot leak through.
+    """
+
+    async def turn(self, request: IntakeTurnRequest) -> IntakeTurn: ...
+
+
+class AvailabilityPort(Protocol):
+    """The business's calendar: what is free, and how an approved slot is booked.
+
+    ``available_slots`` returns real openings only — the agent never invents
+    times. ``book`` runs only after the owner approved; implementations either
+    book the invitee directly (``BOOKED``) or mint a one-time scheduling link
+    (``LINK``) the customer confirms themselves. Errors raise a sanitized
+    provider error, never credentials or raw responses.
+    """
+
+    async def available_slots(
+        self, business_id: BusinessId, start: datetime, end: datetime
+    ) -> tuple[AvailableSlot, ...]: ...
+
+    async def book(self, request: BookingRequest) -> BookingResult: ...
+
+    async def find_booking(self, request: BookingRequest) -> BookingResult | None:
+        """Whether the booking described by ``request`` already exists.
+
+        Retried arrange commands reconcile through this before calling
+        ``book`` again so a crashed earlier attempt cannot double-book.
+        """
+        ...

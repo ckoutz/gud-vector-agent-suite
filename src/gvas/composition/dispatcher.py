@@ -8,6 +8,11 @@ from gvas.application.field_note_transcription import (
     TranscribeFieldNoteAudioService,
     TranscriptionOutcome,
 )
+from gvas.application.intake import (
+    ArrangeIntakeBookingService,
+    SendIntakeCustomerEmailService,
+    SendIntakeCustomerTextService,
+)
 from gvas.application.outbox_service import OutboxService
 from gvas.application.owner_reply_delivery import (
     DeliverOwnerReplyService,
@@ -48,7 +53,12 @@ from gvas.domain.field_notes import (
     FieldNoteReviewTrigger,
     field_note_review_command,
 )
-from gvas.domain.identifiers import MessageId, QuoteId
+from gvas.domain.identifiers import IntakeConversationId, MessageId, QuoteId
+from gvas.domain.intake import (
+    INTAKE_BOOKING_ARRANGE_COMMAND_TYPE,
+    INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
+    INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
+)
 from gvas.domain.outbox import (
     OWNER_MESSAGE_PROCESS_COMMAND_TYPE,
     OWNER_REPLY_COMMAND_TYPE,
@@ -131,9 +141,15 @@ class OutboxCommandDispatcher:
         ceiling_notices: NotifyExhaustedCommandService | None = None,
         quote_text: TextDeliveredQuoteService | None = None,
         portal_login_email: PortalLoginEmailPort | None = None,
+        intake_booking: ArrangeIntakeBookingService | None = None,
+        intake_email: SendIntakeCustomerEmailService | None = None,
+        intake_text: SendIntakeCustomerTextService | None = None,
     ) -> None:
         self._quote_text = quote_text
         self._portal_login_email = portal_login_email
+        self._intake_booking = intake_booking
+        self._intake_email = intake_email
+        self._intake_text = intake_text
         self._processing = processing
         self._owner_replies = owner_replies
         self._quote_delivery = quote_delivery
@@ -174,6 +190,12 @@ class OutboxCommandDispatcher:
             return await self._copy_plan_set(command)
         if command.command_type == PORTAL_LOGIN_EMAIL_COMMAND_TYPE:
             return await self._send_portal_login(command)
+        if command.command_type == INTAKE_BOOKING_ARRANGE_COMMAND_TYPE:
+            return await self._arrange_intake_booking(command)
+        if command.command_type == INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE:
+            return await self._send_intake_email(command)
+        if command.command_type == INTAKE_CUSTOMER_TEXT_COMMAND_TYPE:
+            return await self._send_intake_text(command)
         raise UnknownCommandTypeError(f"no handler is registered for {command.command_type}")
 
     def _window(self) -> tuple[datetime, datetime]:
@@ -237,6 +259,25 @@ class OutboxCommandDispatcher:
         if receipt.status is DeliveryStatus.FAILED:
             raise RuntimeError(receipt.detail or "portal login e-mail failed")
         return DispatchOutcome(command.command_type, receipt.status.value)
+
+    async def _arrange_intake_booking(self, command: OutboxCommand) -> DispatchOutcome:
+        if self._intake_booking is None:
+            raise UnknownCommandTypeError("intake booking is not wired")
+        conversation_id = IntakeConversationId(_uuid(command, "conversation_id"))
+        await self._intake_booking.arrange(command.business_id, conversation_id)
+        return DispatchOutcome(command.command_type, f"arranged {conversation_id}")
+
+    async def _send_intake_email(self, command: OutboxCommand) -> DispatchOutcome:
+        if self._intake_email is None:
+            raise UnknownCommandTypeError("intake customer e-mail is not wired")
+        await self._intake_email.send(command.business_id, command.payload)
+        return DispatchOutcome(command.command_type, "sent")
+
+    async def _send_intake_text(self, command: OutboxCommand) -> DispatchOutcome:
+        if self._intake_text is None:
+            raise UnknownCommandTypeError("intake customer texting is not wired")
+        await self._intake_text.send(command.business_id, command.payload)
+        return DispatchOutcome(command.command_type, "sent")
 
     async def _transcribe(self, command: OutboxCommand) -> DispatchOutcome:
         part_id = FieldNotePartId(_uuid(command, "field_note_part_id"))

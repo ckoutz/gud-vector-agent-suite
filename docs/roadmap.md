@@ -28,15 +28,21 @@ waiting on the owner and are not built until answered.
 | Portal quote handoff: with `GVAS_PORTAL_*` set an approved quote is created on gudvector.com (replay-safe on the delivery idempotency key), the portal emails the link and Telnyx texts it from the business number as its own outbox command; owner confirmation names the link and channels, a dead text reports the portal's `emailed` flag; Calendly invitee phone and address ride along | #34 |
 | Hosted customer quotes: approving a quote mints a claim token and (when the business has a `site_url`) emails + texts `<site_url>/q/<token>`; public API renders the quote and opens a Stripe Checkout Session, the signed webhook marks it paid and notifies the owner thread; per-IP rate limit, hashed-token lookup, site-scoped CORS, `gvas-configure-business` CLI | #38 |
 | Customer portal + recurring quotes: `(business, email)` customers linked on approve (lazily for old quotes), magic-link login (hashed single-use tokens, 5/hour) and 30-day bearer sessions, `/v1/portal/*` for the customer's quotes, subscriptions, Stripe Billing Portal and service requests (owner notice in the quote's conversation); `billing: monthly|yearly` and literal-only free-text recurrence open `mode=subscription` Checkout, `invoice.*` / `customer.subscription.*` webhooks keep `quote_subscriptions` current and notify the owner | this PR |
+| AI booking intake: website chat widget (`/v1/businesses/{key}/intake/*`, portal-authenticated variant pre-fills identity) collects name/email/address/problem, proposes up to 5 real Calendly openings (`event_type_available_times`), and on a pick moves to `awaiting_owner` — nothing is booked until `approve booking <ref>` / `decline booking <ref> [reason]` over Slack or SMS. Approval runs `POST /invitees` (direct booking, paid plan) and falls back to a prefilled single-use `scheduling_links` URL when the API refuses; either way the created Calendly event is found by the existing quote appointment matching unchanged. Prices are scrubbed from agent replies; daily and per-conversation caps plus the review-token ceiling bound model spend | this PR |
 
 Follow-ups from the hosted-quote backend (not built): Stripe Connect so each
 business collects into its own account (`businesses.stripe_account_id` is
 stored but unused), a contact-form API behind the business `public_key`, and a
 per-business timezone for Calendly day windows and message timestamps.
 
-Follow-ups from the customer portal (not built): route `service_requests`
-(`source=portal`) to an AI booking agent instead of only notifying the owner;
-customer-editable profile (phone) in the portal.
+Follow-ups from the customer portal (not built): customer-editable profile
+(phone) in the portal. (Intake bookings record `service_requests` with
+`source=intake` and drive the AI booking agent — that follow-up is done.)
+
+Booking path shipped: the Calendly adapter tries direct invitee creation
+(`POST /invitees`, Scheduling API, paid plans) first and falls back to a
+single-use `scheduling_links` URL (`max_event_count=1`) prefilled with the
+customer's name, email and chosen date when the API rejects the write.
 
 ## In progress
 

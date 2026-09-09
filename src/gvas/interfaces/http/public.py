@@ -13,18 +13,37 @@ the client ip is the rightmost ``X-Forwarded-For`` value when present.
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, params
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import MutableHeaders
 from starlette.responses import PlainTextResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from gvas.application.intake import (
+    IntakeAuthenticationError,
+    IntakeClosedError,
+    IntakeError,
+    IntakeLimitError,
+    IntakeNotFoundError,
+    IntakeReply,
+    IntakeService,
+    IntakeStart,
+)
 from gvas.application.public_quotes import (
     OpenCheckoutUnavailableError,
     PublicQuoteService,
     QuoteNotFoundError,
     UnknownPaymentSessionError,
+)
+from gvas.domain.identifiers import IntakeConversationId
+from gvas.domain.intake import (
+    INTAKE_MESSAGE_MAX_CHARS,
+    IntakeConversation,
+    IntakeMessage,
+    IntakeState,
 )
 from gvas.domain.payments import PaymentCheckoutError
 from gvas.domain.quotes import InvalidQuoteTransitionError
@@ -38,6 +57,64 @@ from gvas.infrastructure.stripe.signature import (
 logger = logging.getLogger(__name__)
 
 GENERIC_NOT_FOUND = "not found"
+GENERIC_UNAUTHORIZED = "unauthorized"
+
+
+class IntakeMessageBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    message: str = Field(min_length=1, max_length=INTAKE_MESSAGE_MAX_CHARS)
+
+
+def _slot_payloads(
+    conversation: IntakeConversation,
+) -> list[dict[str, str]] | None:
+    if conversation.state is not IntakeState.PROPOSING_SLOTS:
+        return None
+    return [
+        {"start": slot.start.isoformat(), "end": slot.end.isoformat()}
+        for slot in conversation.proposed_slots
+    ]
+
+
+def intake_start_payload(start: IntakeStart) -> dict[str, object]:
+    """The create-conversation contract the chat widget was built against."""
+
+    return {
+        "conversationId": str(start.conversation.conversation_id),
+        "conversationToken": start.token,
+        "state": start.conversation.state.value,
+        "reply": start.reply,
+        "slots": None,
+    }
+
+
+def intake_reply_payload(result: IntakeReply) -> dict[str, object]:
+    conversation = result.conversation
+    return {
+        "state": conversation.state.value,
+        "reply": result.reply,
+        "slots": _slot_payloads(conversation),
+        "summary": conversation.collected.summary(),
+    }
+
+
+def intake_view_payload(
+    conversation: IntakeConversation, messages: tuple[IntakeMessage, ...]
+) -> dict[str, object]:
+    return {
+        "state": conversation.state.value,
+        "messages": [
+            {
+                "role": message.role.value,
+                "content": message.content,
+                "createdAt": message.created_at.isoformat(),
+            }
+            for message in messages
+        ],
+        "slots": _slot_payloads(conversation),
+        "summary": conversation.collected.summary(),
+    }
 
 
 class PerIpRateLimiter:
@@ -171,8 +248,10 @@ def create_public_router(
     *,
     webhook_verifier: StripeWebhookVerifier | None = None,
     rate_limiter: PerIpRateLimiter | None = None,
+    intake: IntakeService | None = None,
 ) -> APIRouter:
-    """The customer surface: quote view/accept/decline, booking link, webhook."""
+    """The customer surface: quote view/accept/decline, booking link, webhook,
+    and — when an intake service is mounted — the website booking chat."""
 
     router = APIRouter()
     limiter = rate_limiter or PerIpRateLimiter(per_minute=120, burst=30)
@@ -224,6 +303,9 @@ def create_public_router(
             return JSONResponse({"detail": GENERIC_NOT_FOUND}, status_code=404)
         return JSONResponse(payload, status_code=200)
 
+    if intake is not None:
+        _mount_intake(router, intake, limited)
+
     @router.post("/webhooks/stripe")
     async def stripe_webhook(request: Request) -> JSONResponse:
         if webhook_verifier is None:
@@ -244,3 +326,75 @@ def create_public_router(
         return JSONResponse({"status": "recorded" if recorded else "ignored"}, status_code=200)
 
     return router
+
+
+def _intake_conversation_id(raw: str) -> IntakeConversationId:
+    try:
+        return IntakeConversationId(UUID(raw))
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=GENERIC_NOT_FOUND) from error
+
+
+def _intake_bearer_token(request: Request) -> str:
+    header = request.headers.get("authorization", "")
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail=GENERIC_UNAUTHORIZED)
+    return token.strip()
+
+
+async def _intake_authenticate(
+    service: IntakeService, request: Request, conversation_id: IntakeConversationId
+) -> IntakeConversation:
+    try:
+        token = _intake_bearer_token(request)
+        return await service.authenticate(conversation_id, token)
+    except IntakeAuthenticationError as error:
+        raise HTTPException(status_code=401, detail=GENERIC_UNAUTHORIZED) from error
+
+
+def _mount_intake(router: APIRouter, intake: IntakeService, limited: list[params.Depends]) -> None:
+    """The website chat: create a conversation, post a message, poll the view.
+
+    The ``conversationToken`` is the only credential — it is hashed at rest
+    and expires in 24h, and no route leaks it or the business id.
+    """
+
+    @router.post(
+        "/v1/businesses/{public_key}/intake/conversations",
+        dependencies=limited,
+        status_code=201,
+    )
+    async def create_intake_conversation(public_key: str) -> JSONResponse:
+        try:
+            start = await intake.start_conversation(public_key)
+        except IntakeNotFoundError:
+            return JSONResponse({"detail": GENERIC_NOT_FOUND}, status_code=404)
+        except IntakeLimitError:
+            return JSONResponse({"detail": "rate limited"}, status_code=429)
+        return JSONResponse(intake_start_payload(start), status_code=201)
+
+    @router.post("/v1/intake/conversations/{conversation_id}/messages", dependencies=limited)
+    async def post_intake_message(
+        conversation_id: str, body: IntakeMessageBody, request: Request
+    ) -> JSONResponse:
+        resolved = _intake_conversation_id(conversation_id)
+        conversation = await _intake_authenticate(intake, request, resolved)
+        if not body.message.strip():
+            return JSONResponse({"detail": "message is required"}, status_code=422)
+        try:
+            result = await intake.post_message(conversation, body.message)
+        except IntakeClosedError:
+            return JSONResponse({"detail": "conversation closed"}, status_code=409)
+        except IntakeNotFoundError:
+            return JSONResponse({"detail": GENERIC_NOT_FOUND}, status_code=404)
+        except IntakeError:
+            return JSONResponse({"detail": "invalid message"}, status_code=422)
+        return JSONResponse(intake_reply_payload(result), status_code=200)
+
+    @router.get("/v1/intake/conversations/{conversation_id}", dependencies=limited)
+    async def fetch_intake_conversation(conversation_id: str, request: Request) -> JSONResponse:
+        resolved = _intake_conversation_id(conversation_id)
+        conversation = await _intake_authenticate(intake, request, resolved)
+        messages = await intake.get_view(conversation)
+        return JSONResponse(intake_view_payload(conversation, messages), status_code=200)

@@ -100,6 +100,12 @@ class SqlBusinessRepository:
         row = await self.session.scalar(select(Business).where(Business.id == business_id))
         return None if row is None else self._record(row)
 
+    async def lock(self, business_id: BusinessId) -> BusinessRecord | None:
+        row = await self.session.scalar(
+            select(Business).where(Business.id == business_id).with_for_update()
+        )
+        return None if row is None else self._record(row)
+
     async def ensure(
         self, business_id: BusinessId, slug: str, name: str, *, now: datetime
     ) -> BusinessRecord:
@@ -372,6 +378,22 @@ class SqlInboundMessageRepository:
                 InboundMessage.conversation_id == conversation_id,
                 InboundMessage.message_key == message_key,
             )
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        inbound, conversation = row
+        return _processing_record(inbound, conversation)
+
+    async def find_latest_for_business(
+        self, business_id: BusinessId
+    ) -> InboundProcessingRecord | None:
+        result = await self.session.execute(
+            select(InboundMessage, Conversation)
+            .join(Conversation, Conversation.id == InboundMessage.conversation_id)
+            .where(InboundMessage.business_id == business_id)
+            .order_by(InboundMessage.received_at.desc())
+            .limit(1)
         )
         row = result.one_or_none()
         if row is None:
