@@ -12,6 +12,7 @@ never leave this module.
 """
 
 import logging
+import time
 from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -107,9 +108,9 @@ class CalendlyAvailability:
         self._users: dict[BusinessId, str] = {
             installation.business_id: installation.user_uri for installation in resolved
         }
-        # Resolved lazily per business: the event type to book against and the
-        # timezone its owner works in.
-        self._event_types: dict[BusinessId, _EventType] = {}
+        # Resolved lazily per business and refreshed after a TTL so a changed
+        # or deleted event type does not stay cached until restart.
+        self._event_types: dict[BusinessId, tuple[_EventType, float]] = {}
         self._timezones: dict[BusinessId, str | None] = {}
 
     def serves(self, business_id: BusinessId) -> bool:
@@ -185,7 +186,8 @@ class CalendlyAvailability:
         user_uri = self._users.get(business_id)
         if user_uri is None:
             return None
-        if business_id not in self._event_types:
+        cached = self._event_types.get(business_id)
+        if cached is None or time.monotonic() - cached[1] >= EVENT_TYPE_TTL_SECONDS:
             payload = await self._get("/event_types", {"user": user_uri, "active": "true"})
             try:
                 listed = _EventTypesResponse.model_validate(payload)
@@ -193,9 +195,9 @@ class CalendlyAvailability:
                 raise _unreadable(error) from error
             if not listed.collection:
                 raise AvailabilityError("calendly has no active event type")
-            self._event_types[business_id] = listed.collection[0]
+            self._event_types[business_id] = (listed.collection[0], time.monotonic())
             self._timezones[business_id] = await self._user_timezone(user_uri)
-        event_type = self._event_types[business_id]
+        event_type = self._event_types[business_id][0]
         duration = event_type.duration or DEFAULT_SLOT_MINUTES
         return event_type.uri, self._timezones.get(business_id), duration
 
@@ -226,6 +228,7 @@ class CalendlyAvailability:
                 "event_type": event_type_uri,
                 "start_time": _iso_utc(start),
                 "end_time": _iso_utc(end),
+                "count": self._settings.page_size,
             }
             if page_token is not None:
                 params["page_token"] = page_token
@@ -330,6 +333,9 @@ class CalendlyAvailability:
             return response.json()
         except ValueError as error:
             raise _unreadable(error) from error
+
+
+EVENT_TYPE_TTL_SECONDS = 3600.0
 
 
 class _DirectBookingRejectedError(Exception):

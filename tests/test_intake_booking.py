@@ -21,6 +21,8 @@ from composition_fakes import (
     TranscriptionFake,
 )
 from gvas.application.intake import (
+    NO_AVAILABILITY_REPLY,
+    UNAVAILABLE_REPLY,
     IntakeClosedError,
     IntakeDeliveryError,
     SendIntakeCustomerEmailService,
@@ -36,10 +38,12 @@ from gvas.domain.intake import (
     INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
     INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
     PRICE_GUARD_REPLY,
+    AvailabilityError,
     AvailableSlot,
     BookingKind,
     BookingRequest,
     BookingResult,
+    IntakeAgentError,
     IntakeCollected,
     IntakeTurn,
     IntakeTurnRequest,
@@ -84,14 +88,19 @@ def slot(anchor: datetime, *, days: int = 2) -> AvailableSlot:
 class IntakeAgentFake:
     """Scripted model: pops turns, records every request it was asked."""
 
-    def __init__(self, turns: list[IntakeTurn] | None = None) -> None:
+    def __init__(
+        self, turns: list[IntakeTurn] | None = None, *, error: Exception | None = None
+    ) -> None:
         self._turns = list(turns or [])
+        self._error = error
         self.requests: list[IntakeTurnRequest] = []
         self.calls = 0
 
     async def turn(self, request: IntakeTurnRequest) -> IntakeTurn:
         self.requests.append(request)
         self.calls += 1
+        if self._error is not None:
+            raise self._error
         if not self._turns:
             return IntakeTurn(reply="Anything else I should tell the owner?")
         return self._turns.pop(0)
@@ -107,11 +116,13 @@ class AvailabilityFake:
         result: BookingResult | None = None,
         error: Exception | None = None,
         found: BookingResult | None = None,
+        slot_error: Exception | None = None,
     ) -> None:
         self.slots = slots
         self._result = result or BookingResult(kind=BookingKind.BOOKED)
         self._error = error
         self._found = found
+        self._slot_error = slot_error
         self.slot_calls: list[tuple[BusinessId, datetime, datetime]] = []
         self.book_calls: list[BookingRequest] = []
         self.find_calls: list[BookingRequest] = []
@@ -120,6 +131,8 @@ class AvailabilityFake:
         self, business_id: BusinessId, start: datetime, end: datetime
     ) -> tuple[AvailableSlot, ...]:
         self.slot_calls.append((business_id, start, end))
+        if self._slot_error is not None:
+            raise self._slot_error
         return self.slots
 
     async def find_booking(self, request: BookingRequest) -> BookingResult | None:
@@ -900,6 +913,66 @@ async def test_failed_customer_deliveries_raise_so_the_outbox_retries(
             BusinessId(uuid4()),
             {"phone": "+15555550100", "text": "details", "idempotency_key": "key-2"},
         )
+
+
+@pytest.mark.asyncio
+async def test_agent_outage_returns_the_unavailable_reply(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A provider failure must not 500 the chat or lose the message."""
+
+    await intake_business(session_factory)
+    agent = IntakeAgentFake(error=IntakeAgentError("openai down"))
+    application, _ = intake_app(session_factory, agent=agent)
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        token = created.json()["conversationToken"]
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {token}"}
+        reply = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "I need an inspection"},
+            headers=headers,
+        )
+        assert reply.status_code == 200
+        assert reply.json()["reply"] == UNAVAILABLE_REPLY
+        assert reply.json()["state"] == "collecting"
+        view = await client.get(f"/v1/intake/conversations/{conversation_id}", headers=headers)
+        contents = [m["content"] for m in view.json()["messages"]]
+        assert "I need an inspection" in contents
+
+
+@pytest.mark.asyncio
+async def test_availability_outage_keeps_the_conversation_collecting(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await intake_business(session_factory)
+    availability = AvailabilityFake(slot_error=AvailabilityError("calendly down"))
+    agent = IntakeAgentFake(
+        [
+            collected_turn(name="Jane", email=EMAIL, address="2 Elm St", problem="ants"),
+            IntakeTurn(reply="Here is what is open.", ready_for_slots=True),
+        ]
+    )
+    application, _ = intake_app(session_factory, agent=agent, availability=availability)
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        token = created.json()["conversationToken"]
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {token}"}
+        await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "ants"},
+            headers=headers,
+        )
+        reply = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "when?"},
+            headers=headers,
+        )
+        assert reply.status_code == 200
+        assert reply.json()["reply"] == NO_AVAILABILITY_REPLY
+        assert reply.json()["state"] == "collecting"
 
 
 def test_pick_offer_slots_anchors_the_day_window_on_the_slot_timezone() -> None:

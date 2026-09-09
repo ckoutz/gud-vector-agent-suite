@@ -29,11 +29,13 @@ from gvas.domain.intake import (
     INTAKE_MAX_USER_MESSAGES,
     INTAKE_MESSAGE_MAX_CHARS,
     SERVICE_REQUEST_SOURCE_INTAKE,
+    AvailabilityError,
     AvailableSlot,
     BookingDecision,
     BookingDecisionAction,
     BookingKind,
     BookingRequest,
+    IntakeAgentError,
     IntakeCollected,
     IntakeConversation,
     IntakeCustomerEmail,
@@ -354,17 +356,25 @@ class IntakeService:
             conversation.business_id, conversation.conversation_id
         )
         business = await self._business(unit_of_work, conversation.business_id)
-        turn = await self._agent.turn(
-            IntakeTurnRequest(
-                business_id=conversation.business_id,
-                conversation_id=conversation.conversation_id,
-                business_name=business.display_name or business.name,
-                transcript=transcript,
-                collected=conversation.collected,
-                offered_slots=conversation.proposed_slots,
-                known_customer=conversation.customer_id is not None,
+        try:
+            turn = await self._agent.turn(
+                IntakeTurnRequest(
+                    business_id=conversation.business_id,
+                    conversation_id=conversation.conversation_id,
+                    business_name=business.display_name or business.name,
+                    transcript=transcript,
+                    collected=conversation.collected,
+                    offered_slots=conversation.proposed_slots,
+                    known_customer=conversation.customer_id is not None,
+                )
             )
-        )
+        except (IntakeAgentError, AvailabilityError) as error:
+            # A provider outage must not 500 the chat: the customer's message
+            # is already persisted, so answer with the sanitized fallback and
+            # leave the conversation live for the next message.
+            logger.warning("intake agent unavailable for %s: %s", conversation.reference, error)
+            reply = await self._reply(unit_of_work, conversation, UNAVAILABLE_REPLY, now)
+            return IntakeReply(conversation, reply, conversation.proposed_slots)
         collected = conversation.collected.merge(turn.collected)
         current = conversation.with_updates(now, collected=collected)
         await unit_of_work.intake_conversations.save(current)
@@ -417,7 +427,13 @@ class IntakeService:
             return None
         start = now
         end = now + timedelta(days=SLOT_LOOKAHEAD_DAYS)
-        openings = await self._availability.available_slots(conversation.business_id, start, end)
+        try:
+            openings = await self._availability.available_slots(
+                conversation.business_id, start, end
+            )
+        except AvailabilityError as error:
+            logger.warning("availability lookup failed for %s: %s", conversation.reference, error)
+            return None
         offered = pick_offer_slots(tuple(openings), now=now)
         if not offered:
             return None
@@ -661,7 +677,7 @@ class BookingDecisionHandler:
         reference = decision.reference
         now = self._now()
         async with self._unit_of_work_factory() as unit_of_work:
-            conversation = await unit_of_work.intake_conversations.find_by_reference(
+            conversation = await unit_of_work.intake_conversations.lock_by_reference(
                 message.business_id, reference
             )
             if conversation is None:

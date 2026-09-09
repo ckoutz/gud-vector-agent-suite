@@ -128,6 +128,16 @@ class SqlIntakeConversationRepository:
         )
         return None if row is None else self._record(row)
 
+    async def lock_by_reference(
+        self, business_id: BusinessId, reference: str
+    ) -> IntakeConversation | None:
+        row = await self.session.scalar(
+            select(IntakeRow)
+            .where(IntakeRow.business_id == business_id, IntakeRow.reference == reference)
+            .with_for_update()
+        )
+        return None if row is None else self._record(row)
+
     async def find_by_token(
         self, conversation_id: IntakeConversationId, token_hash: str
     ) -> IntakeConversation | None:

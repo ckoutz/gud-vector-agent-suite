@@ -498,6 +498,13 @@ class IntakeConversationRepository(Protocol):
         posts serialize instead of overwriting each other's snapshot."""
         ...
 
+    async def lock_by_reference(
+        self, business_id: BusinessId, reference: str
+    ) -> IntakeConversation | None:
+        """Row-level lock by owner-facing reference: concurrent approve and
+        decline decisions serialize so only one reaches a terminal state."""
+        ...
+
     async def find_by_token(
         self, conversation_id: IntakeConversationId, token_hash: str
     ) -> IntakeConversation | None:
