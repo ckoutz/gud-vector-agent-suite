@@ -238,7 +238,10 @@ class PortalSessionRepository(Protocol):
 
     async def find_by_hash(self, token_hash: str) -> PortalSession | None: ...
 
-    async def revoke(self, token_hash: str, now: datetime) -> None: ...
+    async def revoke(self, token_hash: str, now: datetime) -> bool:
+        """Conditionally revoke an active session; ``True`` only when this
+        call is the one that revoked it (so concurrent callers disagree)."""
+        ...
 
 
 class ServiceRequestRepository(Protocol):

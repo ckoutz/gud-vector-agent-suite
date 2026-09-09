@@ -209,8 +209,10 @@ class PortalService:
             ):
                 await unit_of_work.commit()
                 raise PortalAuthenticationError("invalid session")
-            await unit_of_work.portal_sessions.revoke(token_hash, now)
+            revoked = await unit_of_work.portal_sessions.revoke(token_hash, now)
             await unit_of_work.commit()
+        if not revoked:
+            raise PortalAuthenticationError("session already revoked")
 
     # -- the customer's view ------------------------------------------------
 

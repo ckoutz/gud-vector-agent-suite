@@ -199,15 +199,17 @@ class SqlPortalSessionRepository:
         )
         return None if row is None else self._record(row)
 
-    async def revoke(self, token_hash: str, now: datetime) -> None:
-        await self.session.execute(
+    async def revoke(self, token_hash: str, now: datetime) -> bool:
+        result = await self.session.execute(
             update(PortalSessionRecord)
             .where(
                 PortalSessionRecord.token_hash == token_hash,
                 PortalSessionRecord.revoked_at.is_(None),
+                PortalSessionRecord.expires_at > now,
             )
             .values(revoked_at=now)
         )
+        return _rowcount(result) == 1
 
 
 class SqlServiceRequestRepository:
