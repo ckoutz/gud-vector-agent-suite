@@ -56,13 +56,13 @@ def normalize_site_url(value: str) -> str:
         raise ValueError("site url must be a bare host with no credentials")
     if parts.path not in ("", "/") or parts.query or parts.fragment:
         raise ValueError("site url must be an origin: no path, query or fragment")
-    if parts.scheme.lower() == "http" and not _is_local_host(host):
+    if parts.scheme.lower() == "http" and not is_local_host(host):
         raise ValueError("site url must use https outside local development")
     netloc = parts.netloc.lower()
     return f"{parts.scheme.lower()}://{netloc}"
 
 
-def _is_local_host(host: str) -> bool:
+def is_local_host(host: str) -> bool:
     if host == "localhost" or host.endswith(".localhost"):
         return True
     try:

@@ -158,16 +158,23 @@ class PublicQuoteService:
 
         async with self._unit_of_work_factory() as unit_of_work:
             quote = await self._find_claimable(unit_of_work, claim_token)
-            business = await self._business(unit_of_work, quote.business_id)
+            business = await self._hosted_business(unit_of_work, quote.business_id)
             viewed = quote.record_customer_view(_now())
+            conflicted = False
             if viewed is not quote:
                 try:
                     await unit_of_work.quotes.save(viewed, expected_version=quote.version)
                 except QuoteConcurrencyError:
-                    # A concurrent fetch won the view marker; the answer is the same.
-                    pass
+                    # A concurrent transition (accept, decline, payment) won;
+                    # the committed state is the answer, not a stale "viewed".
+                    conflicted = True
             await unit_of_work.commit()
-            return PublicQuoteView(business, viewed)
+            if not conflicted:
+                return PublicQuoteView(business, viewed)
+        async with self._unit_of_work_factory() as unit_of_work:
+            fresh = await self._find_claimable(unit_of_work, claim_token)
+            business = await self._hosted_business(unit_of_work, fresh.business_id)
+            return PublicQuoteView(business, fresh)
 
     async def accept_quote(self, claim_token: str) -> str:
         """Return the hosted checkout URL, opening a session on first accept.
@@ -187,13 +194,17 @@ class PublicQuoteService:
         async with self._unit_of_work_factory() as unit_of_work:
             quote = await self._find_claimable(unit_of_work, claim_token)
             accepted = quote.record_customer_accept(_now())
+            business = await self._hosted_business(unit_of_work, quote.business_id)
             open_payment = await unit_of_work.quote_payments.find_open(
                 quote.business_id, quote.quote_id
             )
             if open_payment is not None and open_payment.is_expired(_now()):
                 # The provider abandons unpaid sessions without telling us;
                 # retire the attempt and open a fresh one below.
-                await unit_of_work.quote_payments.save(open_payment.mark_expired(_now()))
+                await unit_of_work.quote_payments.save(
+                    open_payment.mark_expired(_now()),
+                    expected_from=open_payment.status,
+                )
                 open_payment = None
             if open_payment is not None:
                 if accepted is not quote:
@@ -203,7 +214,6 @@ class PublicQuoteService:
             if accepted is not quote:
                 await self._save_customer_move(unit_of_work, quote, accepted)
             draft = accepted.draft
-            business = await self._business(unit_of_work, quote.business_id)
             if draft is None or accepted.claim_token is None:
                 raise QuoteNotFoundError("quote is not ready")
             quote_url = accepted.quote_url(business.site_url or "")
@@ -267,6 +277,7 @@ class PublicQuoteService:
     async def decline_quote(self, claim_token: str) -> str:
         async with self._unit_of_work_factory() as unit_of_work:
             quote = await self._find_claimable(unit_of_work, claim_token)
+            await self._hosted_business(unit_of_work, quote.business_id)
             declined = quote.record_customer_decline(_now())
             if declined is not quote:
                 try:
@@ -329,16 +340,31 @@ class PublicQuoteService:
             if event.outcome is PaymentEventOutcome.PENDING:
                 # Checkout completed but a delayed payment is still settling:
                 # pin the attempt so expiry cannot retire it in between.
-                await unit_of_work.quote_payments.save(payment.mark_pending(now))
+                await unit_of_work.quote_payments.save(
+                    payment.mark_pending(now), expected_from=payment.status
+                )
                 await unit_of_work.commit()
                 return True
             if event.outcome is PaymentEventOutcome.FAILED:
-                await unit_of_work.quote_payments.save(payment.mark_failed(now))
+                await unit_of_work.quote_payments.save(
+                    payment.mark_failed(now), expected_from=payment.status
+                )
                 await unit_of_work.commit()
                 return True
             if payment.status is not QuotePaymentStatus.PAID:
                 await unit_of_work.quote_payments.save(
-                    payment.mark_paid(event.payment_intent_id, now)
+                    payment.mark_paid(event.payment_intent_id, now),
+                    expected_from=payment.status,
+                )
+            superseded = await unit_of_work.quote_payments.find_open(
+                payment.business_id, payment.quote_id
+            )
+            if superseded is not None and superseded.payment_id != payment.payment_id:
+                # A session the customer completed late may have been replaced
+                # by a regenerated checkout; close the sibling out so two
+                # sessions for one quote are not both payable.
+                await unit_of_work.quote_payments.save(
+                    superseded.mark_expired(now), expected_from=superseded.status
                 )
             quote = await unit_of_work.quotes.get(payment.business_id, payment.quote_id)
             if quote is None:
@@ -413,6 +439,18 @@ class PublicQuoteService:
     async def _business(self, unit_of_work: UnitOfWork, business_id: BusinessId) -> BusinessRecord:
         business = await unit_of_work.businesses.get(business_id)
         if business is None:
+            raise QuoteNotFoundError("unknown or expired quote link")
+        return business
+
+    async def _hosted_business(
+        self, unit_of_work: UnitOfWork, business_id: BusinessId
+    ) -> BusinessRecord:
+        """The public API serves hosted sites only: a business without a
+        ``site_url`` never distributes claim links, so its quotes answer like
+        unknown tokens rather than leaking outside the configured flow."""
+
+        business = await self._business(unit_of_work, business_id)
+        if business.site_url is None:
             raise QuoteNotFoundError("unknown or expired quote link")
         return business
 

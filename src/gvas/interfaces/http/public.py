@@ -116,10 +116,12 @@ class SiteOriginCorsMiddleware:
         self._ttl = ttl_seconds
         self._now = now
         self._cached: frozenset[str] = frozenset()
-        self._cached_at = 0.0
+        # None, not 0.0: monotonic time starts near zero on fresh hosts, so a
+        # zeroed stamp would read as "still fresh" and serve an empty set.
+        self._cached_at: float | None = None
 
     async def _allowed(self) -> frozenset[str]:
-        if self._now() - self._cached_at >= self._ttl:
+        if self._cached_at is None or self._now() - self._cached_at >= self._ttl:
             self._cached = await self._origins()
             self._cached_at = self._now()
         return self._cached

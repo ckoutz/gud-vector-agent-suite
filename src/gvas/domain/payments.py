@@ -137,12 +137,15 @@ class QuotePaymentRecord(PaymentModel):
     def mark_paid(self, payment_intent_id: str | None, now: datetime) -> "QuotePaymentRecord":
         if self.status is QuotePaymentStatus.PAID:
             return self
-        # An async attempt can fail first and still settle later, and a
-        # pending one settles once its delayed payment lands.
+        # An async attempt can fail first and still settle later, a pending
+        # one settles once its delayed payment lands, and a session that
+        # completed just before its deadline arrives at us already expired —
+        # the provider's success is authoritative either way.
         if self.status not in (
             QuotePaymentStatus.OPEN,
             QuotePaymentStatus.PENDING,
             QuotePaymentStatus.FAILED,
+            QuotePaymentStatus.EXPIRED,
         ):
             raise InvalidPaymentTransitionError(f"payment cannot be paid from {self.status}")
         return self.model_copy(
@@ -159,7 +162,10 @@ class QuotePaymentRecord(PaymentModel):
         return self.model_copy(update={"status": QuotePaymentStatus.FAILED, "updated_at": now})
 
     def mark_expired(self, now: datetime) -> "QuotePaymentRecord":
-        if self.status is not QuotePaymentStatus.OPEN:
+        """Retire an attempt the provider will no longer settle. Also closes a
+        pending attempt superseded by a sibling that already collected."""
+
+        if self.status not in (QuotePaymentStatus.OPEN, QuotePaymentStatus.PENDING):
             return self
         return self.model_copy(update={"status": QuotePaymentStatus.EXPIRED, "updated_at": now})
 
@@ -199,7 +205,17 @@ class QuotePaymentRepository(Protocol):
         """Raises :class:`QuotePaymentConflictError` when the session id is taken."""
         ...
 
-    async def save(self, record: QuotePaymentRecord) -> None: ...
+    async def save(
+        self,
+        record: QuotePaymentRecord,
+        *,
+        expected_from: QuotePaymentStatus,
+    ) -> None:
+        """Write the transition only if the row still holds ``expected_from``;
+        a concurrent webhook that moved it first raises
+        :class:`QuotePaymentConflictError` so the caller's event rolls back and
+        is retried against fresh state."""
+        ...
 
 
 class PaymentEventRepository(Protocol):

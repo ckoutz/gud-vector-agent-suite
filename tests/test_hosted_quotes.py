@@ -37,6 +37,7 @@ from gvas.domain.payments import (
     PaymentCheckoutRequest,
     PaymentCheckoutResult,
     PaymentLineItem,
+    QuotePaymentConflictError,
 )
 from gvas.domain.quotes import (
     QuoteConcurrencyError,
@@ -50,6 +51,7 @@ from gvas.domain.quotes import (
 from gvas.domain.repositories import normalize_site_url
 from gvas.infrastructure.models import OutboundMessage, QuoteRecord
 from gvas.infrastructure.payment_models import QuotePayment
+from gvas.infrastructure.payment_repositories import SqlQuotePaymentRepository
 from gvas.infrastructure.repositories import (
     SqlBusinessRepository,
     SqlQuoteRepository,
@@ -451,10 +453,18 @@ async def test_hosted_approve_emails_the_quote_url_and_texts_it(
 async def test_business_without_site_url_uses_the_generic_email(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    _, _, delivery, claim_token = await hosted_quote(session_factory, configure_site=False)
+    application, _, delivery, claim_token = await hosted_quote(
+        session_factory, configure_site=False, checkout=CheckoutFake()
+    )
     assert delivery.requests[0].quote_url is None
     # A claim token still exists so the site can be turned on later.
     assert claim_token
+    # But until it is, the public API must not serve the quote at all.
+    async with public_client(application) as client:
+        assert (await client.get(f"/v1/quotes/{claim_token}")).status_code == 404
+        for suffix in ("accept", "decline"):
+            declined = await client.post(f"/v1/quotes/{claim_token}/{suffix}")
+            assert declined.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -907,6 +917,110 @@ def test_configure_rejects_unusable_public_keys_and_booking_links() -> None:
     for bad_key in ("has/slash", "has space", "x" * 300, "-leading-dash"):
         with pytest.raises(ConfigureBusinessInputError):
             build_request(arguments(public_key=bad_key))
-    for bad_link in ("calendly.com/x", "https://", "ftp://calendly.com/x", "https://:xx/x"):
+    for bad_link in (
+        "calendly.com/x",
+        "https://",
+        "ftp://calendly.com/x",
+        "https://:xx/x",
+        "http://calendly.com/x",
+    ):
         with pytest.raises(ConfigureBusinessInputError):
             build_request(arguments(calendly_url=bad_link))
+    # Cleartext is only tolerated for local development hosts.
+    assert build_request(arguments(calendly_url="http://localhost:3000/x"))
+
+
+@pytest.mark.asyncio
+async def test_success_settles_an_expired_attempt_and_supersedes_its_replacement(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A session can complete just before its deadline while its webhook lands
+    after we already regenerated a checkout: the money still settles the quote
+    and the payable replacement is closed out."""
+
+    expired_session = (
+        "cs_expired",
+        "https://checkout.stripe.com/c/pay/cs_expired",
+        NOW - timedelta(hours=1),
+    )
+    fresh_session = (
+        "cs_fresh",
+        "https://checkout.stripe.com/c/pay/cs_fresh",
+        None,
+    )
+    checkout = CheckoutFake(sessions=[expired_session, fresh_session])
+    application, owner_replies, _, claim_token = await hosted_quote(
+        session_factory, checkout=checkout
+    )
+    async with public_client(application, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 200
+        regenerated = await client.post(f"/v1/quotes/{claim_token}/accept")
+        assert regenerated.json() == {"checkoutUrl": fresh_session[1]}
+        # The late success names the original, locally expired session.
+        late = checkout_event(event_id="evt_late", session_id="cs_expired")
+        settled = await client.post(
+            "/webhooks/stripe", content=late, headers={SIGNATURE_HEADER: sign(late)}
+        )
+        assert settled.status_code == 200
+        assert settled.json() == {"status": "recorded"}
+        got = await client.get(f"/v1/quotes/{claim_token}")
+        assert got.json()["quote"]["status"] == "paid"
+        again = await client.post(f"/v1/quotes/{claim_token}/accept")
+        assert again.status_code == 409
+    async with session_factory() as session:
+        payments = dict(
+            (p.checkout_session_id, p.status)
+            for p in (await session.scalars(select(QuotePayment))).all()
+        )
+    assert payments == {"cs_expired": "paid", "cs_fresh": "expired"}
+    worker = immediate_worker(application)
+    await worker.drain()
+    assert texts_of(owner_replies, "Quote gvq_")[0].endswith("paid")
+
+
+@pytest.mark.asyncio
+async def test_payment_save_guard_rejects_a_regressing_transition(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A stale event that processed after the winner cannot overwrite the
+    settled row: the guarded update raises and the event retries later."""
+
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=CheckoutFake())
+    async with public_client(application) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 200
+    async with session_factory() as session:
+        repo = SqlQuotePaymentRepository(session)
+        payment = await repo.find_by_checkout_session(SESSION_ID)
+        assert payment is not None
+        paid = payment.mark_paid("pi_1", NOW)
+        await repo.save(paid, expected_from=payment.status)
+        with pytest.raises(QuotePaymentConflictError):
+            # A second processor holding the still-open snapshot loses.
+            await repo.save(payment.mark_pending(NOW), expected_from=payment.status)
+        persisted = await repo.find_by_checkout_session(SESSION_ID)
+        assert persisted is not None and persisted.status.value == "paid"
+
+
+@pytest.mark.asyncio
+async def test_fetch_conflict_returns_the_committed_state(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fetch that loses its view-marker write re-reads the committed row
+    rather than reporting a stale status."""
+
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=CheckoutFake())
+    async with public_client(application) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 200
+
+        # Force the fetch onto the conflict path once by raising before the
+        # write: the committed row (already accepted) is what answers.
+        async def raise_once(
+            self: SqlQuoteRepository, quote: object, *, expected_version: int
+        ) -> None:
+            raise QuoteConcurrencyError("a racing write won")
+
+        monkeypatch.setattr(SqlQuoteRepository, "save", raise_once)
+        response = await client.get(f"/v1/quotes/{claim_token}")
+        assert response.status_code == 200
+        assert response.json()["quote"]["status"] == "accepted"

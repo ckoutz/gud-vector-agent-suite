@@ -24,7 +24,11 @@ from uuid import UUID
 
 from gvas.config import Settings
 from gvas.domain.identifiers import BusinessId
-from gvas.domain.repositories import BusinessRecord, normalize_site_url
+from gvas.domain.repositories import (
+    BusinessRecord,
+    is_local_host,
+    normalize_site_url,
+)
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
 
@@ -76,6 +80,11 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
             raise ConfigureBusinessInputError("--calendly-url is not a parseable URL") from error
         if parts.scheme.lower() not in ("http", "https") or not host:
             raise ConfigureBusinessInputError("--calendly-url must be an absolute http(s) URL")
+        if parts.scheme.lower() == "http" and not is_local_host(host):
+            # Customer-facing links must not send people over cleartext.
+            raise ConfigureBusinessInputError(
+                "--calendly-url must use https outside local development"
+            )
     if all(
         value is None
         for value in (

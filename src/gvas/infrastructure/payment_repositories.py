@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -104,20 +104,41 @@ class SqlQuotePaymentRepository:
                 "a payment for this checkout session already exists"
             ) from error
 
-    async def save(self, record: QuotePaymentRecord) -> None:
-        row = await self.session.scalar(
-            select(QuotePayment).where(QuotePayment.id == record.payment_id)
+    async def save(
+        self,
+        record: QuotePaymentRecord,
+        *,
+        expected_from: QuotePaymentStatus,
+    ) -> None:
+        """Status-guarded write: one UPDATE conditioned on the row still
+        holding ``expected_from``, so two concurrently processed events cannot
+        overwrite each other — the loser raises and is retried against fresh
+        state."""
+
+        result = await self.session.execute(
+            update(QuotePayment)
+            .where(
+                QuotePayment.id == record.payment_id,
+                QuotePayment.status == expected_from.value,
+            )
+            .values(
+                checkout_session_id=record.checkout_session_id,
+                checkout_url=record.checkout_url,
+                payment_intent_id=record.payment_intent_id,
+                expires_at=record.expires_at,
+                amount_cents=record.amount_minor,
+                currency=record.currency,
+                status=record.status.value,
+                updated_at=record.updated_at,
+            )
         )
-        if row is None:
-            raise QuotePaymentConflictError("payment row is missing")
-        row.checkout_session_id = record.checkout_session_id
-        row.checkout_url = record.checkout_url
-        row.payment_intent_id = record.payment_intent_id
-        row.expires_at = record.expires_at
-        row.amount_cents = record.amount_minor
-        row.currency = record.currency
-        row.status = record.status.value
-        row.updated_at = record.updated_at
+        if self._rowcount(result) != 1:
+            raise QuotePaymentConflictError(f"payment attempt already moved past {expected_from}")
+
+    @staticmethod
+    def _rowcount(result: object) -> int:
+        rowcount = getattr(result, "rowcount", None)
+        return -1 if rowcount is None else int(rowcount)
 
 
 class SqlPaymentEventRepository:
