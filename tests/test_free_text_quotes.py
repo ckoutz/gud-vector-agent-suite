@@ -545,7 +545,7 @@ async def test_openai_drafter_sends_text_and_appointment_as_schema_request() -> 
     assert http_request.headers["authorization"] == f"Bearer {OPENAI_KEY}"
     body = json.loads(http_request.read())
     assert body["model"] == "review-model"
-    assert body["temperature"] == 0
+    assert "temperature" not in body
     assert "seed" in body
     assert body["response_format"]["type"] == "json_schema"
     assert body["response_format"]["json_schema"]["strict"] is True

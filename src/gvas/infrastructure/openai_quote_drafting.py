@@ -160,7 +160,6 @@ def _total_tokens(response: httpx.Response) -> int:
 def _request_body(model: str, request: QuoteDraftRequest) -> dict[str, Any]:
     return {
         "model": model,
-        "temperature": 0,
         "seed": SEED,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
