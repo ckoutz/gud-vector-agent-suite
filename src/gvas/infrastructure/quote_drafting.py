@@ -33,6 +33,7 @@ owner literally wrote, otherwise nothing is drafted and the owner is asked.
 
 import logging
 import re
+from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Final
@@ -228,8 +229,17 @@ def quantity_is_written(
     ``Inspection for 2 bedrooms`` describes the job, not how many are billed,
     and ``"2 mold inspections"`` does not count ``Mold remediation``."""
 
+    return quantity_source_occurrences(text, quantity, description, quantity_text) > 0
+
+
+def quantity_source_occurrences(
+    text: str, quantity: int, description: str, quantity_text: str | None
+) -> int:
+    """How many times ``quantity_text`` occurs in ``text`` as a count of this
+    item (see ``quantity_is_written``); 0 when it is not one."""
+
     if quantity_text is None:
-        return False
+        return 0
     span = " ".join(quantity_text.split())
     match = re.fullmatch(
         rf"{quantity}(?![\d.,])\s*(?:x|×)?\s*({WORD_PATTERN.pattern}(?:\s+{WORD_PATTERN.pattern})*)",
@@ -237,26 +247,29 @@ def quantity_is_written(
         re.IGNORECASE,
     )
     if match is None:
-        return False
-    haystack = " ".join(text.split()).casefold()
-    start = haystack.find(span.casefold())
-    while start != -1:
-        if start == 0 or haystack[start - 1] not in "0123456789.,$":
-            break
-        start = haystack.find(span.casefold(), start + 1)
-    if start == -1:
-        return False
+        return 0
     uncounted = COUNTED_ATTRIBUTE_PATTERN.sub(" ", description)
     stems = {
         word.casefold()[:WORD_STEM_LENGTH]
         for word in WORD_PATTERN.findall(uncounted)
         if len(word) >= 3
     }
-    return all(
-        word.casefold()[:WORD_STEM_LENGTH] in stems
+    words = [
+        word.casefold()[:WORD_STEM_LENGTH]
         for word in WORD_PATTERN.findall(match.group(1))
         if len(word) >= 3
-    )
+    ]
+    if not words or any(word not in stems for word in words):
+        return 0
+    haystack = " ".join(text.split()).casefold()
+    needle = span.casefold()
+    occurrences = 0
+    start = haystack.find(needle)
+    while start != -1:
+        if start == 0 or haystack[start - 1] not in "0123456789.,$":
+            occurrences += 1
+        start = haystack.find(needle, start + 1)
+    return occurrences
 
 
 def written_amount_minor(value: str) -> int | None:
@@ -373,27 +386,24 @@ def _priced_line_items(request_text: str, draft: FreeTextQuoteDraft) -> tuple[Qu
     written = written_amounts_minor(request_text)
     line_items: list[QuoteLineItem] = []
     unpriced: list[str] = []
-    used_quantity_texts: set[str] = set()
+    used_quantity_texts: Counter[str] = Counter()
     for item in draft.line_items:
         minor = None if item.unit_price is None else written_amount_minor(item.unit_price)
         if minor is None or minor not in written:
             unpriced.append(item.description)
             continue
         quantity_text = " ".join((item.quantity_text or "").split()).casefold()
-        # The same words cannot count two items ("2 inspections" for both
-        # "Mold inspection" and "Radon inspection").
-        if item.quantity > 1 and (
-            quantity_text in used_quantity_texts
-            or not quantity_is_written(
-                request_text, item.quantity, item.description, item.quantity_text
-            )
+        # One written count serves one item: "2 inspections" cannot count both
+        # "Mold inspection" and "Radon inspection" unless it was written twice.
+        if item.quantity > 1 and used_quantity_texts[quantity_text] >= quantity_source_occurrences(
+            request_text, item.quantity, item.description, item.quantity_text
         ):
             raise QuoteDraftRejectedError(
                 f"Your message does not say {item.quantity} × '{item.description}'."
                 " Send the quote again with the quantity written out."
             )
         if item.quantity > 1:
-            used_quantity_texts.add(quantity_text)
+            used_quantity_texts[quantity_text] += 1
         line_items.append(
             QuoteLineItem(
                 description=item.description, quantity=item.quantity, unit_price_minor=minor

@@ -308,10 +308,27 @@ async def test_quantity_source_must_name_its_own_item() -> None:
         )
 
 
+async def test_quantity_written_twice_counts_two_items() -> None:
+    model = ModelFake(
+        FreeTextQuoteDraft(
+            line_items=(
+                item("Filter (furnace)", "40", 2, "2 filters"),
+                item("Filter (return)", "60", 2, "2 filters"),
+            )
+        )
+    )
+    proposal = await drafter(model).draft(
+        request("2 filters for the furnace 40 and 2 filters at the return 60\ncustomer: b@x.test")
+    )
+    assert [li.quantity for li in proposal.line_items] == [2, 2]
+
+
 def test_quantity_is_written_checks_the_drafters_source_words() -> None:
     assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", "3 x air samples")
     assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", None) is False
     assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", "3 x reports") is False
+    assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", "3 x") is False
+    assert quantity_is_written("3 x Air Samples at 125", 3, "Air sample", "3 x at") is False
     assert quantity_is_written("reports: 2 and 1 inspection", 2, "Report", "reports: 2") is False
     assert quantity_is_written("on 2 bedrooms, 2 samples", 2, "Mold sample", "2 samples")
     assert (
