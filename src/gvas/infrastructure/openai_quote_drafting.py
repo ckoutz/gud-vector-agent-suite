@@ -48,7 +48,11 @@ Rules:
   text, copied as written (digits only, optional decimals). NEVER invent,
   estimate, total, split or infer a price. If an item has no price in the text,
   still list the item but leave unit_price as an empty string.
-- quantity is the whole number the owner wrote for that item; default 1.
+- quantity is how many units of the item are billed, and only when the owner
+  wrote that count for the item ("2 air samples"); default 1. Copy the owner's
+  exact words that state it, number first, into quantity_text ("2 air
+  samples"); empty string when the quantity is 1. A number that describes the
+  job ("2 bedrooms", "3 hours away", "1500 sqft") is NOT a quantity.
 - Use the appointment only to word descriptions and the note (e.g. the
   customer's booking answer "attic mold, 2 bedrooms" makes the description
   "Mold inspection - attic and 2 bedrooms"). It never contributes a price or
@@ -69,10 +73,11 @@ RESPONSE_SCHEMA: Final[dict[str, Any]] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["description", "quantity", "unit_price"],
+                "required": ["description", "quantity", "quantity_text", "unit_price"],
                 "properties": {
                     "description": {"type": "string"},
                     "quantity": {"type": "integer"},
+                    "quantity_text": {"type": "string"},
                     "unit_price": {"type": "string"},
                 },
             },
@@ -88,6 +93,7 @@ class _ReportedItem(BaseModel):
 
     description: str
     quantity: int
+    quantity_text: str = ""
     unit_price: str
 
 
@@ -200,6 +206,7 @@ def _draft(response: httpx.Response) -> FreeTextQuoteDraft:
         FreeTextQuoteItem(
             description=_squash(item.description)[:MAX_DESCRIPTION_CHARS],
             quantity=max(item.quantity, 1),
+            quantity_text=_squash(item.quantity_text) or None,
             unit_price=item.unit_price.strip() or None,
         )
         for item in reported.items
