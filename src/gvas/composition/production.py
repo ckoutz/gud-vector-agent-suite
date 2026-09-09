@@ -30,6 +30,7 @@ from gvas.application.contradiction_guard import GuardedCompletenessReviewer
 from gvas.application.deterministic_report import DeterministicReportGenerator
 from gvas.application.docx_report import DocxReportRenderer
 from gvas.application.guarded_checklist_evidence import GuardedChecklistEvidenceAttributor
+from gvas.application.quotes import SiteAwareQuoteDelivery
 from gvas.composition import Application, ApplicationPorts, build_application
 from gvas.composition.report_publication import ReportArtifactAccess
 from gvas.config import (
@@ -37,6 +38,7 @@ from gvas.config import (
     DatabaseUrlError,
     ObjectStorageSettings,
     OpenAISettings,
+    PublicApiSettings,
     ResendSettings,
     Settings,
     WorkerSettings,
@@ -69,6 +71,7 @@ from gvas.infrastructure.quote_drafting import (
     ModelAssistedQuoteDrafter,
 )
 from gvas.infrastructure.reporting_unit_of_work import SqlReportUnitOfWorkFactory
+from gvas.infrastructure.repositories import SqlBusinessRepository
 from gvas.infrastructure.resend import ResendQuoteDeliveryAdapter, ResendReportEmailAdapter
 from gvas.infrastructure.slack.api import (
     SlackFileAttachmentAccess,
@@ -85,6 +88,11 @@ from gvas.infrastructure.slack.installations import (
     SlackInstallationError,
     parse_slack_installations,
 )
+from gvas.infrastructure.stripe import (
+    StripeCheckout,
+    StripeSettings,
+    StripeWebhookVerifier,
+)
 from gvas.infrastructure.telnyx.api import TelnyxMessagingApiSender
 from gvas.infrastructure.telnyx.composition import (
     build_telnyx_owner_reply_adapter,
@@ -100,6 +108,7 @@ from gvas.infrastructure.telnyx.installations import (
 )
 from gvas.infrastructure.usage_ledger import SqlUsageLedger
 from gvas.interfaces.http.app import create_app
+from gvas.interfaces.http.public import PerIpRateLimiter, create_public_router
 from gvas.interfaces.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -130,6 +139,8 @@ class ProductionSettings:
     telnyx: TelnyxSettings = field(default_factory=TelnyxSettings)
     calendly: CalendlySettings = field(default_factory=CalendlySettings)
     portal: PortalSettings = field(default_factory=PortalSettings)
+    stripe: StripeSettings = field(default_factory=StripeSettings)
+    public_api: PublicApiSettings = field(default_factory=PublicApiSettings)
     cost_ceilings: CostCeilingSettings = field(default_factory=CostCeilingSettings)
 
     def usage_ceilings(self) -> UsageCeilings:
@@ -150,6 +161,8 @@ def load_production_settings() -> ProductionSettings:
         telnyx=TelnyxSettings(),
         calendly=CalendlySettings(),
         portal=PortalSettings(),
+        stripe=StripeSettings(),
+        public_api=PublicApiSettings(),
         cost_ceilings=CostCeilingSettings(),
     )
     missing = [
@@ -178,6 +191,7 @@ def load_production_settings() -> ProductionSettings:
     _require_complete_telnyx_channel(settings.telnyx)
     _require_complete_calendly_lookup(settings.calendly)
     _require_complete_portal_handoff(settings.portal)
+    _require_complete_stripe_checkout(settings.stripe)
     return settings
 
 
@@ -227,6 +241,17 @@ def _require_complete_portal_handoff(settings: PortalSettings) -> None:
         missing = [name for name, present in settings.required_settings.items() if not present]
         raise ProductionConfigurationError(
             f"portal handoff is partially configured; missing: {', '.join(missing)}"
+        )
+
+
+def _require_complete_stripe_checkout(settings: StripeSettings) -> None:
+    """Card checkout is optional as a set: with neither variable set the quote
+    accept route answers 503; with only one set the deployment must not start."""
+
+    if settings.is_partially_configured:
+        missing = [name for name, present in settings.required_settings.items() if not present]
+        raise ProductionConfigurationError(
+            f"card checkout is partially configured; missing: {', '.join(missing)}"
         )
 
 
@@ -345,16 +370,21 @@ def build_production_ports(
             ledger,
             messaging_profile_id=settings.telnyx.messaging_profile_id or None,
         )
-    quote_delivery: CustomerQuoteDeliveryPort = ResendQuoteDeliveryAdapter(settings.resend, client)
+    resend_quotes = ResendQuoteDeliveryAdapter(settings.resend, client)
+    portal_quotes: CustomerQuoteDeliveryPort | None = None
     if settings.portal.is_configured:
-        quote_delivery = PortalQuoteDelivery(
+        portal_quotes = PortalQuoteDelivery(
             settings.portal, client, SqlPortalHandoffLedger(session_factory)
         )
-        if customer_text is None:
-            logger.warning("portal configured without telnyx; quote links are emailed only")
-    else:
-        # Without the portal there is no link to text; the quote itself is emailed.
-        customer_text = None
+    # A hosted quote (business site_url set) always goes to the email adapter so
+    # its own link is rendered; otherwise the external portal, when configured,
+    # takes the handoff, else the generic email link is sent.
+    quote_delivery: CustomerQuoteDeliveryPort = SiteAwareQuoteDelivery(resend_quotes, portal_quotes)
+    if portal_quotes is not None and customer_text is None:
+        logger.warning("portal configured without telnyx; quote links are emailed only")
+    payment_checkout = (
+        StripeCheckout(settings.stripe, client) if settings.stripe.is_configured else None
+    )
     appointment_lookup = (
         CalendlyAppointmentLookup(settings.calendly, client)
         if settings.calendly.is_configured
@@ -375,6 +405,7 @@ def build_production_ports(
         appointment_lookup=appointment_lookup,
         quote_delivery=quote_delivery,
         customer_text=customer_text,
+        payment_checkout=payment_checkout,
         report_email=ResendReportEmailAdapter(settings.resend, client),
         transcription=OpenAITranscriber(
             settings.openai, client, attachments, usage_ledger=usage_ledger
@@ -411,10 +442,27 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
     routers = [build_slack_event_router(application.ingest_service, resolved.slack)]
     if resolved.telnyx.is_configured:
         routers.append(build_telnyx_webhook_router(application.ingest_service, resolved.telnyx))
+
+    async def cors_origins() -> frozenset[str]:
+        async with session_factory() as session:
+            site_urls = await SqlBusinessRepository(session).list_site_urls()
+        return frozenset(site_urls) | resolved.public_api.extra_origins()
+
+    routers.append(
+        create_public_router(
+            application.public_quotes,
+            webhook_verifier=(
+                StripeWebhookVerifier(resolved.stripe.webhook_secret)
+                if resolved.stripe.is_configured
+                else None
+            ),
+            rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
+        )
+    )
     return ProductionRuntime(
         settings=resolved,
         application=application,
-        app=create_app(resolved.app, tuple(routers)),
+        app=create_app(resolved.app, tuple(routers), cors_origins=cors_origins),
         http_client=client,
         engine=engine,
     )

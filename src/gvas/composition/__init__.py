@@ -28,6 +28,7 @@ from gvas.application.plan_custody import (
     RegisterPlanSetUploadService,
 )
 from gvas.application.processing import ProcessOwnerMessageService
+from gvas.application.public_quotes import PublicQuoteService
 from gvas.application.quotes import (
     DeliverApprovedQuoteService,
     QuoteIntentSelector,
@@ -63,6 +64,7 @@ from gvas.domain.ports import (
     IntentResolutionPort,
     ObjectStoragePort,
     OwnerReplyPort,
+    PaymentCheckoutPort,
     QuoteDraftingPort,
     TranscriptionPort,
 )
@@ -105,6 +107,9 @@ class ApplicationPorts:
     # workflow may resolve the customer from the owner's appointments instead.
     appointment_lookup: AppointmentLookupPort | None = None
     channel_policies: tuple[ChannelWorkflowPolicy, ...] = ()
+    # When present, the public API can open a hosted checkout on quote accept;
+    # when absent the accept route answers 503 and the rest still serves.
+    payment_checkout: PaymentCheckoutPort | None = None
     # The ledger the metered adapters write to; the ceiling guard reads the same
     # one. Defaults to the SQL ledger on the application's sessions.
     usage_ledger: UsageLedgerPort | None = None
@@ -137,6 +142,7 @@ class Application:
     report_publication_service: PublishFieldNotesReportService
     report_email_service: EmailFieldNotesReportService
     report_artifacts: ReportArtifactAccess
+    public_quotes: PublicQuoteService
     failure_notice_service: NotifyExhaustedCommandService
     usage_ledger: UsageLedgerPort
     usage_ceilings: UsageCeilings
@@ -212,6 +218,7 @@ def build_application(
         ports.quote_drafting,
         appointment_lookup=ports.appointment_lookup,
     )
+    public_quotes = PublicQuoteService(unit_of_work_factory, checkout=ports.payment_checkout)
     router = WorkflowRouter(
         [
             quote_handler,
@@ -332,6 +339,7 @@ def build_application(
         report_publication_service=report_publication,
         report_email_service=report_email,
         report_artifacts=report_artifacts,
+        public_quotes=public_quotes,
         failure_notice_service=failure_notices,
         usage_ledger=usage_ledger,
         usage_ceilings=usage_ceilings,

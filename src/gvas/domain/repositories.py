@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from gvas.domain.enums import DeliveryStatus, WorkflowRunStatus
 from gvas.domain.identifiers import (
@@ -25,7 +25,17 @@ from gvas.domain.messages import (
     OutboundOwnerMessage,
 )
 from gvas.domain.outbox import OutboxCommand, OutboxRecord
+from gvas.domain.payments import PaymentEventRepository, QuotePaymentRepository
 from gvas.domain.quotes import QuoteRepository
+
+
+def normalize_site_url(value: str) -> str:
+    """One spelling for a business's public origin so links and CORS agree."""
+
+    normalized = value.strip().rstrip("/")
+    if not normalized.lower().startswith(("http://", "https://")):
+        raise ValueError("site url must be an absolute http(s) origin")
+    return normalized
 
 
 class BusinessRecord(BaseModel):
@@ -34,6 +44,19 @@ class BusinessRecord(BaseModel):
     business_id: BusinessId
     slug: str
     name: str
+    # Hosted-quote config: the public site the quote page runs on, the name
+    # customers read, a booking link, a publishable (non-secret) key, and the
+    # business's future connected-account id (storage only for now).
+    site_url: str | None = None
+    display_name: str | None = None
+    calendly_url: str | None = None
+    stripe_account_id: str | None = None
+    public_key: str | None = None
+
+    @field_validator("site_url")
+    @classmethod
+    def site_url_is_an_origin(cls, value: str | None) -> str | None:
+        return None if value is None else normalize_site_url(value)
 
 
 class OwnerChannelEndpointRecord(BaseModel):
@@ -109,6 +132,26 @@ class BusinessRepository(Protocol):
     async def ensure(
         self, business_id: BusinessId, slug: str, name: str, *, now: datetime
     ) -> BusinessRecord: ...
+
+    async def get_by_public_key(self, public_key: str) -> BusinessRecord | None: ...
+
+    async def list_site_urls(self) -> tuple[str, ...]:
+        """Every configured ``site_url``; feeds the public API's CORS set."""
+        ...
+
+    async def configure_site(
+        self,
+        business_id: BusinessId,
+        *,
+        site_url: str | None = None,
+        display_name: str | None = None,
+        calendly_url: str | None = None,
+        stripe_account_id: str | None = None,
+        public_key: str | None = None,
+        now: datetime,
+    ) -> BusinessRecord:
+        """Set hosted-quote fields; ``None`` arguments leave stored values."""
+        ...
 
 
 class OwnerChannelEndpointRepository(Protocol):
@@ -210,6 +253,8 @@ class UnitOfWork(Protocol):
     workflow_runs: WorkflowRunRepository
     outbox: OutboxRepository
     quotes: QuoteRepository
+    quote_payments: QuotePaymentRepository
+    payment_events: PaymentEventRepository
 
     async def __aenter__(self) -> "UnitOfWork": ...
 

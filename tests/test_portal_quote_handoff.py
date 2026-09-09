@@ -12,7 +12,7 @@ from composition_fakes import FAKE_NOW, OwnerReplyFake, TranscriptionFake
 from gvas.application.checklist_evidence import MarkerChecklistEvidenceAttributor
 from gvas.application.completeness_review import MarkerCompletenessReviewer
 from gvas.application.deterministic_report import DeterministicReportGenerator
-from gvas.application.quotes import _appointment_recipient
+from gvas.application.quotes import SiteAwareQuoteDelivery, _appointment_recipient
 from gvas.composition import ApplicationPorts, build_application
 from gvas.composition.production import (
     ProductionConfigurationError,
@@ -558,7 +558,11 @@ def production_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_without_portal_settings_quotes_are_emailed_and_never_texted() -> None:
     runtime = build_production_runtime(load_production_settings())
     service = runtime.application.quote_delivery_service
-    assert isinstance(service._delivery_port, ResendQuoteDeliveryAdapter)  # noqa: SLF001
+    # With no portal the composite degenerates to the email adapter for every
+    # quote, hosted-site links included.
+    assert isinstance(service._delivery_port, SiteAwareQuoteDelivery)  # noqa: SLF001
+    assert isinstance(service._delivery_port._default, ResendQuoteDeliveryAdapter)  # noqa: SLF001
+    assert service._delivery_port._portal is None  # noqa: SLF001
     assert service._texts_customers is False  # noqa: SLF001
     assert runtime.application.dispatcher._quote_text is None  # noqa: SLF001
 
@@ -569,14 +573,17 @@ def test_portal_settings_wire_the_portal_and_telnyx_texts(monkeypatch: pytest.Mo
         monkeypatch.setenv(name, value)
     runtime = build_production_runtime(load_production_settings())
     service = runtime.application.quote_delivery_service
-    assert isinstance(service._delivery_port, PortalQuoteDelivery)  # noqa: SLF001
+    # The portal still takes quotes without a hosted link; the composite holds it.
+    assert isinstance(service._delivery_port, SiteAwareQuoteDelivery)  # noqa: SLF001
+    assert isinstance(service._delivery_port._portal, PortalQuoteDelivery)  # noqa: SLF001
     assert service._texts_customers is False  # noqa: SLF001
 
     for name, value in TELNYX_ENVIRONMENT.items():
         monkeypatch.setenv(name, value)
     runtime = build_production_runtime(load_production_settings())
     service = runtime.application.quote_delivery_service
-    assert isinstance(service._delivery_port, PortalQuoteDelivery)  # noqa: SLF001
+    assert isinstance(service._delivery_port, SiteAwareQuoteDelivery)  # noqa: SLF001
+    assert isinstance(service._delivery_port._portal, PortalQuoteDelivery)  # noqa: SLF001
     assert service._texts_customers is True  # noqa: SLF001
     assert runtime.application.dispatcher._quote_text is not None  # noqa: SLF001
 

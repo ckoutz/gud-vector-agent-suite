@@ -67,19 +67,32 @@ def _rowcount(result: Result[Any]) -> int:
     return cast(CursorResult[Any], result).rowcount
 
 
+def _aware_or_none(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
 class SqlBusinessRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def get(self, business_id: BusinessId) -> BusinessRecord | None:
-        row = await self.session.scalar(select(Business).where(Business.id == business_id))
-        if row is None:
-            return None
+    @staticmethod
+    def _record(row: Business) -> BusinessRecord:
         return BusinessRecord(
             business_id=BusinessId(row.id),
             slug=row.slug,
             name=row.name,
+            site_url=row.site_url,
+            display_name=row.display_name,
+            calendly_url=row.calendly_url,
+            stripe_account_id=row.stripe_account_id,
+            public_key=row.public_key,
         )
+
+    async def get(self, business_id: BusinessId) -> BusinessRecord | None:
+        row = await self.session.scalar(select(Business).where(Business.id == business_id))
+        return None if row is None else self._record(row)
 
     async def ensure(
         self, business_id: BusinessId, slug: str, name: str, *, now: datetime
@@ -93,7 +106,59 @@ class SqlBusinessRepository:
             row.name = name
             row.updated_at = now
         await self.session.flush()
-        return BusinessRecord(business_id=BusinessId(row.id), slug=row.slug, name=row.name)
+        return self._record(row)
+
+    async def get_by_public_key(self, public_key: str) -> BusinessRecord | None:
+        row = await self.session.scalar(select(Business).where(Business.public_key == public_key))
+        return None if row is None else self._record(row)
+
+    async def list_site_urls(self) -> tuple[str, ...]:
+        rows = await self.session.scalars(
+            select(Business.site_url).where(Business.site_url.is_not(None))
+        )
+        return tuple(url for url in rows.all() if url)
+
+    async def configure_site(
+        self,
+        business_id: BusinessId,
+        *,
+        site_url: str | None = None,
+        display_name: str | None = None,
+        calendly_url: str | None = None,
+        stripe_account_id: str | None = None,
+        public_key: str | None = None,
+        now: datetime,
+    ) -> BusinessRecord:
+        row = await self.session.scalar(select(Business).where(Business.id == business_id))
+        if row is None:
+            raise BusinessNotFoundError(f"business {business_id} does not exist")
+        if site_url is not None:
+            row.site_url = site_url
+        if display_name is not None:
+            row.display_name = display_name
+        if calendly_url is not None:
+            row.calendly_url = calendly_url
+        if stripe_account_id is not None:
+            row.stripe_account_id = stripe_account_id
+        if public_key is not None:
+            row.public_key = public_key
+        row.updated_at = now
+        try:
+            async with self.session.begin_nested():
+                await self.session.flush()
+        except IntegrityError as error:
+            raise BusinessPublicKeyConflictError(
+                "another business already holds that public key"
+            ) from error
+        return self._record(row)
+
+
+class BusinessNotFoundError(ValueError):
+    pass
+
+
+class BusinessPublicKeyConflictError(ValueError):
+    pass
 
 
 class SqlOwnerChannelEndpointRepository:
@@ -625,6 +690,10 @@ class SqlQuoteRepository:
                 "delivery_receipt": row.delivery_receipt,
                 "customer_appointment": row.customer_appointment,
                 "customer_candidates": row.customer_candidates,
+                "claim_token": row.claim_token,
+                "claim_token_hash": row.claim_token_hash,
+                "customer_status": row.customer_status,
+                "approved_at": _aware_or_none(row.approved_at),
                 "version": row.version,
                 "created_at": created_at,
                 "updated_at": updated_at,
@@ -644,6 +713,12 @@ class SqlQuoteRepository:
                 if quote.customer_candidates is not None
                 else None
             ),
+            "claim_token": quote.claim_token,
+            "claim_token_hash": quote.claim_token_hash,
+            "customer_status": (
+                quote.customer_status.value if quote.customer_status is not None else None
+            ),
+            "approved_at": quote.approved_at,
         }
 
     async def get(self, business_id: BusinessId, quote_id: QuoteId) -> Quote | None:
@@ -678,6 +753,12 @@ class SqlQuoteRepository:
                 QuoteRecord.conversation_id == conversation_id,
                 QuoteRecord.last_message_key == message_key,
             )
+        )
+        return None if row is None else self._quote(row)
+
+    async def get_by_claim_hash(self, claim_token_hash: str) -> Quote | None:
+        row = await self.session.scalar(
+            select(QuoteRecord).where(QuoteRecord.claim_token_hash == claim_token_hash)
         )
         return None if row is None else self._quote(row)
 

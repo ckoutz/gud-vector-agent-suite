@@ -133,9 +133,60 @@ whole days; businesses carry no timezone yet, so day boundaries are UTC.
   quote; the owner gets one reply asking to include `customer:` this time and
   the worker logs a sanitized warning.
 
+## Hosted customer quotes (optional)
+
+GVAS is the system of record for the customer-facing quote page; a client
+website (first: `gudvector.com`, a thin frontend calling the API in
+`docs/public_api.md`) renders `<site_url>/q/<claim_token>` and redirects the
+customer to Stripe Checkout.
+
+Delivery precedence on `approve`, per business:
+
+1. **Hosted site link** — the business has a `site_url` (set via the CLI
+   below): the quote gets a `claim_token`, the Resend email becomes a proper
+   quote email (business display name, items, total, link to
+   `<site_url>/q/<claim_token>`), and Telnyx texts the same URL when the
+   customer has a phone number and `GVAS_TELNYX_*` is set.
+2. **External portal** — no `site_url` but `GVAS_PORTAL_*` is set: the quote
+   is handed to `POST {base}/api/quotes` as in PR #34.
+3. **Generic email** — neither: today's Resend email with the portal login
+   link (`GVAS_RESEND_PORTAL_URL`).
+
+Email and SMS remain separate outbox commands, so one channel failing never
+undoes the other, and owner failure notices stay sanitized.
+
+- **Per-business site config**: `gvas-configure-business --business-id <uuid>
+  --site-url https://gudvector.com --display-name "Güd Vector"
+  --calendly-url https://calendly.com/gudvector` stores the site settings and
+  prints a `public_key` (auto-generated `gvb_…` when none exists) for the
+  site's booking-link call. `--stripe-account-id` stores a future Stripe
+  Connect account id; it is stored only. Run it from the Railway shell after
+  the migration like `gvas-bootstrap`.
+- **Stripe** (`GVAS_STRIPE_SECRET_KEY`, `GVAS_STRIPE_WEBHOOK_SECRET`) is an
+  optional pair: both set enables `accept` (Checkout Sessions via
+  `api.stripe.com`, `Idempotency-Key` = the quote's delivery key) and the
+  webhook; one set fails startup; neither leaves everything else working but
+  `accept` answers `503`.
+- **Webhook**: subscribe `checkout.session.completed`,
+  `checkout.session.async_payment_succeeded` and
+  `checkout.session.async_payment_failed` at
+  `https://<web-service-domain>/webhooks/stripe`; the endpoint verifies
+  `Stripe-Signature` (HMAC-SHA256 v1, 5-minute tolerance) and is replay-safe
+  on event id (`payment_provider_events` ledger).
+- **CORS**: the public routes allow `GET`/`POST` from the configured
+  `site_url`s plus `GVAS_PUBLIC_CORS_EXTRA_ORIGINS` (comma-separated, for
+  previews like `https://gudvector-site.vercel.app`). Claim-token routes are
+  rate-limited per IP (`GVAS_PUBLIC_RATE_LIMIT_PER_MINUTE`, default 120).
+- **Migration**: `0013_hosted_quotes` adds the business site columns, the
+  quote claim-token columns (lookups run against the SHA-256
+  `claim_token_hash`, so a token guess is rejected in constant time),
+  `quote_payments` and the webhook event ledger; the usual `gvas-migrate`
+  pre-deploy applies it.
+
 ## Customer portal quote handoff (optional)
 
-With the portal configured an approved quote is created on gudvector.com
+For businesses without a `site_url`, the `GVAS_PORTAL_*` path below is the
+alternative backend: an approved quote is created on the external portal
 instead of being emailed by Resend; the portal emails the customer its quote
 link, and GVAS texts the same link through Telnyx when the customer has a
 phone number and `GVAS_TELNYX_*` is set.
@@ -208,6 +259,10 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_PORTAL_BASE_URL` | Optional set; customer portal origin, quotes are posted to `{base}/api/quotes` |
 | `GVAS_PORTAL_API_TOKEN` | Optional set; bearer header only; must equal the portal's `PORTAL_API_TOKEN` |
 | `GVAS_PORTAL_TIMEOUT_SECONDS` | Default 30 |
+| `GVAS_STRIPE_SECRET_KEY` | Optional set; sent only as a bearer header to `api.stripe.com` |
+| `GVAS_STRIPE_WEBHOOK_SECRET` | Optional set; `Stripe-Signature` verification on `/webhooks/stripe` |
+| `GVAS_PUBLIC_CORS_EXTRA_ORIGINS` | Optional; comma-separated extra CORS origins for the public API (e.g. a preview deployment) |
+| `GVAS_PUBLIC_RATE_LIMIT_PER_MINUTE` | Default 120; per-IP limit on the public claim-token and booking routes |
 | `GVAS_CALENDLY_TOKEN` | Optional set; personal access token, bearer header only |
 | `GVAS_CALENDLY_INSTALLATIONS` | Optional set; `business_uuid=https://api.calendly.com/users/<uuid>` |
 | `GVAS_CALENDLY_API_BASE_URL`, `GVAS_CALENDLY_API_TIMEOUT_SECONDS`, `GVAS_CALENDLY_PAGE_SIZE` | Defaults suffice |

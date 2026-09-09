@@ -64,6 +64,25 @@ def require_managed_postgres_url(url: str) -> None:
         raise DatabaseUrlError("database URL must name a host and a database")
 
 
+class PublicApiSettings(BaseSettings):
+    """The public quote surface's own knobs, all under ``GVAS_PUBLIC_*``."""
+
+    model_config = SettingsConfigDict(env_prefix="GVAS_PUBLIC_", env_file=".env", extra="ignore")
+
+    # Extra browser origins allowed for CORS beyond the configured business
+    # site_urls — previews and local frontends. Comma-separated.
+    cors_extra_origins: str = ""
+    # Per-client-IP token bucket for the public routes.
+    rate_limit_per_minute: int = Field(default=120, ge=1)
+
+    def extra_origins(self) -> frozenset[str]:
+        return frozenset(
+            origin.strip().rstrip("/")
+            for origin in self.cors_extra_origins.split(",")
+            if origin.strip()
+        )
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GVAS_", env_file=".env", extra="ignore")
 
