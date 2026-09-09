@@ -231,6 +231,8 @@ class OutboxCommandDispatcher:
             request = portal_login_email_request(command.business_id, command.payload)
         except ValueError as error:
             raise MalformedCommandPayloadError(str(error)) from error
+        if request.is_expired(self._now()):
+            return DispatchOutcome(command.command_type, "expired")
         receipt = await self._portal_login_email.send_login_link(request)
         if receipt.status is DeliveryStatus.FAILED:
             raise RuntimeError(receipt.detail or "portal login e-mail failed")

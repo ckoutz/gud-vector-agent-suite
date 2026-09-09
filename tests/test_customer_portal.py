@@ -486,9 +486,9 @@ async def test_session_authenticates_portal_routes_and_can_be_revoked(
         assert revoked.status_code == 204
         after = await http.get("/v1/portal/me", headers=bearer(token))
         assert after.status_code == 401
-        # Revoking twice, or revoking garbage, is quiet.
-        assert (await http.delete("/v1/portal/sessions", headers=bearer(token))).status_code == 204
-        assert (await http.delete("/v1/portal/sessions", headers=bearer("x"))).status_code == 204
+        # Revoking twice, revoking garbage, or without a token is the same 401.
+        assert (await http.delete("/v1/portal/sessions", headers=bearer(token))).status_code == 401
+        assert (await http.delete("/v1/portal/sessions", headers=bearer("x"))).status_code == 401
         assert (await http.delete("/v1/portal/sessions")).status_code == 401
 
 
@@ -933,7 +933,9 @@ def test_lifecycle_events_normalize_to_subscription_outcomes() -> None:
     renewed = parse_checkout_event(invoice_event(event_id="e", event_type="invoice.paid"))
     assert renewed.outcome is PaymentEventOutcome.SUBSCRIPTION_RENEWED
     assert renewed.subscription is not None
-    assert renewed.subscription.amount_minor == 9_900
+    # The invoice total is what was collected, not the recurring price.
+    assert renewed.subscription.paid_minor == 9_900
+    assert renewed.subscription.amount_minor is None
     assert renewed.subscription.currency == "usd"
     assert renewed.subscription.current_period_end == datetime.fromtimestamp(1_800_000_000, UTC)
     assert renewed.metadata == {"gvas_quote_id": "gvq_x"}
@@ -1063,12 +1065,14 @@ async def test_subscription_lifecycle_webhooks_update_the_row_and_notify_the_own
         quote = (await http.get(f"/v1/quotes/{portal.claim_token}")).json()["quote"]
         assert quote["status"] == "paid"
 
+        # A prorated renewal collects less than the plan price; the plan price stays.
         renewed = await post_event(
-            http, invoice_event(event_id="evt_renew", event_type="invoice.paid")
+            http, invoice_event(event_id="evt_renew", event_type="invoice.paid", amount_paid=7_425)
         )
         assert renewed.json() == {"status": "recorded"}
         rows = await subscription_rows(session_factory)
         assert as_utc(rows[0].current_period_end) == datetime.fromtimestamp(1_800_000_000, UTC)
+        assert rows[0].amount_cents == 9_900
 
         failed = await post_event(
             http, invoice_event(event_id="evt_fail", event_type="invoice.payment_failed")
@@ -1139,7 +1143,7 @@ async def test_subscription_lifecycle_webhooks_update_the_row_and_notify_the_own
     await immediate_worker(portal.application).drain()
     notices = texts_of(portal.owner_replies, "Subscription for Jane Doe")
     assert notices == [
-        "Subscription for Jane Doe renewed USD 99.00",
+        "Subscription for Jane Doe renewed USD 74.25",
         "Subscription for Jane Doe payment failed (USD 99.00 monthly)",
         "Subscription for Jane Doe cancelled (USD 99.00 monthly)",
     ]
@@ -1186,6 +1190,7 @@ async def test_login_email_carries_the_link_and_subject() -> None:
             business_display_name=DISPLAY_NAME,
             login_url=f"{SITE_URL}/portal/login?token=raw-token",
             idempotency_key="portal-login:abc",
+            expires_at=NOW + LOGIN_TOKEN_TTL,
         )
     )
     assert receipt.status is DeliveryStatus.ACCEPTED
@@ -1231,6 +1236,45 @@ async def test_worker_sends_the_login_email_through_the_port(
     assert sent[0].subject == f"Sign in to your {DISPLAY_NAME} account"
     assert sent[0].login_url.startswith(f"{SITE_URL}/portal/login?token=")
     assert sent[0].business_id == portal.business_id
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_send_a_login_link_whose_token_has_expired(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    sent: list[PortalLoginEmailRequest] = []
+
+    class LoginEmailFake:
+        async def send_login_link(self, request: PortalLoginEmailRequest) -> DeliveryReceipt:
+            sent.append(request)
+            return DeliveryReceipt(status=DeliveryStatus.ACCEPTED, occurred_at=FAKE_NOW)
+
+    class SkippableClock(Clock):
+        def advance(self, delta: timedelta) -> None:
+            self._now += delta
+
+    portal = await portal_business(session_factory)
+    clock = SkippableClock()
+    wired = build_application(
+        ApplicationPorts(
+            owner_replies=portal.owner_replies,
+            quote_drafting=PhoneAwareDrafting(recipient()),
+            quote_delivery=portal.delivery,
+            portal_login_email=LoginEmailFake(),
+            transcription=TranscriptionFake({}),
+            completeness_review=MarkerCompletenessReviewer(),
+            checklist_evidence=MarkerChecklistEvidenceAttributor(),
+            report_generation=DeterministicReportGenerator(),
+        ),
+        session_factory=session_factory,
+        now=clock,
+    )
+    await wired.portal.request_login(PUBLIC_KEY, EMAIL)
+    # The worker only gets to the command after the token's 15 minutes are up.
+    clock.advance(LOGIN_TOKEN_TTL + timedelta(seconds=1))
+    report = await immediate_worker(wired).drain()
+    assert sum(r.succeeded for r in report) >= 1 and not any(r.failed for r in report)
+    assert sent == []
 
 
 def test_subscription_record_applies_only_the_fields_an_event_carries() -> None:

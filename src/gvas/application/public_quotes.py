@@ -528,7 +528,7 @@ class PublicQuoteService:
         who = (customer.display_name or customer.email) if customer is not None else "customer"
         amount = format_money(updated.amount_minor, updated.currency)
         if event.outcome is PaymentEventOutcome.SUBSCRIPTION_RENEWED:
-            paid = data.amount_minor if data.amount_minor is not None else updated.amount_minor
+            paid = data.paid_minor if data.paid_minor is not None else updated.amount_minor
             text = f"Subscription for {who} renewed {format_money(paid, updated.currency)}"
         elif event.outcome is PaymentEventOutcome.SUBSCRIPTION_PAYMENT_FAILED:
             text = f"Subscription for {who} payment failed ({amount} {updated.interval.value}ly)"

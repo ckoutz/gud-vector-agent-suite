@@ -175,7 +175,10 @@ def create_portal_router(
 
     @router.delete("/v1/portal/sessions", dependencies=limited, status_code=204)
     async def revoke_session(request: Request) -> Response:
-        await service.revoke_session(bearer_token(request))
+        try:
+            await service.revoke_session(bearer_token(request))
+        except PortalAuthenticationError:
+            return JSONResponse({"detail": GENERIC_UNAUTHORIZED}, status_code=401)
         return Response(status_code=204)
 
     @router.get("/v1/portal/me", dependencies=limited)

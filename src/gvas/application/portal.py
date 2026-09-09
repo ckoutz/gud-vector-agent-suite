@@ -127,6 +127,7 @@ class PortalService:
                 business_display_name=business.display_name or business.name,
                 login_url=portal_login_url(business.site_url, raw),
                 idempotency_key=f"portal-login:{token_hash}",
+                expires_at=now + LOGIN_TOKEN_TTL,
             )
             await unit_of_work.outbox.enqueue(
                 portal_login_email_command(request, token_hash=token_hash)
@@ -192,12 +193,23 @@ class PortalService:
         return PortalContext(session, customer, business)
 
     async def revoke_session(self, raw_session_token: str) -> None:
+        """Revoke a live session; a credential that would not authenticate
+        is refused the same way every other portal route refuses it."""
+
         if not raw_session_token:
-            return
+            raise PortalAuthenticationError("missing session")
+        now = self._now()
+        token_hash = hash_portal_token(raw_session_token)
         async with self._unit_of_work_factory() as unit_of_work:
-            await unit_of_work.portal_sessions.revoke(
-                hash_portal_token(raw_session_token), self._now()
-            )
+            session = await unit_of_work.portal_sessions.find_by_hash(token_hash)
+            if (
+                session is None
+                or not portal_token_matches(raw_session_token, session.token_hash)
+                or not session.is_active(now)
+            ):
+                await unit_of_work.commit()
+                raise PortalAuthenticationError("invalid session")
+            await unit_of_work.portal_sessions.revoke(token_hash, now)
             await unit_of_work.commit()
 
     # -- the customer's view ------------------------------------------------

@@ -118,10 +118,16 @@ class PortalLoginEmailRequest(CustomerModel):
     business_display_name: str = Field(min_length=1)
     login_url: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
+    expires_at: datetime
 
     @property
     def subject(self) -> str:
         return f"Sign in to your {self.business_display_name} account"
+
+    def is_expired(self, now: datetime) -> bool:
+        """A link sent after its token expired can never sign anyone in."""
+
+        return now >= self.expires_at
 
 
 def new_portal_token() -> str:
@@ -158,6 +164,7 @@ def portal_login_email_command(
             "business_display_name": request.business_display_name,
             "login_url": request.login_url,
             "idempotency_key": request.idempotency_key,
+            "expires_at": request.expires_at.isoformat(),
         },
         dedup_key=f"portal_login:{token_hash}",
     )
@@ -170,16 +177,23 @@ def portal_login_email_request(
 
     fields = {
         key: command_payload.get(key)
-        for key in ("to", "business_display_name", "login_url", "idempotency_key")
+        for key in ("to", "business_display_name", "login_url", "idempotency_key", "expires_at")
     }
     if not all(isinstance(value, str) for value in fields.values()):
         raise ValueError("portal login command payload is incomplete")
+    try:
+        expires_at = datetime.fromisoformat(str(fields["expires_at"]))
+    except ValueError as error:
+        raise ValueError("portal login command expiry is malformed") from error
+    if expires_at.tzinfo is None:
+        raise ValueError("portal login command expiry must be timezone-aware")
     return PortalLoginEmailRequest(
         business_id=business_id,
         to=str(fields["to"]),
         business_display_name=str(fields["business_display_name"]),
         login_url=str(fields["login_url"]),
         idempotency_key=str(fields["idempotency_key"]),
+        expires_at=expires_at,
     )
 
 

@@ -219,11 +219,11 @@ def _subscription_event(
             ends = [line.period.get("end") for line in record.lines.data if "end" in line.period]
             if ends:
                 period_end = _timestamp(max(end for end in ends if end is not None))
-        amount = record.amount_paid if outcome is PaymentEventOutcome.SUBSCRIPTION_RENEWED else None
+        paid = record.amount_paid if outcome is PaymentEventOutcome.SUBSCRIPTION_RENEWED else None
         data = SubscriptionEventData(
             subscription_ref=subscription_ref,
             customer_ref=record.customer,
-            amount_minor=amount,
+            paid_minor=paid,
             currency=record.currency,
             current_period_end=period_end,
         )

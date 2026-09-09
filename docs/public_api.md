@@ -191,7 +191,8 @@ Errors: `401` bad, expired or already-used token · `429` rate limited.
 ## `DELETE /v1/portal/sessions`
 
 Revokes the presented session. `204` with no body; `401` when the session is
-already invalid.
+missing, unknown, expired or already revoked (same check as every other
+portal route).
 
 ## `GET /v1/portal/me`
 

@@ -128,7 +128,11 @@ class SubscriptionEventData(PaymentModel):
     customer_ref: str | None = None
     status: str | None = None
     interval: BillingInterval | None = None
+    #: The recurring price; only subscription objects carry it.
     amount_minor: int | None = Field(default=None, ge=0)
+    #: What one invoice actually collected (credits, proration, tax included);
+    #: reported to the owner, never written over the recurring price.
+    paid_minor: int | None = Field(default=None, ge=0)
     currency: str | None = None
     current_period_end: datetime | None = None
     cancel_at_period_end: bool | None = None
