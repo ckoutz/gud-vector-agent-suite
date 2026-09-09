@@ -402,6 +402,7 @@ class DeliverApprovedQuoteService:
                 links=tuple(link.reference for link in draft.hosted_links),
                 line_items=_delivery_line_items(draft),
                 currency=draft.currency,
+                note=draft.owner_note,
             )
         )
         if receipt.status is DeliveryStatus.FAILED:

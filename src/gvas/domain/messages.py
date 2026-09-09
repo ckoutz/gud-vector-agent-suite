@@ -203,6 +203,7 @@ class CustomerDeliveryRequest(DomainModel):
     # the quote themselves rather than forwarding the text.
     line_items: tuple[CustomerDeliveryLineItem, ...] = Field(default_factory=tuple)
     currency: str | None = None
+    note: str | None = None
 
 
 class CustomerTextRequest(DomainModel):
