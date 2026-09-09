@@ -109,9 +109,10 @@ class CalendlyAvailability:
             installation.business_id: installation.user_uri for installation in resolved
         }
         # Resolved lazily per business and refreshed after a TTL so a changed
-        # or deleted event type does not stay cached until restart.
-        self._event_types: dict[BusinessId, tuple[_EventType, float]] = {}
-        self._timezones: dict[BusinessId, str | None] = {}
+        # or deleted event type does not stay cached until restart. One dict
+        # publishes the event type, its timezone and the timestamp together —
+        # a mid-refresh reader never sees a new type with a stale timezone.
+        self._event_types: dict[BusinessId, tuple[_EventType, str | None, float]] = {}
 
     def serves(self, business_id: BusinessId) -> bool:
         return business_id in self._users
@@ -187,7 +188,7 @@ class CalendlyAvailability:
         if user_uri is None:
             return None
         cached = self._event_types.get(business_id)
-        if cached is None or time.monotonic() - cached[1] >= EVENT_TYPE_TTL_SECONDS:
+        if cached is None or time.monotonic() - cached[2] >= EVENT_TYPE_TTL_SECONDS:
             payload = await self._get("/event_types", {"user": user_uri, "active": "true"})
             try:
                 listed = _EventTypesResponse.model_validate(payload)
@@ -195,11 +196,15 @@ class CalendlyAvailability:
                 raise _unreadable(error) from error
             if not listed.collection:
                 raise AvailabilityError("calendly has no active event type")
-            self._event_types[business_id] = (listed.collection[0], time.monotonic())
-            self._timezones[business_id] = await self._user_timezone(user_uri)
-        event_type = self._event_types[business_id][0]
+            timezone = await self._user_timezone(user_uri)
+            self._event_types[business_id] = (
+                listed.collection[0],
+                timezone,
+                time.monotonic(),
+            )
+        event_type, timezone, _resolved_at = self._event_types[business_id]
         duration = event_type.duration or DEFAULT_SLOT_MINUTES
-        return event_type.uri, self._timezones.get(business_id), duration
+        return event_type.uri, timezone, duration
 
     async def _user_timezone(self, user_uri: str) -> str | None:
         path = user_uri.split(self._settings.api_base_url, 1)[-1]
