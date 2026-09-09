@@ -208,6 +208,7 @@ class CustomerDeliveryRequest(DomainModel):
     quote_url: str | None = None
     # The name the customer-facing message should come from, when configured.
     business_name: str | None = None
+    note: str | None = None
 
 
 class CustomerTextRequest(DomainModel):

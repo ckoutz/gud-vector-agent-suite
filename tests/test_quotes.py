@@ -141,6 +141,7 @@ class DraftingFake:
             ),
             tax_minor=200,
             discount_minor=100,
+            owner_note="We'll be there Tuesday",
             hosted_links=(
                 HostedLinkReference(
                     kind=HostedLinkKind.PAYMENT,
@@ -396,6 +397,7 @@ async def test_workflow_retries_thread_scoped_approval_and_delivery_are_idempote
     assert len(delivery.requests) == 1
     assert delivery.requests[0].idempotency_key == f"quote-delivery:{quote.quote_id}"
     assert delivery.requests[0].links == ("payment-link-token",)
+    assert delivery.requests[0].note == "We'll be there Tuesday"
 
 
 @pytest.mark.asyncio

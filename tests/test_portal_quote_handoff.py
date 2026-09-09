@@ -99,7 +99,9 @@ def recipient(
     )
 
 
-def delivery_request(customer: CustomerRecipient | None = None) -> CustomerDeliveryRequest:
+def delivery_request(
+    customer: CustomerRecipient | None = None, note: str | None = None
+) -> CustomerDeliveryRequest:
     return CustomerDeliveryRequest(
         business_id=BUSINESS_ID,
         recipient=customer or recipient(),
@@ -111,6 +113,7 @@ def delivery_request(customer: CustomerRecipient | None = None) -> CustomerDeliv
             CustomerDeliveryLineItem(description="Air sample", quantity=2, unit_price_minor=12_500),
         ),
         currency="USD",
+        note=note,
     )
 
 
@@ -205,7 +208,23 @@ async def test_portal_phone_only_customer_does_not_ask_for_email() -> None:
     assert body["customerPhone"] == "+19255551234"
     assert "customerEmail" not in body
     assert "serviceAddress" not in body
+    assert "note" not in body
     assert body["sendEmail"] is False
+
+
+@pytest.mark.asyncio
+async def test_portal_create_carries_the_customer_note() -> None:
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return portal_ok()
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        adapter = PortalQuoteDelivery(portal_settings(), client, InMemoryPortalHandoffLedger())
+        await adapter.deliver(delivery_request(note="We'll be there Tuesday"))
+
+    assert json.loads(seen[0].read())["note"] == "We'll be there Tuesday"
 
 
 @pytest.mark.asyncio

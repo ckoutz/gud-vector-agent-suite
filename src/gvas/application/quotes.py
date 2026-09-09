@@ -417,6 +417,7 @@ class DeliverApprovedQuoteService:
                 currency=draft.currency,
                 quote_url=quote_url,
                 business_name=business_name,
+                note=draft.owner_note,
             )
         )
         if receipt.status is DeliveryStatus.FAILED:
