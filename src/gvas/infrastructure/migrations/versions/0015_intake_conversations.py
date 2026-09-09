@@ -41,6 +41,7 @@ def upgrade() -> None:
         sa.Column("requested_slot_end", sa.DateTime(timezone=True), nullable=True),
         sa.Column("booking_kind", sa.String(length=20), nullable=True),
         sa.Column("booking_link", sa.String(length=2048), nullable=True),
+        sa.Column("booking_attempted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("decision_reason", sa.String(length=500), nullable=True),
         sa.Column("decision_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("owner_notified_at", sa.DateTime(timezone=True), nullable=True),

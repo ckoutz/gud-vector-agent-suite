@@ -141,7 +141,8 @@ mounted. Slot offers come from Calendly: for each business in
 `GVAS_CALENDLY_INSTALLATIONS` the adapter lists the user's event types
 (`GET /event_types?user=<user_uri>`) and reads openings from
 `GET /event_type_available_times?event_type=…&start_time=…&end_time=…`
-(31-day window, paged), localized to the Calendly user's timezone; without
+(the provider's max window is 31 days; we ask for 14 and paged), localized to
+the Calendly user's timezone; without
 Calendly the chat still collects the request but answers "the owner will
 confirm a time" instead of offering slots.
 
@@ -150,8 +151,10 @@ On `approve booking <ref>` the adapter first tries direct invitee creation
 4xx it mints a single-use scheduling link (`POST /scheduling_links`,
 `max_event_count=1`) prefilled with the customer's name, email and chosen
 slot, then emails (and texts, when a phone was collected and `GVAS_TELNYX_*`
-is set) the customer to confirm. The same `GVAS_CALENDLY_TOKEN` covers all
-three calls — no extra scopes. `GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY`
+is set) the customer to confirm. If the worker dies mid-booking, the retried
+command first reconciles via `GET /scheduled_events` (invitee email + slot
+window) so the approval can never book twice. The same `GVAS_CALENDLY_TOKEN`
+covers all of these calls — no extra scopes. `GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY`
 (default 50) and `GVAS_INTAKE_MAX_MESSAGES_PER_CONVERSATION` (default 30) cap
 intake churn per business; `0` disables each cap. Model calls also consume
 the `GVAS_COST_CEILING_REVIEW_TOKENS` monthly budget.

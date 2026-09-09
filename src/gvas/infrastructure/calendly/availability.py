@@ -73,6 +73,15 @@ class _AvailableTimesResponse(_Model):
     pagination: _Pagination = _Pagination()
 
 
+class _ScheduledEvent(_Model):
+    status: str
+    start_time: str
+
+
+class _ScheduledEventsResponse(_Model):
+    collection: tuple[_ScheduledEvent, ...]
+
+
 class _SchedulingLink(_Model):
     booking_url: str
 
@@ -124,6 +133,38 @@ class CalendlyAvailability:
             local = _localize(slot_start, timezone)
             openings.append(AvailableSlot(start=local, end=local + timedelta(minutes=minutes)))
         return tuple(openings)
+
+    async def find_booking(self, request: BookingRequest) -> BookingResult | None:
+        """Reconciliation after a crashed attempt: an active invitee event
+        for this email inside the requested window is the booking."""
+
+        user_uri = self._users.get(request.business_id)
+        if user_uri is None:
+            raise AvailabilityError("no calendly event type is configured")
+        payload = await self._get(
+            "/scheduled_events",
+            {
+                "user": user_uri,
+                "invitee_email": request.invitee_email,
+                "min_start_time": _iso_utc(request.slot_start),
+                "max_start_time": _iso_utc(request.slot_end),
+                "status": "active",
+            },
+        )
+        try:
+            events = _ScheduledEventsResponse.model_validate(payload)
+        except ValidationError as error:
+            raise _unreadable(error) from error
+        for event in events.collection:
+            if event.status != "active":
+                continue
+            try:
+                start = _parse_calendly_time(event.start_time)
+            except ValueError:
+                continue
+            if request.slot_start <= start <= request.slot_end:
+                return BookingResult(kind=BookingKind.BOOKED)
+        return None
 
     async def book(self, request: BookingRequest) -> BookingResult:
         spec = await self._event_type(request.business_id)

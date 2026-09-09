@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from gvas.domain.customer_linking import enqueue_intake_owner_notice
 from gvas.domain.customers import CustomerRecord, ServiceRequest
-from gvas.domain.enums import RecipientAddressKind, WorkflowRunStatus
+from gvas.domain.enums import DeliveryStatus, RecipientAddressKind, WorkflowRunStatus
 from gvas.domain.identifiers import (
     BusinessId,
     IntakeConversationId,
@@ -121,6 +121,10 @@ class IntakeAvailabilityError(IntakeError):
     """Availability could not be arranged; commands that see this retry."""
 
 
+class IntakeDeliveryError(RuntimeError):
+    """A customer email or text was rejected; the outbox retries."""
+
+
 @dataclass(frozen=True)
 class IntakeStart:
     """What a create-conversation response projects from."""
@@ -179,6 +183,9 @@ class IntakeService:
     async def _check_daily_cap(self, unit_of_work: UnitOfWork, business: BusinessRecord) -> None:
         if self._max_conversations_per_day <= 0:
             return
+        # Locking the business row serializes concurrent starts so two
+        # requests cannot both pass the count before either inserts.
+        await unit_of_work.businesses.lock(business.business_id)
         now = self._now()
         day_start = now.astimezone(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         count = await unit_of_work.intake_conversations.count_created_since(
@@ -260,14 +267,27 @@ class IntakeService:
             raise IntakeClosedError("this conversation is closed")
 
         async with self._unit_of_work_factory() as unit_of_work:
+            # The row lock makes the whole turn read-modify-write on one
+            # snapshot: concurrent posts serialize instead of losing each
+            # other's collected fields or state transitions.
+            locked = await unit_of_work.intake_conversations.lock(
+                conversation.business_id, conversation.conversation_id
+            )
+            if locked is None or not locked.is_live(now):
+                raise IntakeClosedError("this conversation is closed")
+            conversation = locked
             await self._append(unit_of_work, conversation, IntakeMessageRole.USER, content, now)
             user_count = await unit_of_work.intake_messages.count_user(
                 conversation.business_id, conversation.conversation_id
             )
             if 0 < self._max_user_messages < user_count:
-                reply = await self._reply(unit_of_work, conversation, MESSAGE_LIMIT_REPLY, now)
+                # Terminal: without a closed state every further post would
+                # still append transcript rows forever.
+                closed = conversation.with_updates(now, state=IntakeState.CLOSED)
+                await unit_of_work.intake_conversations.save(closed)
+                reply = await self._reply(unit_of_work, closed, MESSAGE_LIMIT_REPLY, now)
                 await unit_of_work.commit()
-                return IntakeReply(conversation, reply, conversation.proposed_slots)
+                return IntakeReply(closed, reply, closed.proposed_slots)
 
             result = await self._step(unit_of_work, conversation, content, now)
             await unit_of_work.commit()
@@ -350,9 +370,8 @@ class IntakeService:
         await unit_of_work.intake_conversations.save(current)
 
         if turn.needs_human:
-            reply_text = scrub_agent_reply(turn.reply)
+            reply_text = f"{scrub_agent_reply(turn.reply)} {ESCALATION_REPLY}"
             await self._reply(unit_of_work, current, reply_text, now)
-            await self._reply(unit_of_work, current, ESCALATION_REPLY, now)
             if current.escalation_notified_at is None:
                 notified = await enqueue_intake_owner_notice(
                     unit_of_work,
@@ -520,19 +539,42 @@ class ArrangeIntakeBookingService:
                 raise IntakeAvailabilityError(
                     "approved booking is missing the customer's name or email"
                 )
-            business = await unit_of_work.businesses.get(business_id)
-            result = await self._availability.book(
-                BookingRequest(
-                    business_id=business_id,
-                    slot_start=conversation.requested_slot_start,
-                    slot_end=conversation.requested_slot_end,
-                    invitee_name=collected.name,
-                    invitee_email=collected.email,
-                    invitee_phone=collected.phone,
-                    address=collected.address,
-                    details=collected.problem,
-                )
+            request = BookingRequest(
+                business_id=business_id,
+                slot_start=conversation.requested_slot_start,
+                slot_end=conversation.requested_slot_end,
+                invitee_name=collected.name,
+                invitee_email=collected.email,
+                invitee_phone=collected.phone,
+                address=collected.address,
+                details=collected.problem,
             )
+            attempted = conversation.booking_attempted_at is not None
+            if not attempted:
+                # Persist the attempt before the provider call: if the process
+                # dies after ``book`` succeeded, the retried command sees the
+                # marker and reconciles instead of booking twice.
+                await unit_of_work.intake_conversations.save(
+                    conversation.with_updates(self._now(), booking_attempted_at=self._now())
+                )
+                await unit_of_work.commit()
+
+        result = None
+        if attempted:
+            result = await self._availability.find_booking(request)
+        if result is None:
+            result = await self._availability.book(request)
+
+        async with self._unit_of_work_factory() as unit_of_work:
+            conversation = await unit_of_work.intake_conversations.get(business_id, conversation_id)
+            if (
+                conversation is None
+                or conversation.state is not IntakeState.APPROVED
+                or conversation.requested_slot_start is None
+                or conversation.booking_kind is not None
+            ):
+                return
+            business = await unit_of_work.businesses.get(business_id)
             now = self._now()
             business_name = (
                 "" if business is None else (business.display_name or business.name)
@@ -648,6 +690,15 @@ class BookingDecisionHandler:
         conversation: IntakeConversation,
         now: datetime,
     ) -> WorkflowResult:
+        if (
+            conversation.requested_slot_start is not None
+            and conversation.requested_slot_start <= now
+        ):
+            return self._result(
+                message,
+                f"Booking {conversation.reference}'s requested time has already "
+                "passed — decline it or line up a new time with the customer.",
+            )
         updated = conversation.with_updates(now, state=IntakeState.APPROVED, decision_at=now)
         await unit_of_work.intake_conversations.save(updated)
         command = intake_booking_arrange_command(updated)
@@ -729,7 +780,7 @@ class SendIntakeCustomerEmailService:
 
     async def send(self, business_id: BusinessId, payload: Mapping[str, object]) -> None:
         email = intake_customer_email_request(business_id, payload)
-        await self._delivery.deliver(
+        receipt = await self._delivery.deliver(
             CustomerDeliveryRequest(
                 business_id=business_id,
                 recipient=CustomerRecipient(
@@ -740,6 +791,8 @@ class SendIntakeCustomerEmailService:
                 body_text=email.body,
             )
         )
+        if receipt.status is DeliveryStatus.FAILED:
+            raise IntakeDeliveryError(receipt.detail or "customer email failed")
 
 
 class SendIntakeCustomerTextService:
@@ -754,7 +807,7 @@ class SendIntakeCustomerTextService:
         key = payload.get("idempotency_key")
         if not all(isinstance(value, str) and value for value in (phone, text, key)):
             raise ValueError("intake text command payload is incomplete")
-        await self._texts.send_text(
+        receipt = await self._texts.send_text(
             CustomerTextRequest(
                 business_id=business_id,
                 phone_number=str(phone),
@@ -762,3 +815,5 @@ class SendIntakeCustomerTextService:
                 idempotency_key=str(key),
             )
         )
+        if receipt.status is DeliveryStatus.FAILED:
+            raise IntakeDeliveryError(receipt.detail or "customer text failed")

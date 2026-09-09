@@ -100,6 +100,12 @@ class SqlBusinessRepository:
         row = await self.session.scalar(select(Business).where(Business.id == business_id))
         return None if row is None else self._record(row)
 
+    async def lock(self, business_id: BusinessId) -> BusinessRecord | None:
+        row = await self.session.scalar(
+            select(Business).where(Business.id == business_id).with_for_update()
+        )
+        return None if row is None else self._record(row)
+
     async def ensure(
         self, business_id: BusinessId, slug: str, name: str, *, now: datetime
     ) -> BusinessRecord:

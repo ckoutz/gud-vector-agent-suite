@@ -181,6 +181,9 @@ class IntakeConversation(IntakeModel):
     requested_slot_end: datetime | None = None
     booking_kind: str | None = None
     booking_link: str | None = None
+    # Set before the provider call runs: a retried arrange command that sees
+    # this reconciles the booking instead of booking twice.
+    booking_attempted_at: datetime | None = None
     decision_reason: str | None = None
     decision_at: datetime | None = None
     owner_notified_at: datetime | None = None
@@ -313,7 +316,11 @@ def pick_offer_slots(
 
     if not slots:
         return ()
-    allowed_days = next_business_days(now, SLOT_OFFER_BUSINESS_DAYS)
+    # Slot dates are business-local; the day window must be anchored in the
+    # same zone or a business a day behind the server's clock loses the first
+    # day entirely.
+    anchor = now.astimezone(slots[0].start.tzinfo)
+    allowed_days = next_business_days(anchor, SLOT_OFFER_BUSINESS_DAYS)
     by_day: dict[date, list[AvailableSlot]] = {}
     for slot in sorted(slots, key=lambda slot: slot.start):
         if slot.start <= now:
@@ -483,6 +490,13 @@ class IntakeConversationRepository(Protocol):
     async def find_by_reference(
         self, business_id: BusinessId, reference: str
     ) -> IntakeConversation | None: ...
+
+    async def lock(
+        self, business_id: BusinessId, conversation_id: IntakeConversationId
+    ) -> IntakeConversation | None:
+        """Row-level lock for the turn being written: concurrent customer
+        posts serialize instead of overwriting each other's snapshot."""
+        ...
 
     async def find_by_token(
         self, conversation_id: IntakeConversationId, token_hash: str

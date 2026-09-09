@@ -54,6 +54,7 @@ class IntakeConversation(Base):
     requested_slot_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     booking_kind: Mapped[str | None] = mapped_column(String(20))
     booking_link: Mapped[str | None] = mapped_column(String(2048))
+    booking_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decision_reason: Mapped[str | None] = mapped_column(String(500))
     decision_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     owner_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

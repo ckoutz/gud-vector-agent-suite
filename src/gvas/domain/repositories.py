@@ -173,6 +173,12 @@ class CrossBusinessReferenceError(ValueError):
 class BusinessRepository(Protocol):
     async def get(self, business_id: BusinessId) -> BusinessRecord | None: ...
 
+    async def lock(self, business_id: BusinessId) -> BusinessRecord | None:
+        """Row-level lock: callers that guard on per-business state (daily
+        caps, quotas) hold this for the length of their transaction so
+        concurrent writers serialize."""
+        ...
+
     async def ensure(
         self, business_id: BusinessId, slug: str, name: str, *, now: datetime
     ) -> BusinessRecord: ...

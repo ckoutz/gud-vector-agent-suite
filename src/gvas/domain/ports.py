@@ -171,3 +171,11 @@ class AvailabilityPort(Protocol):
     ) -> tuple[AvailableSlot, ...]: ...
 
     async def book(self, request: BookingRequest) -> BookingResult: ...
+
+    async def find_booking(self, request: BookingRequest) -> BookingResult | None:
+        """Whether the booking described by ``request`` already exists.
+
+        Retried arrange commands reconcile through this before calling
+        ``book`` again so a crashed earlier attempt cannot double-book.
+        """
+        ...

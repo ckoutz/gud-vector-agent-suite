@@ -58,6 +58,7 @@ class SqlIntakeConversationRepository:
             requested_slot_end=_aware_or_none(row.requested_slot_end),
             booking_kind=row.booking_kind,
             booking_link=row.booking_link,
+            booking_attempted_at=_aware_or_none(row.booking_attempted_at),
             decision_reason=row.decision_reason,
             decision_at=_aware_or_none(row.decision_at),
             owner_notified_at=_aware_or_none(row.owner_notified_at),
@@ -85,6 +86,7 @@ class SqlIntakeConversationRepository:
                 requested_slot_end=conversation.requested_slot_end,
                 booking_kind=conversation.booking_kind,
                 booking_link=conversation.booking_link,
+                booking_attempted_at=conversation.booking_attempted_at,
                 decision_reason=conversation.decision_reason,
                 decision_at=conversation.decision_at,
                 owner_notified_at=conversation.owner_notified_at,
@@ -116,6 +118,16 @@ class SqlIntakeConversationRepository:
         )
         return None if row is None else self._record(row)
 
+    async def lock(
+        self, business_id: BusinessId, conversation_id: IntakeConversationId
+    ) -> IntakeConversation | None:
+        row = await self.session.scalar(
+            select(IntakeRow)
+            .where(IntakeRow.business_id == business_id, IntakeRow.id == conversation_id)
+            .with_for_update()
+        )
+        return None if row is None else self._record(row)
+
     async def find_by_token(
         self, conversation_id: IntakeConversationId, token_hash: str
     ) -> IntakeConversation | None:
@@ -144,6 +156,7 @@ class SqlIntakeConversationRepository:
                 requested_slot_end=conversation.requested_slot_end,
                 booking_kind=conversation.booking_kind,
                 booking_link=conversation.booking_link,
+                booking_attempted_at=conversation.booking_attempted_at,
                 decision_reason=conversation.decision_reason,
                 decision_at=conversation.decision_at,
                 owner_notified_at=conversation.owner_notified_at,

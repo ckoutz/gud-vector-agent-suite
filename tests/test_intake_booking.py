@@ -8,10 +8,11 @@ until the owner replies ``approve booking <ref>``; declining never books.
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from composition_fakes import (
@@ -19,10 +20,16 @@ from composition_fakes import (
     OwnerReplyFake,
     TranscriptionFake,
 )
-from gvas.application.intake import IntakeClosedError
+from gvas.application.intake import (
+    IntakeClosedError,
+    IntakeDeliveryError,
+    SendIntakeCustomerEmailService,
+    SendIntakeCustomerTextService,
+)
 from gvas.composition import Application, build_application
 from gvas.config import IntakeSettings
 from gvas.domain.customers import CustomerRecord
+from gvas.domain.enums import DeliveryStatus
 from gvas.domain.identifiers import BusinessId, CustomerId
 from gvas.domain.intake import (
     INTAKE_BOOKING_ARRANGE_COMMAND_TYPE,
@@ -36,6 +43,12 @@ from gvas.domain.intake import (
     IntakeCollected,
     IntakeTurn,
     IntakeTurnRequest,
+    pick_offer_slots,
+)
+from gvas.domain.messages import (
+    CustomerDeliveryRequest,
+    CustomerTextRequest,
+    DeliveryReceipt,
 )
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
 from gvas.infrastructure.models import OutboxMessage
@@ -93,18 +106,25 @@ class AvailabilityFake:
         *,
         result: BookingResult | None = None,
         error: Exception | None = None,
+        found: BookingResult | None = None,
     ) -> None:
         self.slots = slots
         self._result = result or BookingResult(kind=BookingKind.BOOKED)
         self._error = error
+        self._found = found
         self.slot_calls: list[tuple[BusinessId, datetime, datetime]] = []
         self.book_calls: list[BookingRequest] = []
+        self.find_calls: list[BookingRequest] = []
 
     async def available_slots(
         self, business_id: BusinessId, start: datetime, end: datetime
     ) -> tuple[AvailableSlot, ...]:
         self.slot_calls.append((business_id, start, end))
         return self.slots
+
+    async def find_booking(self, request: BookingRequest) -> BookingResult | None:
+        self.find_calls.append(request)
+        return self._found
 
     async def book(self, request: BookingRequest) -> BookingResult:
         self.book_calls.append(request)
@@ -438,6 +458,16 @@ async def test_per_conversation_message_cap_stops_the_model(
         )
         assert capped.status_code == 200
         assert "message limit" in capped.json()["reply"]
+        assert capped.json()["state"] == "closed"
+        third = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "still there?"},
+            headers=headers,
+        )
+        assert third.status_code == 409
+        view = await client.get(f"/v1/intake/conversations/{conversation_id}", headers=headers)
+        user_rows = [m for m in view.json()["messages"] if m["role"] == "user"]
+        assert len(user_rows) == 2, "the cap is terminal: nothing past it is stored"
     assert agent.calls == 1
 
 
@@ -744,3 +774,142 @@ async def test_declined_conversation_rejects_new_messages(
         assert conversation is not None
     with pytest.raises(IntakeClosedError):
         await application.intake.post_message(conversation, "one more thing")
+
+
+@pytest.mark.asyncio
+async def test_retried_booking_reconciles_instead_of_double_booking(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A crashed attempt leaves the marker set; the retry reconciles first."""
+
+    availability = AvailabilityFake(found=BookingResult(kind=BookingKind.BOOKED))
+    application, _, business_id, reference = await reach_awaiting_owner(
+        session_factory, availability=availability
+    )
+    async with session_factory() as session:
+        await session.execute(
+            update(IntakeRow)
+            .where(IntakeRow.business_id == business_id)
+            .values(booking_attempted_at=NOW)
+        )
+        await session.commit()
+    await application.ingest_service.ingest(
+        inbound(business_id, f"approve booking {reference}", message_key="approve-reconciled")
+    )
+    for _ in range(6):
+        await immediate_worker(application).drain()
+
+    assert availability.find_calls, "a marked attempt reconciles before booking"
+    assert availability.book_calls == [], "the recovered booking is not created twice"
+    row = await conversation_row(session_factory, business_id)
+    assert row.booking_kind == "booked"
+    email_commands = await commands_of(
+        session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE
+    )
+    assert email_commands, "the customer still gets the confirmation"
+
+
+@pytest.mark.asyncio
+async def test_retried_booking_still_books_when_reconcile_finds_nothing(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    availability = AvailabilityFake(found=None)
+    application, _, business_id, reference = await reach_awaiting_owner(
+        session_factory, availability=availability
+    )
+    async with session_factory() as session:
+        await session.execute(
+            update(IntakeRow)
+            .where(IntakeRow.business_id == business_id)
+            .values(booking_attempted_at=NOW)
+        )
+        await session.commit()
+    await application.ingest_service.ingest(
+        inbound(business_id, f"approve booking {reference}", message_key="approve-retry")
+    )
+    for _ in range(6):
+        await immediate_worker(application).drain()
+
+    assert availability.find_calls
+    assert availability.book_calls, "nothing found — the booking is made"
+    row = await conversation_row(session_factory, business_id)
+    assert row.booking_kind == "booked"
+
+
+@pytest.mark.asyncio
+async def test_approval_after_the_requested_time_is_rejected(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    availability = AvailabilityFake()
+    application, owner, business_id, reference = await reach_awaiting_owner(
+        session_factory, availability=availability
+    )
+    past = datetime.now(UTC) - timedelta(hours=2)
+    async with session_factory() as session:
+        await session.execute(
+            update(IntakeRow)
+            .where(IntakeRow.business_id == business_id)
+            .values(requested_slot_start=past, requested_slot_end=past + timedelta(hours=1))
+        )
+        await session.commit()
+    await application.ingest_service.ingest(
+        inbound(business_id, f"approve booking {reference}", message_key="approve-late")
+    )
+    for _ in range(4):
+        await immediate_worker(application).drain()
+
+    replies = [text for text in texts_of(owner, "Booking") if "already passed" in text]
+    assert replies and reference in replies[0]
+    row = await conversation_row(session_factory, business_id)
+    assert row.state == "awaiting_owner"
+    assert availability.book_calls == []
+    arrange = await commands_of(session_factory, business_id, INTAKE_BOOKING_ARRANGE_COMMAND_TYPE)
+    assert arrange == []
+
+
+@pytest.mark.asyncio
+async def test_failed_customer_deliveries_raise_so_the_outbox_retries(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    class FailingDelivery:
+        async def deliver(self, request: CustomerDeliveryRequest) -> DeliveryReceipt:
+            return DeliveryReceipt(
+                status=DeliveryStatus.FAILED, detail="mailbox rejected", occurred_at=NOW
+            )
+
+    class FailingText:
+        async def send_text(self, request: CustomerTextRequest) -> DeliveryReceipt:
+            return DeliveryReceipt(
+                status=DeliveryStatus.FAILED, detail="carrier rejected", occurred_at=NOW
+            )
+
+    email = SendIntakeCustomerEmailService(FailingDelivery())
+    with pytest.raises(IntakeDeliveryError):
+        await email.send(
+            BusinessId(uuid4()),
+            {
+                "to": "customer@example.test",
+                "subject": "About your appointment",
+                "body": "details",
+                "idempotency_key": "key-1",
+            },
+        )
+    text = SendIntakeCustomerTextService(FailingText())
+    with pytest.raises(IntakeDeliveryError):
+        await text.send(
+            BusinessId(uuid4()),
+            {"phone": "+15555550100", "text": "details", "idempotency_key": "key-2"},
+        )
+
+
+def test_pick_offer_slots_anchors_the_day_window_on_the_slot_timezone() -> None:
+    pacific = ZoneInfo("America/Los_Angeles")
+    # Sunday 6 PM Pacific is already Monday 2 AM UTC: the business's Monday
+    # must still be inside the offer window.
+    now = datetime(2026, 1, 12, 2, 0, tzinfo=UTC)
+    start = datetime(2026, 1, 12, 9, 0, tzinfo=pacific)
+    offered = pick_offer_slots(
+        (AvailableSlot(start=start, end=start + timedelta(hours=1)),), now=now
+    )
+    assert offered, "the business-local Monday is lost when anchored on UTC"
+    assert offered[0].start == start
