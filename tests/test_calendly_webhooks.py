@@ -12,6 +12,7 @@ import httpx
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.composition import Application
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import (
     INTAKE_BOOKING_CANCEL_COMMAND_TYPE,
@@ -83,7 +84,7 @@ def _payload(
 
 
 async def _deliver(
-    application,
+    application: Application,
     business_id: BusinessId,
     body: bytes,
     *,
@@ -227,6 +228,7 @@ async def test_approve_after_reroute_reconciles_without_rebooking(
     for _ in range(5):
         await immediate_worker(application).drain()
     row = await conversation_row(session_factory, business_id)
+    assert row.requested_slot_start is not None
     picked = row.requested_slot_start + timedelta(hours=3)
     await _deliver(
         application,
@@ -262,6 +264,7 @@ async def test_decline_after_reroute_cancels_the_calendly_event(
     for _ in range(5):
         await immediate_worker(application).drain()
     row = await conversation_row(session_factory, business_id)
+    assert row.requested_slot_start is not None
     picked = row.requested_slot_start + timedelta(hours=3)
     await _deliver(
         application,
