@@ -9,6 +9,7 @@ no historical backfill is ever required.
 from datetime import datetime
 
 from gvas.domain.customers import CustomerRecord
+from gvas.domain.identifiers import BusinessId
 from gvas.domain.messages import OutboundOwnerMessage, TextPart
 from gvas.domain.outbox import owner_reply_command
 from gvas.domain.quotes import Quote
@@ -49,6 +50,39 @@ async def enqueue_quote_owner_notice(
     return True
 
 
+async def enqueue_intake_owner_notice(
+    unit_of_work: UnitOfWork, business_id: BusinessId, *, correlation_id: str, text: str
+) -> bool:
+    """Queue ``text`` for the owner in their latest channel conversation.
+
+    Intake conversations start on the web, so there is no owner conversation
+    to inherit — the notice anchors to the business's most recent inbound
+    message, which lands it in the newest owner thread across the connected
+    channels. Idempotent on ``correlation_id``; False when the business has
+    no inbound message to anchor to.
+    """
+
+    source = await unit_of_work.inbound_messages.find_latest_for_business(business_id)
+    if source is None:
+        return False
+    existing = await unit_of_work.outbound_messages.find_by_correlation(
+        business_id, source.conversation_id, correlation_id
+    )
+    if existing is not None:
+        return True
+    message = OutboundOwnerMessage(
+        business_id=business_id,
+        conversation_ref=source.message.conversation_ref,
+        parts=(TextPart(text=text),),
+        correlation_id=correlation_id,
+    )
+    outbound_message_id = await unit_of_work.outbound_messages.create(
+        message, source.conversation_id, source.inbound_message_id
+    )
+    await unit_of_work.outbox.enqueue(owner_reply_command(business_id, outbound_message_id))
+    return True
+
+
 async def link_quote_customer(
     unit_of_work: UnitOfWork, quote: Quote, now: datetime
 ) -> tuple[Quote, CustomerRecord | None]:
@@ -73,4 +107,4 @@ async def link_quote_customer(
     return quote.link_customer(customer.customer_id, now), customer
 
 
-__all__ = ["link_quote_customer"]
+__all__ = ["enqueue_intake_owner_notice", "enqueue_quote_owner_notice", "link_quote_customer"]

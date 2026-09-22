@@ -310,3 +310,10 @@ def test_calendly_lookup_is_optional_as_a_set(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("GVAS_CALENDLY_INSTALLATIONS", "not-a-uuid=https://api.calendly.com/users/A")
     with pytest.raises(ProductionConfigurationError, match="GVAS_CALENDLY_INSTALLATIONS"):
         load_production_settings()
+
+
+@pytest.mark.usefixtures("production_environment")
+def test_calendly_webhook_key_requires_the_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GVAS_CALENDLY_WEBHOOK_SIGNING_KEY", "whsec-test")
+    with pytest.raises(ProductionConfigurationError, match="GVAS_CALENDLY_WEBHOOK_SIGNING_KEY"):
+        load_production_settings()

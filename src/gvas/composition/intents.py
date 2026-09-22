@@ -1,13 +1,14 @@
 from typing import Protocol
 
 from gvas.application.field_notes import FieldNoteIntentContribution, FieldNoteUnitOfWorkFactory
-from gvas.application.quotes import QuoteIntentSelector
+from gvas.application.quotes import QuoteIntentSelector, normalized_text
 from gvas.domain.field_note_repositories import AmbiguousFieldNoteMessageError
 from gvas.domain.field_notes import (
     FIELD_NOTE_INTENT,
     has_field_note_command_trigger,
     has_field_note_trigger,
 )
+from gvas.domain.intake import BOOKING_INTENT, booking_decision
 from gvas.domain.intents import (
     UNMATCHED_MESSAGE_INTENT,
     WORKFLOW_CONFLICT_INTENT,
@@ -51,6 +52,11 @@ class DeterministicIntentResolver:
         self._message_unit_of_work_factory = message_unit_of_work_factory
 
     async def resolve(self, message: NormalizedOwnerMessage) -> IntentResolution:
+        # Booking decisions are checked before everything else: the quote
+        # selector claims every message in a conversation with an active
+        # quote, and a booking command must still reach its own handler.
+        if booking_decision(normalized_text(message)) is not None:
+            return IntentResolution(intent=BOOKING_INTENT, confidence=1)
         quote_resolution = await self._resolve_quote(message)
         if has_field_note_trigger(message):
             if quote_resolution is not None:

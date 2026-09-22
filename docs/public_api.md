@@ -283,3 +283,90 @@ free-text string. Answers `202 {}`: the request is stored (`service_requests`,
 the customer's most recent quote was approved.
 
 Errors: `422` message missing or too long · `401` · `429`.
+
+
+# Website booking intake API — chat widget contract
+
+A thin chat widget on the business's website talks to these routes; GVAS runs
+the agent. Nothing is ever booked here — the customer picks a time, the owner
+approves or declines over Slack/SMS, and the widget polls `state` to show the
+outcome (`collecting` → `proposing_slots` → `awaiting_owner` → `approved` /
+`declined` / `closed`).
+
+`conversationToken` is 32 random bytes (`secrets.token_urlsafe`), stored only
+as a SHA-256 hash, sent once at creation, used as `Authorization: Bearer
+<token>` on the other routes, and expires 24 hours after creation. The token
+is the only credential — a conversation can only be read or posted to with its
+own token, so one business's chat can never reach another's.
+
+## `POST /v1/businesses/{public_key}/intake/conversations`
+
+Starts a chat for a new or unknown customer. `201`:
+
+```json
+{
+  "conversationId": "uuid",
+  "conversationToken": "secret",
+  "state": "collecting",
+  "reply": "agent's opening message",
+  "slots": null
+}
+```
+
+Errors: `404` unknown key · `429` per-IP rate limited, or the business is over
+its daily intake cap (`GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY`).
+
+## `POST /v1/intake/conversations/{conversationId}/messages`
+
+Bearer `conversationToken`. Body `{"message": "…"}` — required, at most 2000
+characters. `200`:
+
+```json
+{
+  "state": "collecting|proposing_slots|awaiting_owner",
+  "reply": "agent's reply",
+  "slots": [{"start": "2026-09-15T09:00:00-07:00", "end": "…"}],
+  "summary": {"name": "…", "email": "…", "phone": "…", "address": "…", "problem": "…"}
+}
+```
+
+`slots` is non-null only while `state` is `proposing_slots` (ISO-8601 with
+offset, business-local; at most 5 real openings across the next 7 business
+days, 60 minutes each). `summary` is null until name, email, address and
+problem are all collected.
+
+The customer picks a time by replying in text (the model maps it) or the
+widget sends `{"message": "slot:<start>"}` with the exact `start` string.
+Either way the state becomes `awaiting_owner` and `reply` is "we'll confirm by
+email/text once the owner approves". A pick that is not one of the offered
+slots keeps the state and answers "please pick one of the listed times".
+
+The agent never quotes prices (a reply naming a currency amount is replaced
+with "the owner will confirm pricing"), never invents availability, asks one
+question at a time and stays under ~60 words. Ambiguous turns escalate: the
+owner gets a transcript summary once.
+
+Errors: `401` missing/invalid/expired token · `404` unknown id · `409`
+conversation decided or expired · `422` empty or over-long message · `429`.
+
+## `GET /v1/intake/conversations/{conversationId}`
+
+Bearer `conversationToken`. `200`:
+
+```json
+{
+  "state": "collecting|proposing_slots|awaiting_owner|approved|declined|closed",
+  "messages": [{"role": "user|agent|owner", "content": "…", "createdAt": "…"}],
+  "slots": null,
+  "summary": null
+}
+```
+
+Errors: `401` · `404` · `429`.
+
+## `POST /v1/portal/intake/conversations`
+
+Bearer portal session (see the portal section above). Same `201` response as
+the public create, but the conversation is linked to the signed-in customer
+and pre-filled with their name/email/phone — the agent skips identity
+questions and only asks about the new service.

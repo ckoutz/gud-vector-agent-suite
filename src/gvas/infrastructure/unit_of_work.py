@@ -12,6 +12,7 @@ from gvas.domain.customers import (
     PortalSessionRepository,
     ServiceRequestRepository,
 )
+from gvas.domain.intake import IntakeConversationRepository, IntakeMessageRepository
 from gvas.domain.payments import (
     PaymentEventRepository,
     QuotePaymentRepository,
@@ -43,6 +44,10 @@ from gvas.infrastructure.customer_repositories import (
     SqlPortalLoginTokenRepository,
     SqlPortalSessionRepository,
     SqlServiceRequestRepository,
+)
+from gvas.infrastructure.intake_repositories import (
+    SqlIntakeConversationRepository,
+    SqlIntakeMessageRepository,
 )
 from gvas.infrastructure.payment_repositories import (
     SqlPaymentEventRepository,
@@ -82,6 +87,8 @@ class SqlUnitOfWork:
     portal_sessions: PortalSessionRepository
     service_requests: ServiceRequestRepository
     quote_subscriptions: QuoteSubscriptionRepository
+    intake_conversations: IntakeConversationRepository
+    intake_messages: IntakeMessageRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -104,6 +111,8 @@ class SqlUnitOfWork:
         self.portal_sessions = SqlPortalSessionRepository(self._session)
         self.service_requests = SqlServiceRequestRepository(self._session)
         self.quote_subscriptions = SqlQuoteSubscriptionRepository(self._session)
+        self.intake_conversations = SqlIntakeConversationRepository(self._session)
+        self.intake_messages = SqlIntakeMessageRepository(self._session)
         return self
 
     async def __aexit__(
