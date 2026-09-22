@@ -28,6 +28,8 @@ class CalendlyInviteeEvent:
         event_uri: str,
         start: datetime,
         end: datetime | None,
+        event_type_uri: str | None = None,
+        reference: str | None = None,
     ) -> None:
         self.kind = kind
         self.user_uri = user_uri
@@ -35,6 +37,8 @@ class CalendlyInviteeEvent:
         self.event_uri = event_uri
         self.start = start
         self.end = end
+        self.event_type_uri = event_type_uri
+        self.reference = reference
 
 
 def _text(value: object, field: str) -> str:
@@ -96,6 +100,9 @@ def parse_calendly_event(body: bytes) -> CalendlyInviteeEvent | None:
     end_value = scheduled.get("end_time")
     if end_value is not None:
         end = _when(end_value, "scheduled_event.end_time")
+    event_type = scheduled.get("event_type")
+    tracking = payload.get("tracking")
+    utm_content = tracking.get("utm_content") if isinstance(tracking, dict) else None
     return CalendlyInviteeEvent(
         kind=kind,
         user_uri=user_uri,
@@ -103,4 +110,6 @@ def parse_calendly_event(body: bytes) -> CalendlyInviteeEvent | None:
         event_uri=_text(scheduled.get("uri"), "scheduled_event.uri"),
         start=_when(scheduled.get("start_time"), "scheduled_event.start_time"),
         end=end,
+        event_type_uri=event_type.strip() if isinstance(event_type, str) else None,
+        reference=utm_content.strip() if isinstance(utm_content, str) else None,
     )

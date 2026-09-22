@@ -326,14 +326,18 @@ characters. `200`:
   "state": "collecting|proposing_slots|awaiting_owner",
   "reply": "agent's reply",
   "slots": [{"start": "2026-09-15T09:00:00-07:00", "end": "…"}],
-  "summary": {"name": "…", "email": "…", "phone": "…", "address": "…", "problem": "…"}
+  "summary": {"name": "…", "email": "…", "phone": "…", "address": "…", "problem": "…"},
+  "bookingKind": null
 }
 ```
 
 `slots` is non-null only while `state` is `proposing_slots` (ISO-8601 with
 offset, business-local; at most 5 real openings across the next 7 business
 days, 60 minutes each). `summary` is null until name, email, address and
-problem are all collected.
+problem are all collected. `bookingKind` is `booked` once the calendar event
+is confirmed, `link` while the customer's confirmation link is outstanding,
+otherwise null — the widget uses it to tell "approved, check your email" from
+"approved and booked".
 
 The customer picks a time by replying in text (the model maps it) or the
 widget sends `{"message": "slot:<start>"}` with the exact `start` string.
@@ -358,7 +362,8 @@ Bearer `conversationToken`. `200`:
   "state": "collecting|proposing_slots|awaiting_owner|approved|declined|closed",
   "messages": [{"role": "user|agent|owner", "content": "…", "createdAt": "…"}],
   "slots": null,
-  "summary": null
+  "summary": null,
+  "bookingKind": null
 }
 ```
 

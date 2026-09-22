@@ -96,6 +96,10 @@ NO_AVAILABILITY_REPLY = (
 )
 SLOTS_OFFER_REPLY = "Here are the next openings I can offer — pick whichever works for you:"
 SLOT_NOT_OFFERED_REPLY = "That time isn't one I can offer — please pick one of the listed times."
+OWNER_UNREACHABLE_REPLY = (
+    "I couldn't reach the owner to confirm that time just now — "
+    "please pick it again in a little while."
+)
 ESCALATION_REPLY = "Let me bring the owner in on this — they'll follow up with you directly."
 OPENING_REPLY = (
     "Hi! I can help you book an inspection or estimate. What's going on, and where is the property?"
@@ -475,19 +479,6 @@ class IntakeService:
                 now=now,
             )
             customer_id = customer.customer_id
-        if customer_id is not None:
-            preferred = format_slot_label(slot.start)
-            await unit_of_work.service_requests.add(
-                ServiceRequest(
-                    request_id=ServiceRequestId(uuid4()),
-                    business_id=conversation.business_id,
-                    customer_id=customer_id,
-                    message=collected.problem or "Booking request",
-                    preferred_dates=preferred,
-                    source=SERVICE_REQUEST_SOURCE_INTAKE,
-                    created_at=now,
-                )
-            )
         updated = conversation.with_updates(
             now,
             state=IntakeState.AWAITING_OWNER,
@@ -504,13 +495,31 @@ class IntakeService:
                 updated, business_name=business.display_name or business.name
             ),
         )
-        if notified:
-            updated = updated.with_updates(now, owner_notified_at=now)
-        else:
+        if not notified:
+            # There is no owner thread to deliver the decision request to:
+            # entering awaiting_owner would strand the customer waiting on an
+            # approval that can never arrive, so the pick does not land and
+            # the slots stay on the table for a retry.
             logger.warning(
-                "booking request %s stored without an owner notice",
+                "booking request %s has no owner thread to notify",
                 updated.reference,
             )
+            reply = await self._reply(unit_of_work, conversation, OWNER_UNREACHABLE_REPLY, now)
+            return IntakeReply(conversation, reply, conversation.proposed_slots)
+        if customer_id is not None:
+            preferred = format_slot_label(slot.start)
+            await unit_of_work.service_requests.add(
+                ServiceRequest(
+                    request_id=ServiceRequestId(uuid4()),
+                    business_id=conversation.business_id,
+                    customer_id=customer_id,
+                    message=collected.problem or "Booking request",
+                    preferred_dates=preferred,
+                    source=SERVICE_REQUEST_SOURCE_INTAKE,
+                    created_at=now,
+                )
+            )
+        updated = updated.with_updates(now, owner_notified_at=now)
         await unit_of_work.intake_conversations.save(updated)
         reply = slot_confirmed_reply(slot)
         await self._append(unit_of_work, updated, IntakeMessageRole.AGENT, reply, now)
@@ -568,6 +577,7 @@ class ArrangeIntakeBookingService:
                 invitee_phone=collected.phone,
                 address=collected.address,
                 details=collected.problem,
+                reference=conversation.reference,
             )
             # A webhook-recorded event also counts as attempted: the provider
             # lookup below finds it, so a re-approved re-route reconciles
@@ -639,7 +649,10 @@ class ArrangeIntakeBookingService:
                     )
                 )
             updated = conversation.with_updates(
-                now, booking_kind=result.kind.value, booking_link=result.link
+                now,
+                booking_kind=result.kind.value,
+                booking_link=result.link,
+                booking_event_type_uri=result.event_type_uri,
             )
             await unit_of_work.intake_conversations.save(updated)
             await unit_of_work.commit()
@@ -883,14 +896,15 @@ class IntakeBookingEventService:
 
     async def handle(self, event: IntakeBookingEvent) -> IntakeBookingEventOutcome:
         async with self._unit_of_work_factory() as unit_of_work:
-            conversation = await unit_of_work.intake_conversations.lock_latest_by_invitee_email(
-                event.business_id, event.invitee_email
-            )
+            conversation = await self._match(unit_of_work, event)
             if conversation is None:
                 return IntakeBookingEventOutcome(IntakeBookingEventResult.IGNORED)
             recorded = conversation.booked_event_uri
             if event.kind is BookingEventKind.CREATED:
-                if recorded == event.event_uri:
+                if recorded is not None:
+                    # Redelivery or a second event for the same request:
+                    # overwriting the recorded URI could orphan the event a
+                    # decline is meant to cancel.
                     return IntakeBookingEventOutcome(IntakeBookingEventResult.IGNORED)
             elif recorded != event.event_uri:
                 # A cancellation only closes the request when it names the
@@ -903,6 +917,52 @@ class IntakeBookingEventService:
                 result = await self._created(unit_of_work, conversation, event, now)
             await unit_of_work.commit()
             return IntakeBookingEventOutcome(result)
+
+    async def _match(
+        self, unit_of_work: UnitOfWork, event: IntakeBookingEvent
+    ) -> IntakeConversation | None:
+        """Bind a webhook event to the request it belongs to — or reject it.
+
+        Events carrying the reference our scheduling link embedded
+        (utm_content) bind directly. Without one, an invitee e-mail match is
+        only accepted when nothing rules the event out: a recorded booking
+        event type that differs, or a start more than a day away from the
+        requested slot (the link preselects the day, so a legitimate
+        re-booked time always lands within it). E-mail alone cannot prove an
+        unrelated appointment is this request's, and acting on one could
+        later cancel an event we never created.
+        """
+
+        if event.reference is not None:
+            return await unit_of_work.intake_conversations.lock_by_reference(
+                event.business_id, event.reference
+            )
+        conversation = await unit_of_work.intake_conversations.lock_latest_by_invitee_email(
+            event.business_id, event.invitee_email
+        )
+        if conversation is None or event.kind is not BookingEventKind.CREATED:
+            return conversation
+        expected_type = conversation.booking_event_type_uri
+        if (
+            expected_type is not None
+            and event.event_type_uri is not None
+            and event.event_type_uri != expected_type
+        ):
+            logger.info(
+                "ignoring calendly event %s for %s: event type is not the booked kind",
+                event.event_uri,
+                conversation.reference,
+            )
+            return None
+        requested = conversation.requested_slot_start
+        if requested is not None and abs(event.start - requested) > timedelta(days=1):
+            logger.info(
+                "ignoring calendly event %s for %s: start is not on the requested day",
+                event.event_uri,
+                conversation.reference,
+            )
+            return None
+        return conversation
 
     async def _created(
         self,
@@ -998,7 +1058,7 @@ class IntakeBookingEventService:
         notified = await enqueue_intake_owner_notice(
             unit_of_work,
             conversation.business_id,
-            correlation_id=f"intake_booking_event:{event.event_uri}",
+            correlation_id=f"intake_booking_event:{event.kind.value}:{event.event_uri}",
             text=text,
         )
         if not notified:

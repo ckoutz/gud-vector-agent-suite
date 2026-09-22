@@ -61,6 +61,8 @@ def _payload(
     email: str = EMAIL,
     user_uri: str = USER_URI,
     event_uri: str = EVENT_URI,
+    event_type: str | None = None,
+    reference: str | None = None,
     start: datetime,
     end: datetime | None = None,
 ) -> bytes:
@@ -75,12 +77,12 @@ def _payload(
     }
     if end is not None:
         scheduled["end_time"] = end.isoformat().replace("+00:00", "Z")
-    return json.dumps(
-        {
-            "event": event,
-            "payload": {"email": email, "scheduled_event": scheduled},
-        }
-    ).encode()
+    if event_type is not None:
+        scheduled["event_type"] = event_type
+    payload: dict[str, object] = {"email": email, "scheduled_event": scheduled}
+    if reference is not None:
+        payload["tracking"] = {"utm_content": reference}
+    return json.dumps({"event": event, "payload": payload}).encode()
 
 
 async def _deliver(
@@ -380,3 +382,225 @@ async def test_webhook_route_verifies_the_signature(
         )
         assert ok.status_code == 200
         assert ok.json()["status"] == "ignored"  # no conversation for that email
+
+
+@pytest.mark.asyncio
+async def test_unrelated_event_on_another_day_is_ignored(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An invitee e-mail match alone is not enough: an event days away from
+    the requested slot is not this request's booking."""
+    availability = AvailabilityFake(result=BookingResult(kind=BookingKind.LINK, link="https://x"))
+    application, _owner, business_id, _reference = await reach_awaiting_owner(
+        session_factory, availability=availability
+    )
+    await application.ingest_service.ingest(
+        inbound(business_id, f"approve booking {_reference}", message_key="approve-day")
+    )
+    for _ in range(5):
+        await immediate_worker(application).drain()
+    row = await conversation_row(session_factory, business_id)
+    assert row.requested_slot_start is not None
+    unrelated = row.requested_slot_start + timedelta(days=3)
+    result = await _deliver(
+        application,
+        business_id,
+        _payload(
+            event_uri="https://api.calendly.com/scheduled_events/OTHER",
+            start=unrelated,
+            end=unrelated + timedelta(hours=1),
+        ),
+    )
+    assert result is CalendlyIngressResult.IGNORED
+    row = await conversation_row(session_factory, business_id)
+    assert row.state == "approved" and row.booked_event_uri is None
+
+
+@pytest.mark.asyncio
+async def test_event_for_a_different_event_type_is_ignored(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The arrange step records the booked event type; an event for another
+    kind is not this request."""
+    availability = AvailabilityFake(
+        result=BookingResult(
+            kind=BookingKind.LINK,
+            link="https://x",
+            event_type_uri="https://api.calendly.com/event_types/OURS",
+        )
+    )
+    application, _owner, business_id, reference = await reach_awaiting_owner(
+        session_factory, availability=availability
+    )
+    await application.ingest_service.ingest(
+        inbound(business_id, f"approve booking {reference}", message_key="approve-et")
+    )
+    for _ in range(5):
+        await immediate_worker(application).drain()
+    row = await conversation_row(session_factory, business_id)
+    assert row.booking_event_type_uri == "https://api.calendly.com/event_types/OURS"
+    assert row.requested_slot_start is not None
+
+    result = await _deliver(
+        application,
+        business_id,
+        _payload(
+            start=row.requested_slot_start,
+            end=row.requested_slot_start + timedelta(hours=1),
+            event_type="https://api.calendly.com/event_types/OTHER",
+        ),
+    )
+    assert result is CalendlyIngressResult.IGNORED
+    row = await conversation_row(session_factory, business_id)
+    assert row.booked_event_uri is None
+
+
+@pytest.mark.asyncio
+async def test_reference_bound_event_matches_without_the_email(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The scheduling link carries the request reference as utm_content; an
+    event echoing it binds to the request directly."""
+    availability = AvailabilityFake(result=BookingResult(kind=BookingKind.LINK, link="https://x"))
+    application, _owner, business_id, reference = await reach_awaiting_owner(
+        session_factory, availability=availability
+    )
+    row = await conversation_row(session_factory, business_id)
+    assert row.requested_slot_start is not None
+    result = await _deliver(
+        application,
+        business_id,
+        _payload(
+            email="different-invitee@example.com",
+            reference=reference,
+            start=row.requested_slot_start,
+            end=row.requested_slot_start + timedelta(hours=1),
+        ),
+    )
+    assert result is CalendlyIngressResult.CONFIRMED
+    row = await conversation_row(session_factory, business_id)
+    assert row.booked_event_uri == EVENT_URI and row.booking_kind == "booked"
+
+
+@pytest.mark.asyncio
+async def test_a_second_created_event_does_not_overwrite_the_first(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    availability = AvailabilityFake(result=BookingResult(kind=BookingKind.LINK, link="https://x"))
+    application, _owner, business_id, _reference = await reach_awaiting_owner(
+        session_factory, availability=availability
+    )
+    row = await conversation_row(session_factory, business_id)
+    assert row.requested_slot_start is not None
+    picked = row.requested_slot_start + timedelta(hours=3)
+    first = await _deliver(
+        application,
+        business_id,
+        _payload(start=picked, end=picked + timedelta(hours=1)),
+    )
+    assert first is CalendlyIngressResult.REROUTED
+    second = await _deliver(
+        application,
+        business_id,
+        _payload(
+            event_uri="https://api.calendly.com/scheduled_events/EVENT2",
+            start=picked + timedelta(hours=2),
+            end=picked + timedelta(hours=3),
+        ),
+    )
+    assert second is CalendlyIngressResult.IGNORED
+    row = await conversation_row(session_factory, business_id)
+    assert row.booked_event_uri == EVENT_URI
+
+
+@pytest.mark.asyncio
+async def test_cancel_notice_reaches_the_owner_after_confirmation(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Creation and cancellation notices dedupe separately: the owner who
+    saw the confirmation also sees the cancellation."""
+    availability = AvailabilityFake()
+    application, owner, business_id, reference = await reach_awaiting_owner(
+        session_factory, availability=availability
+    )
+    await application.ingest_service.ingest(
+        inbound(business_id, f"approve booking {reference}", message_key="approve-cx")
+    )
+    for _ in range(5):
+        await immediate_worker(application).drain()
+    row = await conversation_row(session_factory, business_id)
+    assert row.requested_slot_start is not None
+    created = await _deliver(
+        application,
+        business_id,
+        _payload(start=row.requested_slot_start, end=row.requested_slot_start + timedelta(hours=1)),
+    )
+    assert created is CalendlyIngressResult.CONFIRMED
+    canceled = await _deliver(
+        application,
+        business_id,
+        _payload(
+            event="invitee.canceled",
+            start=row.requested_slot_start,
+            end=row.requested_slot_start + timedelta(hours=1),
+        ),
+    )
+    assert canceled is CalendlyIngressResult.CANCELED
+    for _ in range(3):
+        await immediate_worker(application).drain()
+    notices = [t for t in texts_of(owner, "Booking") if "was canceled on Calendly" in t]
+    assert notices, "the cancellation notice must not be swallowed by the creation notice"
+
+
+@pytest.mark.asyncio
+async def test_slot_pick_without_an_owner_thread_stays_proposing(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """No owner inbound means no notice can land — the pick must not strand
+    the customer in awaiting_owner."""
+    from gvas.domain.intake import IntakeTurn
+    from test_intake_booking import (
+        PUBLIC_KEY,
+        IntakeAgentFake,
+        collected_turn,
+        http_client,
+        slot,
+    )
+
+    business_id = await intake_business(session_factory)
+    availability = AvailabilityFake()
+    offered = slot(datetime.now(UTC))
+    availability.slots = (offered,)
+    agent = IntakeAgentFake(
+        [
+            collected_turn(name="Jane Doe", email=EMAIL, problem="roof leak"),
+            collected_turn(address="1 Main St"),
+            IntakeTurn(reply="Great, here are openings.", ready_for_slots=True),
+        ]
+    )
+    application, _owner = intake_app(session_factory, agent=agent, availability=availability)
+
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        assert created.status_code == 201
+        token = created.json()["conversationToken"]
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {token}"}
+        for message in ("roof leak at my place", "1 Main St", "what times do you have?"):
+            response = await client.post(
+                f"/v1/intake/conversations/{conversation_id}/messages",
+                json={"message": message},
+                headers=headers,
+            )
+        assert response.json()["state"] == "proposing_slots"
+        picked = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": f"slot:{offered.start.isoformat()}"},
+            headers=headers,
+        )
+        assert picked.status_code == 200
+        assert picked.json()["state"] == "proposing_slots"
+        assert "couldn't reach the owner" in picked.json()["reply"]
+
+    row = await conversation_row(session_factory, business_id)
+    assert row.state == "proposing_slots"

@@ -189,6 +189,9 @@ class IntakeConversation(IntakeModel):
     # The provider event URI a webhook confirmed exists for this request.
     # Doubles as the processed-event marker so redelivered webhooks no-op.
     booked_event_uri: str | None = None
+    # The provider event type the arrange step booked on; webhooks for other
+    # event types are not this request and are ignored.
+    booking_event_type_uri: str | None = None
     decision_reason: str | None = None
     decision_at: datetime | None = None
     owner_notified_at: datetime | None = None
@@ -623,6 +626,9 @@ class BookingRequest(IntakeModel):
     invitee_phone: str | None = None
     address: str | None = None
     details: str | None = None
+    # The owner-facing request reference, carried into the scheduling link so
+    # the resulting webhook can be bound back to this exact request.
+    reference: str | None = None
 
     _aware_start = field_validator("slot_start")(_aware)
     _aware_end = field_validator("slot_end")(_aware)
@@ -631,6 +637,9 @@ class BookingRequest(IntakeModel):
 class BookingResult(IntakeModel):
     kind: BookingKind
     link: str | None = None
+    # The provider event type used for the booking, when the adapter knows
+    # it — lets webhooks confirm they belong to this request.
+    event_type_uri: str | None = None
 
 
 class BookingEventKind(StrEnum):
@@ -651,5 +660,9 @@ class IntakeBookingEvent(IntakeModel):
     event_uri: str = Field(min_length=1)
     start: datetime
     end: datetime | None = None
+    # The provider's event type and the request reference the booking link
+    # carried (utm tracking), when the provider reports them.
+    event_type_uri: str | None = None
+    reference: str | None = None
 
     _aware_event_start = field_validator("start")(_aware)

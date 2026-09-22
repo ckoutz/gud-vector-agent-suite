@@ -168,8 +168,11 @@ keeps the event (the arrange command reconciles through the same
 `find_booking` lookup, so nothing is double-booked) and
 `decline booking <ref>` cancels it (`POST /scheduled_events/{uuid}/cancellation`).
 `invitee.canceled` for the recorded event closes the request and notifies the
-owner. Unmatched invitees, unbound Calendly users and other event types are
-acknowledged and dropped.
+owner. Events bind to a request first by the reference the scheduling link
+embeds as `utm_content`, else by invitee e-mail constrained to the recorded
+event type and a start within a day of the requested slot — anything else
+(an unrelated appointment the same customer happens to book) is acknowledged
+and dropped, as are unbound Calendly users and other event types.
 
 The subscription is created once per environment, out-of-band:
 

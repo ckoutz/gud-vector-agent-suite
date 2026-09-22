@@ -77,6 +77,7 @@ class _AvailableTimesResponse(_Model):
 class _ScheduledEvent(_Model):
     status: str
     start_time: str
+    event_type: str | None = None
 
 
 class _ScheduledEventsResponse(_Model):
@@ -137,12 +138,18 @@ class CalendlyAvailability:
         return tuple(openings)
 
     async def find_booking(self, request: BookingRequest) -> BookingResult | None:
-        """Reconciliation after a crashed attempt: an active invitee event
-        for this email inside the requested window is the booking."""
+        """Reconciliation after a crashed attempt: the booking is an active
+        invitee event for this email at the exact requested start on the
+        business's event type — anything looser could claim an unrelated
+        appointment the same customer happens to hold."""
 
         user_uri = self._users.get(request.business_id)
         if user_uri is None:
             raise AvailabilityError("no calendly event type is configured")
+        spec = await self._event_type(request.business_id)
+        if spec is None:
+            raise AvailabilityError("no calendly event type is configured")
+        event_type_uri, _timezone, _minutes = spec
         payload = await self._get(
             "/scheduled_events",
             {
@@ -160,12 +167,14 @@ class CalendlyAvailability:
         for event in events.collection:
             if event.status != "active":
                 continue
+            if event.event_type is not None and event.event_type != event_type_uri:
+                continue
             try:
                 start = _parse_calendly_time(event.start_time)
             except ValueError:
                 continue
-            if request.slot_start <= start <= request.slot_end:
-                return BookingResult(kind=BookingKind.BOOKED)
+            if start == request.slot_start:
+                return BookingResult(kind=BookingKind.BOOKED, event_type_uri=event_type_uri)
         return None
 
     async def cancel_booking(self, business_id: BusinessId, event_uri: str) -> None:
@@ -199,12 +208,13 @@ class CalendlyAvailability:
         event_type, timezone, _minutes = spec
         try:
             await self._create_invitee(event_type, request, timezone)
-            return BookingResult(kind=BookingKind.BOOKED)
+            return BookingResult(kind=BookingKind.BOOKED, event_type_uri=event_type)
         except _DirectBookingRejectedError:
             link = await self._scheduling_link(event_type)
             return BookingResult(
                 kind=BookingKind.LINK,
                 link=_prefilled_link(link, request, timezone),
+                event_type_uri=event_type,
             )
 
     async def _event_type(self, business_id: BusinessId) -> tuple[str, str | None, int] | None:
@@ -391,5 +401,10 @@ def _prefilled_link(booking_url: str, request: BookingRequest, timezone: str | N
         "month": start.strftime("%Y-%m"),
         "date": start.strftime("%Y-%m-%d"),
     }
+    if request.reference:
+        # Calendly records the link's utm parameters on the invitee and echoes
+        # them back in the webhook payload's tracking block — the reference
+        # binds the confirmed event to this exact request.
+        params["utm_content"] = request.reference
     separator = "&" if "?" in booking_url else "?"
     return f"{booking_url}{separator}{urlencode(params)}"
