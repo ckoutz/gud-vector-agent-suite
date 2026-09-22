@@ -85,6 +85,9 @@ logger = logging.getLogger(__name__)
 
 UnitOfWorkFactory = Callable[[], UnitOfWork]
 SLOT_LOOKAHEAD_DAYS = 14
+# Calendly rejects a start_time that is not strictly in the future by the time
+# the request lands; a lead also keeps slots the customer cannot make out.
+SLOT_LEAD = timedelta(minutes=5)
 
 MESSAGE_LIMIT_REPLY = (
     "This conversation has reached its message limit — the owner will follow up with you directly."
@@ -433,8 +436,8 @@ class IntakeService:
     ) -> IntakeConversation | None:
         if self._availability is None:
             return None
-        start = now
-        end = now + timedelta(days=SLOT_LOOKAHEAD_DAYS)
+        start = now + SLOT_LEAD
+        end = start + timedelta(days=SLOT_LOOKAHEAD_DAYS)
         try:
             openings = await self._availability.available_slots(
                 conversation.business_id, start, end
