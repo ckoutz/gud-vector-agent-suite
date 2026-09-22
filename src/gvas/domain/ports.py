@@ -180,6 +180,15 @@ class AvailabilityPort(Protocol):
         """
         ...
 
+    async def booking_event_type_uri(self, business_id: BusinessId) -> str | None:
+        """The event type ``book`` would use for this business right now.
+
+        The arrange service resolves and persists this before the provider
+        call so a retried attempt still targets the type the original call
+        used — otherwise a changed first-active type could double-book.
+        """
+        ...
+
     async def cancel_booking(self, business_id: BusinessId, event_uri: str) -> None:
         """Cancel an existing calendar event (a declined customer pick).
 

@@ -629,6 +629,10 @@ class BookingRequest(IntakeModel):
     # The owner-facing request reference, carried into the scheduling link so
     # the resulting webhook can be bound back to this exact request.
     reference: str | None = None
+    # The provider event type pinned when the attempt marker was persisted —
+    # a retried attempt books and reconciles against the type the original
+    # call used, not whatever is currently first active.
+    event_type_uri: str | None = None
 
     _aware_start = field_validator("slot_start")(_aware)
     _aware_end = field_validator("slot_end")(_aware)

@@ -146,10 +146,14 @@ class CalendlyAvailability:
         user_uri = self._users.get(request.business_id)
         if user_uri is None:
             raise AvailabilityError("no calendly event type is configured")
-        spec = await self._event_type(request.business_id)
-        if spec is None:
-            raise AvailabilityError("no calendly event type is configured")
-        event_type_uri, _timezone, _minutes = spec
+        # A pinned type wins: a retried attempt must match the event the
+        # original call created, even if the first active type has changed.
+        event_type_uri = request.event_type_uri
+        if event_type_uri is None:
+            spec = await self._event_type(request.business_id)
+            if spec is None:
+                raise AvailabilityError("no calendly event type is configured")
+            event_type_uri = spec[0]
         payload = await self._get(
             "/scheduled_events",
             {
@@ -205,7 +209,8 @@ class CalendlyAvailability:
         spec = await self._event_type(request.business_id)
         if spec is None:
             raise AvailabilityError("no calendly event type is configured")
-        event_type, timezone, _minutes = spec
+        _resolved_type, timezone, _minutes = spec
+        event_type = request.event_type_uri or _resolved_type
         try:
             await self._create_invitee(event_type, request, timezone)
             return BookingResult(kind=BookingKind.BOOKED, event_type_uri=event_type)
@@ -216,6 +221,12 @@ class CalendlyAvailability:
                 link=_prefilled_link(link, request, timezone),
                 event_type_uri=event_type,
             )
+
+    async def booking_event_type_uri(self, business_id: BusinessId) -> str | None:
+        spec = await self._event_type(business_id)
+        if spec is None:
+            raise AvailabilityError("no calendly event type is configured")
+        return spec[0]
 
     async def _event_type(self, business_id: BusinessId) -> tuple[str, str | None, int] | None:
         user_uri = self._users.get(business_id)

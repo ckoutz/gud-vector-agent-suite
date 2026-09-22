@@ -578,6 +578,7 @@ class ArrangeIntakeBookingService:
                 address=collected.address,
                 details=collected.problem,
                 reference=conversation.reference,
+                event_type_uri=conversation.booking_event_type_uri,
             )
             # A webhook-recorded event also counts as attempted: the provider
             # lookup below finds it, so a re-approved re-route reconciles
@@ -587,11 +588,18 @@ class ArrangeIntakeBookingService:
                 or conversation.booked_event_uri is not None
             )
             if not attempted:
-                # Persist the attempt before the provider call: if the process
-                # dies after ``book`` succeeded, the retried command sees the
-                # marker and reconciles instead of booking twice.
+                # Persist the attempt and the event type book() will use
+                # before the provider call: if the process dies after ``book``
+                # succeeded, the retried command sees the marker and
+                # reconciles against the same type instead of booking twice.
+                event_type_uri = await self._availability.booking_event_type_uri(business_id)
+                request = request.model_copy(update={"event_type_uri": event_type_uri})
                 await unit_of_work.intake_conversations.save(
-                    conversation.with_updates(self._now(), booking_attempted_at=self._now())
+                    conversation.with_updates(
+                        self._now(),
+                        booking_attempted_at=self._now(),
+                        booking_event_type_uri=event_type_uri,
+                    )
                 )
                 await unit_of_work.commit()
 
@@ -652,7 +660,9 @@ class ArrangeIntakeBookingService:
                 now,
                 booking_kind=result.kind.value,
                 booking_link=result.link,
-                booking_event_type_uri=result.event_type_uri,
+                booking_event_type_uri=(
+                    result.event_type_uri or conversation.booking_event_type_uri
+                ),
             )
             await unit_of_work.intake_conversations.save(updated)
             await unit_of_work.commit()
