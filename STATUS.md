@@ -1,6 +1,6 @@
 # Güd Vector — Project Status Dashboard
 
-**Last updated:** 2026-09-22 21:55 UTC (auto-refreshed by the Devin dashboard automation)
+**Last updated:** 2026-09-22 21:58 UTC (auto-refreshed by the Devin dashboard automation)
 
 ## Where we are
 
@@ -38,7 +38,7 @@ No open PRs in gud-vector-agent-suite. No stacked PRs.
 | gudvector-site main | `c1c340a` 2026-09-22 21:37 UTC — Merge #6 (sms-opt-in contact fix) |
 | gudvector-site.vercel.app `/` | 200 in 0.42 s |
 | gudvector-site.vercel.app `/q/nonexistent-token` | 200 "couldn't find" → wired to GVAS |
-| gudvector-site.vercel.app `/portal` | 200; `/book` 404 (verify latest Vercel deploy of #5) |
+| gudvector-site.vercel.app `/portal` | 200; `/book` 404 (verify latest Vercel deploy of #5; `/contact` 200, `/q/*` 200) |
 | gudvector.com | **Back online**: resolves (216.198.79.1), 200, served by Vercel — but `/contact`, `/q/*` 404 and `/portal` 307 → old deployment/project. Point the domain at the current `gudvector-site` project. |
 
 ## Integrations
