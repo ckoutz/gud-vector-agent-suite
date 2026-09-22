@@ -75,6 +75,8 @@ class CalendlyWebhookIngress:
                 event_uri=event.event_uri,
                 start=event.start,
                 end=event.end,
+                event_type_uri=event.event_type_uri,
+                reference=event.reference,
             )
         )
         return CalendlyIngressOutcome(CalendlyIngressResult(outcome.result.value))

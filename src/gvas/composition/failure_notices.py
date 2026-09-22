@@ -29,6 +29,7 @@ from gvas.domain.field_notes import (
 from gvas.domain.identifiers import BusinessId, ConversationId, MessageId, QuoteId
 from gvas.domain.intake import (
     INTAKE_BOOKING_ARRANGE_COMMAND_TYPE,
+    INTAKE_BOOKING_CANCEL_COMMAND_TYPE,
     INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
     INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
 )
@@ -150,12 +151,17 @@ FAILURE_GUIDANCE: Final[dict[str, tuple[str, str]]] = {
         "A text to a website-booking customer could not be sent.",
         "Text the customer yourself.",
     ),
+    INTAKE_BOOKING_CANCEL_COMMAND_TYPE: (
+        "The calendar event on a declined website booking could not be canceled.",
+        "The event may still be on the calendar — cancel it in Calendly yourself.",
+    ),
 }
 
 
 INTAKE_COMMAND_TYPES: Final = frozenset(
     {
         INTAKE_BOOKING_ARRANGE_COMMAND_TYPE,
+        INTAKE_BOOKING_CANCEL_COMMAND_TYPE,
         INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
         INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
     }

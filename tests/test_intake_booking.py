@@ -140,6 +140,9 @@ class AvailabilityFake:
         self.find_calls.append(request)
         return self._found
 
+    async def booking_event_type_uri(self, business_id: BusinessId) -> str | None:
+        return self._result.event_type_uri or "cal://event-type"
+
     async def book(self, request: BookingRequest) -> BookingResult:
         self.book_calls.append(request)
         if self._error is not None:
@@ -592,9 +595,11 @@ async def test_owner_approve_books_directly_and_emails_customer(
     replies = texts_of(owner, "Approved booking")
     assert replies and reference in replies[0]
     assert availability.book_calls, "approval must reach the availability port"
+    assert availability.book_calls[0].event_type_uri == "cal://event-type"
     row = await conversation_row(session_factory, business_id)
     assert row.state == "approved"
     assert row.booking_kind == "booked"
+    assert row.booking_event_type_uri == "cal://event-type"
 
     email_commands = await commands_of(
         session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE
@@ -807,7 +812,10 @@ async def test_retried_booking_reconciles_instead_of_double_booking(
         await session.execute(
             update(IntakeRow)
             .where(IntakeRow.business_id == business_id)
-            .values(booking_attempted_at=NOW)
+            .values(
+                booking_attempted_at=NOW,
+                booking_event_type_uri="cal://original-type",
+            )
         )
         await session.commit()
     await application.ingest_service.ingest(
@@ -817,6 +825,7 @@ async def test_retried_booking_reconciles_instead_of_double_booking(
         await immediate_worker(application).drain()
 
     assert availability.find_calls, "a marked attempt reconciles before booking"
+    assert availability.find_calls[0].event_type_uri == "cal://original-type"
     assert availability.book_calls == [], "the recovered booking is not created twice"
     row = await conversation_row(session_factory, business_id)
     assert row.booking_kind == "booked"

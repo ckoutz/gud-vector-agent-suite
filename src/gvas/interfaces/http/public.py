@@ -96,6 +96,7 @@ def intake_reply_payload(result: IntakeReply) -> dict[str, object]:
         "reply": result.reply,
         "slots": _slot_payloads(conversation),
         "summary": conversation.collected.summary(),
+        "bookingKind": conversation.booking_kind,
     }
 
 
@@ -114,6 +115,10 @@ def intake_view_payload(
         ],
         "slots": _slot_payloads(conversation),
         "summary": conversation.collected.summary(),
+        # "booked" once the calendar event is confirmed, "link" while the
+        # customer's confirmation link is still outstanding, else null — the
+        # widget shows booked vs awaiting-confirmation distinctly.
+        "bookingKind": conversation.booking_kind,
     }
 
 
