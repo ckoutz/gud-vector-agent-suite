@@ -9,7 +9,9 @@ from gvas.domain.appointments import (
     AppointmentLookupPort,
     surrounding_days_window,
 )
+from gvas.domain.customer_linking import link_quote_customer
 from gvas.domain.enums import (
+    BillingInterval,
     DeliveryStatus,
     QuoteSendAction,
     QuoteStatus,
@@ -62,6 +64,7 @@ from gvas.domain.workflows import WorkflowContext, WorkflowResult
 logger = logging.getLogger(__name__)
 
 FREE_TEXT_DRAFT_NOTICE = "Drafted from your message — check items before approving."
+BILLING_LABELS = {BillingInterval.MONTH: "monthly", BillingInterval.YEAR: "yearly"}
 CUSTOMER_LOOKUP_UNAVAILABLE = (
     "The appointment calendar could not be reached. "
     "Please send the quote again with a customer: <email> line this time."
@@ -200,6 +203,7 @@ class QuoteWorkflowHandler:
         if command == "approve":
             approved = quote.approve(message.message_key, message.received_at)
             async with self._unit_of_work_factory() as unit_of_work:
+                approved, _ = await link_quote_customer(unit_of_work, approved, message.received_at)
                 await unit_of_work.quotes.save(approved, expected_version=quote.version)
                 await unit_of_work.outbox.enqueue(quote_delivery_command(approved))
                 await unit_of_work.commit()
@@ -396,6 +400,8 @@ class DeliverApprovedQuoteService:
         if business is not None and business.site_url and quote.claim_token is None:
             # Quotes approved before claim tokens existed get one on delivery.
             quote = await self._issue_claim_token(quote)
+        if quote.customer_id is None:
+            quote = await self._link_customer(quote)
         quote_url = None
         business_name = None
         if business is not None and business.site_url:
@@ -454,6 +460,14 @@ class DeliverApprovedQuoteService:
             await unit_of_work.quotes.save(issued, expected_version=quote.version)
             await unit_of_work.commit()
         return issued
+
+    async def _link_customer(self, quote: Quote) -> Quote:
+        async with self._unit_of_work_factory() as unit_of_work:
+            linked, _ = await link_quote_customer(unit_of_work, quote, quote.updated_at)
+            if linked is not quote:
+                await unit_of_work.quotes.save(linked, expected_version=quote.version)
+            await unit_of_work.commit()
+        return linked
 
     def _will_text(self, quote: Quote) -> bool:
         if not self._texts_customers or quote.draft is None or quote.delivery_receipt is None:
@@ -703,6 +717,8 @@ def _owner_quote_body(quote: Quote) -> str:
         for item in draft.line_items
     )
     lines.append(f"Total: {format_money(draft.total_minor, draft.currency)}")
+    if draft.interval is not None:
+        lines.append(f"Billing: {BILLING_LABELS[draft.interval]}")
     if draft.owner_note:
         lines.append(f"Note: {draft.owner_note}")
     if draft.drafted_from_free_text:
@@ -739,6 +755,8 @@ def _customer_quote_body(draft: QuoteDraftProposal) -> str:
         for item in draft.line_items
     ]
     lines.append(f"Total: {format_money(draft.total_minor, draft.currency)}")
+    if draft.interval is not None:
+        lines.append(f"Billed {BILLING_LABELS[draft.interval]}")
     if draft.owner_note:
         lines.append(draft.owner_note)
     return "\n".join(lines)

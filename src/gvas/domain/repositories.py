@@ -7,6 +7,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from gvas.domain.customers import (
+    CustomerRepository,
+    PortalLoginTokenRepository,
+    PortalSessionRepository,
+    ServiceRequestRepository,
+)
 from gvas.domain.enums import DeliveryStatus, WorkflowRunStatus
 from gvas.domain.identifiers import (
     BusinessId,
@@ -27,7 +33,11 @@ from gvas.domain.messages import (
     OutboundOwnerMessage,
 )
 from gvas.domain.outbox import OutboxCommand, OutboxRecord
-from gvas.domain.payments import PaymentEventRepository, QuotePaymentRepository
+from gvas.domain.payments import (
+    PaymentEventRepository,
+    QuotePaymentRepository,
+    QuoteSubscriptionRepository,
+)
 from gvas.domain.quotes import QuoteRepository
 
 
@@ -288,6 +298,11 @@ class UnitOfWork(Protocol):
     quotes: QuoteRepository
     quote_payments: QuotePaymentRepository
     payment_events: PaymentEventRepository
+    customers: CustomerRepository
+    portal_login_tokens: PortalLoginTokenRepository
+    portal_sessions: PortalSessionRepository
+    service_requests: ServiceRequestRepository
+    quote_subscriptions: QuoteSubscriptionRepository
 
     async def __aenter__(self) -> "UnitOfWork": ...
 

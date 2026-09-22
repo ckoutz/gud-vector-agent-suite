@@ -11,9 +11,13 @@ no `business_id`, no database ids, no phone numbers. Unknown or invalid tokens
 return a generic `404 {"detail": "not found"}`; claim tokens are never stored
 in clear server-side (only a SHA-256 hash) and are looked up in constant time.
 
-CORS: `GET`/`POST` only, for the set of configured business `site_url`s plus
-`GVAS_PUBLIC_CORS_EXTRA_ORIGINS`. Client-site routes are rate-limited per
-source IP.
+CORS: `GET`/`POST`/`DELETE` (with an `Authorization` header) for the set of
+configured business `site_url`s plus `GVAS_PUBLIC_CORS_EXTRA_ORIGINS`.
+Client-site routes are rate-limited per source IP.
+
+The customer-portal routes (`/v1/portal/*`, second half of this document) are
+the exception to "unauthenticated": they carry a bearer session token obtained
+through a magic-link email.
 
 ## `GET /v1/quotes/{claim_token}`
 
@@ -39,7 +43,9 @@ Renders the quote. The first successful fetch marks the customer-facing status
     "currency": "USD",
     "note": "Includes one air sample.",
     "createdAt": "2026-01-02T15:04:05Z",
-    "approvedAt": "2026-01-02T15:10:00Z"
+    "approvedAt": "2026-01-02T15:10:00Z",
+    "billing": "one_time",
+    "interval": null
   }
 }
 ```
@@ -47,6 +53,9 @@ Renders the quote. The first successful fetch marks the customer-facing status
 - `quote.id` is an opaque public id (`gvq_…`) — never the row id; use it only
   for display and client-side reference.
 - `quote.status` progresses `viewed` → `accepted` → `paid`, or to `declined`.
+- `quote.billing` is `"one_time"` or `"recurring"`; `quote.interval` is `null`
+  for one-time quotes and `"month"` or `"year"` for recurring ones (the
+  amounts are then per interval).
 - `note` may be `null` when the owner left the quote note empty.
 - `items[].amountCents` is the line total; `subtotalCents`/`totalCents` are the
   customer's amounts (total is what checkout collects).
@@ -61,8 +70,10 @@ Creates (or returns the existing) Stripe Checkout Session for the quote:
 {"checkoutUrl": "https://checkout.stripe.com/c/pay/cs_live_…"}
 ```
 
-Redirect the browser to `checkoutUrl`. The session is `mode=payment`, currency
-`usd`, with `success_url` = `<site_url>/q/<token>?paid=1` and `cancel_url` =
+Redirect the browser to `checkoutUrl`. The session is `mode=payment` for a
+one-time quote and `mode=subscription` for a recurring one (the customer is
+then also a Stripe Customer, reused across their quotes), currency `usd`,
+with `success_url` = `<site_url>/q/<token>?paid=1` and `cancel_url` =
 `<site_url>/q/<token>` — so the page should treat `?paid=1` as "payment is
 being confirmed" and re-fetch the quote: the authoritative `paid` status
 arrives via the Stripe webhook, usually within seconds.
@@ -99,7 +110,9 @@ limited.
 
 Subscribed events: `checkout.session.completed`,
 `checkout.session.async_payment_succeeded`,
-`checkout.session.async_payment_failed`. Signature-verified with
+`checkout.session.async_payment_failed`, `invoice.paid`,
+`invoice.payment_failed`, `customer.subscription.updated`,
+`customer.subscription.deleted`. Signature-verified with
 `Stripe-Signature` (5-minute tolerance). A `completed` event settles the quote
 only when the session's `payment_status` is `paid`/`no_payment_required`; an
 unsettled completion pins the payment attempt as `pending` (it can no longer
@@ -111,3 +124,162 @@ Replays are answered `200` `{"status": "ignored"}` without redoing work; an
 event naming a checkout session not yet recorded is answered `503` so Stripe
 retries it. An unpaid session that expires past its `expires_at` is retired
 and the next `accept` opens a fresh one.
+
+For a `mode=subscription` session, `checkout.session.completed` marks the quote
+`paid` and records the subscription (`GET /v1/portal/subscriptions`). The
+invoice and subscription events update that record — status,
+`currentPeriodEnd`, `cancelAtPeriodEnd` — and notify the owner
+("Subscription for <customer> renewed $X" / "payment failed" / "cancelled").
+Events about a subscription GVAS never sold are recorded and ignored (`200`);
+an event that arrives before the completion of one of ours is answered `503`
+for a retry.
+
+# Customer portal API — frontend contract
+
+The portal lets a customer of one business sign in with a magic link and see
+that business's quotes and subscriptions. Identity is `(business, email)`: the
+same address at two businesses is two separate customers with two separate
+logins, and nothing in a portal response reaches across a business or another
+customer. A customer exists once a quote has been approved for their address
+(older quotes are linked the first time they sign in — no backfill needed).
+
+Tokens: login tokens and session tokens are 32 random bytes
+(`secrets.token_urlsafe`), stored only as SHA-256 hashes and compared in
+constant time. Login tokens are single-use and live 15 minutes; sessions live
+30 days and can be revoked. Every failure of the session routes is the same
+generic `401 {"detail": "unauthorized"}` — unknown, expired, used, and revoked
+are indistinguishable.
+
+## `POST /v1/businesses/{public_key}/portal/login`
+
+```json
+{"email": "jane@example.com"}
+```
+
+Always answers `202 {}` — whether or not the address is a customer — so an
+address cannot be probed. The email is lowercased and trimmed. When it is a
+customer of the business, an email "Sign in to your <displayName> account"
+is sent (through the same Resend outbox as quotes) with the link
+`<site_url>/portal/login?token=<raw>`; the frontend's `/portal/login` page
+reads `token` from the query and calls the route below.
+
+Errors: `429` rate limited — 5 requests per hour per client IP and per
+`(business, email)` (a `429` means the caller is throttled, not that the
+address exists) · `422` malformed body.
+
+## `POST /v1/portal/sessions`
+
+```json
+{"token": "<raw token from the link>"}
+```
+
+Exchanges the login token (once) for a session:
+
+```json
+{
+  "sessionToken": "…",
+  "customer": {"displayName": "Jane Doe", "email": "jane@example.com"},
+  "business": {"displayName": "Güd Vector", "siteUrl": "https://gudvector.com"}
+}
+```
+
+Keep `sessionToken` client-side (it is shown exactly once) and send it as
+`Authorization: Bearer <sessionToken>` on every route below.
+
+Errors: `401` bad, expired or already-used token · `429` rate limited.
+
+## `DELETE /v1/portal/sessions`
+
+Revokes the presented session. `204` with no body; `401` when the session is
+missing, unknown, expired or already revoked (same check as every other
+portal route).
+
+## `GET /v1/portal/me`
+
+```json
+{
+  "customer": {"displayName": "Jane Doe", "email": "jane@example.com", "phone": "+14155550100"},
+  "business": {
+    "displayName": "Güd Vector",
+    "siteUrl": "https://gudvector.com",
+    "calendlyUrl": "https://calendly.com/gudvector"
+  }
+}
+```
+
+`phone` and `calendlyUrl` may be `null`.
+
+## `GET /v1/portal/quotes`
+
+```json
+{
+  "quotes": [
+    {
+      "id": "gvq_0123456789abcdef0123456789abcdef",
+      "status": "paid",
+      "totalCents": 9900,
+      "currency": "USD",
+      "createdAt": "2026-01-02T15:04:05Z",
+      "approvedAt": "2026-01-02T15:10:00Z",
+      "claimToken": "…",
+      "billing": "recurring",
+      "interval": "month"
+    }
+  ]
+}
+```
+
+Only this customer's quotes at this business, newest first. `id` and `status`
+are the same values `GET /v1/quotes/{claim_token}` returns, so the two views
+line up; `claimToken` lets the portal link to the existing `/q/<claimToken>`
+page (and its accept/decline). `billing` is `"one_time"` or `"recurring"`,
+`interval` is `null`, `"month"` or `"year"`.
+
+## `GET /v1/portal/subscriptions`
+
+```json
+{
+  "subscriptions": [
+    {
+      "id": "6f1c…",
+      "quoteId": "gvq_0123456789abcdef0123456789abcdef",
+      "status": "active",
+      "interval": "month",
+      "amountCents": 9900,
+      "currency": "USD",
+      "currentPeriodEnd": "2026-02-02T15:10:00Z",
+      "cancelAtPeriodEnd": false
+    }
+  ]
+}
+```
+
+`status` is Stripe's subscription status as last reported by webhook
+(`active`, `past_due`, `canceled`, …); `currentPeriodEnd` may be `null` until
+the first invoice event. No Stripe ids are exposed.
+
+## `POST /v1/portal/billing-portal`
+
+```json
+{"url": "https://billing.stripe.com/p/session/…"}
+```
+
+Opens a Stripe Billing Portal session for the customer (manage payment method,
+cancel) with `return_url` = `<site_url>/portal`. Redirect the browser to `url`.
+
+Errors: `404` the customer has no Stripe customer yet (never accepted a
+recurring quote) · `502` Stripe unavailable · `401` · `429`.
+
+## `POST /v1/portal/requests`
+
+```json
+{"message": "Can you come back for the crawlspace next month?", "preferredDates": "any weekday after the 10th"}
+```
+
+`message` is required, at most 2000 characters; `preferredDates` is an optional
+free-text string. Answers `202 {}`: the request is stored (`service_requests`,
+`status=new`, `source=portal`) and the owner is told "New service request from
+<name> (<email>): <message>" in the conversation (Slack thread or SMS) where
+the customer's most recent quote was approved.
+
+Errors: `422` message missing or too long · `401` · `429`.

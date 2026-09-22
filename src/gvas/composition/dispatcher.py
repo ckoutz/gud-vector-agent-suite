@@ -35,7 +35,11 @@ from gvas.composition.review import (
 )
 from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.domain.completeness import FieldNoteReviewId
-from gvas.domain.enums import OutboxStatus
+from gvas.domain.customers import (
+    PORTAL_LOGIN_EMAIL_COMMAND_TYPE,
+    portal_login_email_request,
+)
+from gvas.domain.enums import DeliveryStatus, OutboxStatus
 from gvas.domain.field_notes import (
     FIELD_NOTE_REVIEW_COMMAND_TYPE,
     FIELD_NOTE_TRANSCRIBE_COMMAND_TYPE,
@@ -52,6 +56,7 @@ from gvas.domain.outbox import (
     OutboxRecord,
 )
 from gvas.domain.plans import PLAN_SET_COPY_COMMAND_TYPE, PlanSetUploadId
+from gvas.domain.ports import PortalLoginEmailPort
 from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE, QUOTE_TEXT_COMMAND_TYPE
 from gvas.domain.reporting import (
     FIELD_NOTES_REPORT_COMMAND_TYPE,
@@ -125,8 +130,10 @@ class OutboxCommandDispatcher:
         lease_ttl: timedelta = timedelta(minutes=5),
         ceiling_notices: NotifyExhaustedCommandService | None = None,
         quote_text: TextDeliveredQuoteService | None = None,
+        portal_login_email: PortalLoginEmailPort | None = None,
     ) -> None:
         self._quote_text = quote_text
+        self._portal_login_email = portal_login_email
         self._processing = processing
         self._owner_replies = owner_replies
         self._quote_delivery = quote_delivery
@@ -165,6 +172,8 @@ class OutboxCommandDispatcher:
             return await self._email_report(command)
         if command.command_type == PLAN_SET_COPY_COMMAND_TYPE:
             return await self._copy_plan_set(command)
+        if command.command_type == PORTAL_LOGIN_EMAIL_COMMAND_TYPE:
+            return await self._send_portal_login(command)
         raise UnknownCommandTypeError(f"no handler is registered for {command.command_type}")
 
     def _window(self) -> tuple[datetime, datetime]:
@@ -214,6 +223,20 @@ class OutboxCommandDispatcher:
         if outcome.status in {QuoteTextStatus.MISSING, QuoteTextStatus.NOT_DELIVERED}:
             raise RuntimeError(f"quote text is {outcome.status.value}")
         return DispatchOutcome(command.command_type, outcome.status.value)
+
+    async def _send_portal_login(self, command: OutboxCommand) -> DispatchOutcome:
+        if self._portal_login_email is None:
+            raise UnknownCommandTypeError("portal login e-mail is not wired")
+        try:
+            request = portal_login_email_request(command.business_id, command.payload)
+        except ValueError as error:
+            raise MalformedCommandPayloadError(str(error)) from error
+        if request.is_expired(self._now()):
+            return DispatchOutcome(command.command_type, "expired")
+        receipt = await self._portal_login_email.send_login_link(request)
+        if receipt.status is DeliveryStatus.FAILED:
+            raise RuntimeError(receipt.detail or "portal login e-mail failed")
+        return DispatchOutcome(command.command_type, receipt.status.value)
 
     async def _transcribe(self, command: OutboxCommand) -> DispatchOutcome:
         part_id = FieldNotePartId(_uuid(command, "field_note_part_id"))

@@ -10,15 +10,18 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from gvas.domain.appointments import Appointment
 from gvas.domain.enums import (
+    BillingInterval,
     CustomerQuoteStatus,
     DeliveryStatus,
     HostedLinkKind,
+    QuoteBilling,
     QuoteSendAction,
     QuoteStatus,
 )
 from gvas.domain.identifiers import (
     BusinessId,
     ConversationId,
+    CustomerId,
     MessageKey,
     OutboxCommandId,
     QuoteId,
@@ -100,6 +103,9 @@ class QuoteDraftProposal(QuoteModel):
     # True when the items were read out of the owner's free text rather than
     # the structured format; the approval reply then asks the owner to check them.
     drafted_from_free_text: bool = False
+    # Recurring quotes charge ``total_minor`` every ``interval``.
+    billing: QuoteBilling = QuoteBilling.ONE_TIME
+    interval: BillingInterval | None = None
 
     @field_validator("currency")
     @classmethod
@@ -116,10 +122,16 @@ class QuoteDraftProposal(QuoteModel):
     def total_minor(self) -> int:
         return self.subtotal_minor + self.tax_minor - self.discount_minor
 
+    @property
+    def is_recurring(self) -> bool:
+        return self.billing is QuoteBilling.RECURRING
+
     @model_validator(mode="after")
     def total_must_not_be_negative(self) -> "QuoteDraftProposal":
         if self.total_minor < 0:
             raise ValueError("quote total must not be negative")
+        if self.is_recurring != (self.interval is not None):
+            raise ValueError("recurring quotes carry an interval; one-time quotes carry none")
         return self
 
 
@@ -165,6 +177,9 @@ class FreeTextQuoteDraft(QuoteModel):
     line_items: tuple[FreeTextQuoteItem, ...] = Field(default_factory=tuple)
     owner_note: str | None = None
     ambiguities: tuple[str, ...] = Field(default_factory=tuple)
+    # The recurrence the model read; honoured only when the owner's text
+    # literally says so, exactly as for prices.
+    interval: BillingInterval | None = None
 
 
 class FreeTextQuoteDraftingPort(Protocol):
@@ -212,6 +227,12 @@ def claim_token_matches(claim_token: str, stored_hash: str) -> bool:
     return hmac.compare_digest(hash_claim_token(claim_token), stored_hash)
 
 
+def normalize_customer_email(email: str) -> str:
+    """Customer identity within a business is the lowercased address."""
+
+    return email.strip().lower()
+
+
 def public_quote_id(quote_id: QuoteId) -> str:
     """The opaque identifier a site may show or pass back; not the row id."""
 
@@ -239,6 +260,9 @@ class Quote(QuoteModel):
     claim_token_hash: str | None = None
     customer_status: CustomerQuoteStatus | None = None
     approved_at: datetime | None = None
+    # The portal identity the recipient e-mail resolves to within the
+    # business; linked on approval, delivery or the customer's first login.
+    customer_id: CustomerId | None = None
     version: int = Field(default=1, ge=1)
     created_at: datetime
     updated_at: datetime
@@ -477,6 +501,22 @@ class Quote(QuoteModel):
     def is_claimable(self) -> bool:
         return self.claim_token_hash is not None and self.status in QUOTE_CLAIMABLE_STATUSES
 
+    def link_customer(self, customer_id: CustomerId, now: datetime) -> "Quote":
+        if self.customer_id == customer_id:
+            return self
+        return self.model_copy(
+            update={"customer_id": customer_id, "updated_at": now, "version": self.version + 1}
+        )
+
+    @property
+    def recipient_email(self) -> str | None:
+        """The lowercased e-mail the quote goes to, when it goes to one."""
+
+        if self.draft is None:
+            return None
+        address = self.draft.recipient.email_address
+        return None if address is None else normalize_customer_email(address)
+
     def quote_url(self, site_url: str) -> str:
         """The customer-facing link on the business's own site."""
 
@@ -558,6 +598,17 @@ class QuoteRepository(Protocol):
     ) -> Quote | None: ...
 
     async def get_by_claim_hash(self, claim_token_hash: str) -> Quote | None: ...
+
+    async def list_for_customer(
+        self, business_id: BusinessId, customer_id: CustomerId
+    ) -> tuple[Quote, ...]: ...
+
+    async def list_unlinked_for_email(
+        self, business_id: BusinessId, email: str
+    ) -> tuple[Quote, ...]:
+        """Claimable quotes addressed to ``email`` with no customer yet; the
+        portal links them the first time that customer signs in."""
+        ...
 
     async def add(self, quote: Quote) -> None: ...
 

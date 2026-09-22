@@ -62,6 +62,18 @@ class CustomerQuoteStatus(StrEnum):
     DECLINED = "declined"
 
 
+class QuoteBilling(StrEnum):
+    """How a quote is charged: once, or on a recurring interval."""
+
+    ONE_TIME = "one_time"
+    RECURRING = "recurring"
+
+
+class BillingInterval(StrEnum):
+    MONTH = "month"
+    YEAR = "year"
+
+
 class QuotePaymentStatus(StrEnum):
     """One hosted checkout attempt: open while its session stands, then a
     terminal state."""

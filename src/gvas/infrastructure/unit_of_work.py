@@ -6,7 +6,17 @@ from gvas.domain.completeness_repositories import (
     FieldNoteReviewRepository,
     FollowUpQuestionRepository,
 )
-from gvas.domain.payments import PaymentEventRepository, QuotePaymentRepository
+from gvas.domain.customers import (
+    CustomerRepository,
+    PortalLoginTokenRepository,
+    PortalSessionRepository,
+    ServiceRequestRepository,
+)
+from gvas.domain.payments import (
+    PaymentEventRepository,
+    QuotePaymentRepository,
+    QuoteSubscriptionRepository,
+)
 from gvas.domain.quotes import QuoteRepository
 from gvas.domain.repositories import (
     BusinessRepository,
@@ -28,9 +38,16 @@ from gvas.infrastructure.completeness_repositories import (
     SqlFieldNoteReviewRepository,
     SqlFollowUpQuestionRepository,
 )
+from gvas.infrastructure.customer_repositories import (
+    SqlCustomerRepository,
+    SqlPortalLoginTokenRepository,
+    SqlPortalSessionRepository,
+    SqlServiceRequestRepository,
+)
 from gvas.infrastructure.payment_repositories import (
     SqlPaymentEventRepository,
     SqlQuotePaymentRepository,
+    SqlQuoteSubscriptionRepository,
 )
 from gvas.infrastructure.repositories import (
     SqlBusinessRepository,
@@ -60,6 +77,11 @@ class SqlUnitOfWork:
     quotes: QuoteRepository
     quote_payments: QuotePaymentRepository
     payment_events: PaymentEventRepository
+    customers: CustomerRepository
+    portal_login_tokens: PortalLoginTokenRepository
+    portal_sessions: PortalSessionRepository
+    service_requests: ServiceRequestRepository
+    quote_subscriptions: QuoteSubscriptionRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -77,6 +99,11 @@ class SqlUnitOfWork:
         self.quotes = SqlQuoteRepository(self._session)
         self.quote_payments = SqlQuotePaymentRepository(self._session)
         self.payment_events = SqlPaymentEventRepository(self._session)
+        self.customers = SqlCustomerRepository(self._session)
+        self.portal_login_tokens = SqlPortalLoginTokenRepository(self._session)
+        self.portal_sessions = SqlPortalSessionRepository(self._session)
+        self.service_requests = SqlServiceRequestRepository(self._session)
+        self.quote_subscriptions = SqlQuoteSubscriptionRepository(self._session)
         return self
 
     async def __aexit__(

@@ -72,7 +72,11 @@ from gvas.infrastructure.quote_drafting import (
 )
 from gvas.infrastructure.reporting_unit_of_work import SqlReportUnitOfWorkFactory
 from gvas.infrastructure.repositories import SqlBusinessRepository
-from gvas.infrastructure.resend import ResendQuoteDeliveryAdapter, ResendReportEmailAdapter
+from gvas.infrastructure.resend import (
+    ResendPortalLoginEmailAdapter,
+    ResendQuoteDeliveryAdapter,
+    ResendReportEmailAdapter,
+)
 from gvas.infrastructure.slack.api import (
     SlackFileAttachmentAccess,
     SlackWebApiChatPoster,
@@ -108,6 +112,7 @@ from gvas.infrastructure.telnyx.installations import (
 )
 from gvas.infrastructure.usage_ledger import SqlUsageLedger
 from gvas.interfaces.http.app import create_app
+from gvas.interfaces.http.portal import create_portal_router
 from gvas.interfaces.http.public import PerIpRateLimiter, create_public_router
 from gvas.interfaces.logging_setup import configure_logging
 
@@ -406,6 +411,8 @@ def build_production_ports(
         quote_delivery=quote_delivery,
         customer_text=customer_text,
         payment_checkout=payment_checkout,
+        billing_accounts=payment_checkout,
+        portal_login_email=ResendPortalLoginEmailAdapter(settings.resend, client),
         report_email=ResendReportEmailAdapter(settings.resend, client),
         transcription=OpenAITranscriber(
             settings.openai, client, attachments, usage_ledger=usage_ledger
@@ -456,6 +463,12 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
                 if resolved.stripe.is_configured
                 else None
             ),
+            rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
+        )
+    )
+    routers.append(
+        create_portal_router(
+            application.portal,
             rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
         )
     )

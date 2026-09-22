@@ -49,7 +49,7 @@ class PerIpRateLimiter:
 
     def __init__(
         self,
-        per_minute: int,
+        per_minute: float,
         *,
         burst: int | None = None,
         now: Callable[[], float] = time.monotonic,
@@ -82,7 +82,7 @@ class PerIpRateLimiter:
             self._buckets.clear()
 
 
-def _client_ip(request: Request) -> str:
+def client_ip(request: Request) -> str:
     """The rightmost ``X-Forwarded-For`` hop: the entry the edge in front of
     us appended. The leftmost is caller-controlled and would let a client
     rotate the header to dodge the bucket."""
@@ -97,7 +97,7 @@ def _client_ip(request: Request) -> str:
 
 class SiteOriginCorsMiddleware:
     """Answers CORS for the business site origins configured in the database,
-    plus any static extras (preview deployments). GET and POST only.
+    plus any static extras (preview deployments). GET, POST and DELETE only.
 
     The allowed set is re-read at most once per ``ttl_seconds`` so configuring
     a business takes effect without a redeploy.
@@ -144,7 +144,7 @@ class SiteOriginCorsMiddleware:
             allow_headers = headers.get(b"access-control-request-headers", b"").decode("latin-1")
             response_headers = {
                 "Access-Control-Allow-Origin": origin,
-                "Access-Control-Allow-Methods": "GET, POST",
+                "Access-Control-Allow-Methods": "GET, POST, DELETE",
                 "Vary": "Origin",
             }
             if allow_headers:
@@ -178,7 +178,7 @@ def create_public_router(
     limiter = rate_limiter or PerIpRateLimiter(per_minute=120, burst=30)
 
     async def rate_limit(request: Request) -> None:
-        if not limiter.allow(_client_ip(request)):
+        if not limiter.allow(client_ip(request)):
             raise HTTPException(status_code=429, detail="rate limited")
 
     limited = [Depends(rate_limit)]

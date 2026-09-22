@@ -27,6 +27,7 @@ from gvas.application.plan_custody import (
     CopyPlanSetIntoCustodyService,
     RegisterPlanSetUploadService,
 )
+from gvas.application.portal import PortalService
 from gvas.application.processing import ProcessOwnerMessageService
 from gvas.application.public_quotes import PublicQuoteService
 from gvas.application.quotes import (
@@ -58,6 +59,7 @@ from gvas.domain.completeness import CompletenessReviewPort
 from gvas.domain.ports import (
     AppointmentLookupPort,
     AttachmentAccessPort,
+    BillingAccountPort,
     ChecklistEvidencePort,
     CustomerQuoteDeliveryPort,
     CustomerTextDeliveryPort,
@@ -65,6 +67,7 @@ from gvas.domain.ports import (
     ObjectStoragePort,
     OwnerReplyPort,
     PaymentCheckoutPort,
+    PortalLoginEmailPort,
     QuoteDraftingPort,
     TranscriptionPort,
 )
@@ -110,6 +113,11 @@ class ApplicationPorts:
     # When present, the public API can open a hosted checkout on quote accept;
     # when absent the accept route answers 503 and the rest still serves.
     payment_checkout: PaymentCheckoutPort | None = None
+    # When present, recurring quotes can be accepted (a provider customer is
+    # created on first accept) and the portal can open a billing portal.
+    billing_accounts: BillingAccountPort | None = None
+    # When present the worker sends portal magic-link e-mails.
+    portal_login_email: PortalLoginEmailPort | None = None
     # The ledger the metered adapters write to; the ceiling guard reads the same
     # one. Defaults to the SQL ledger on the application's sessions.
     usage_ledger: UsageLedgerPort | None = None
@@ -143,6 +151,7 @@ class Application:
     report_email_service: EmailFieldNotesReportService
     report_artifacts: ReportArtifactAccess
     public_quotes: PublicQuoteService
+    portal: PortalService
     failure_notice_service: NotifyExhaustedCommandService
     usage_ledger: UsageLedgerPort
     usage_ceilings: UsageCeilings
@@ -218,7 +227,12 @@ def build_application(
         ports.quote_drafting,
         appointment_lookup=ports.appointment_lookup,
     )
-    public_quotes = PublicQuoteService(unit_of_work_factory, checkout=ports.payment_checkout)
+    public_quotes = PublicQuoteService(
+        unit_of_work_factory,
+        checkout=ports.payment_checkout,
+        billing_accounts=ports.billing_accounts,
+    )
+    portal = PortalService(unit_of_work_factory, billing_accounts=ports.billing_accounts, now=now)
     router = WorkflowRouter(
         [
             quote_handler,
@@ -312,6 +326,7 @@ def build_application(
         lease_ttl=lease_ttl,
         ceiling_notices=failure_notices,
         quote_text=quote_text,
+        portal_login_email=ports.portal_login_email,
     )
     return Application(
         engine=resolved_engine,
@@ -340,6 +355,7 @@ def build_application(
         report_email_service=report_email,
         report_artifacts=report_artifacts,
         public_quotes=public_quotes,
+        portal=portal,
         failure_notice_service=failure_notices,
         usage_ledger=usage_ledger,
         usage_ceilings=usage_ceilings,
