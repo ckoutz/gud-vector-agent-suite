@@ -132,6 +132,18 @@ class CostCeilingSettings(BaseSettings):
     review_tokens: int = Field(default=0, ge=0)
 
 
+class IntakeSettings(BaseSettings):
+    """The website intake chat's own knobs, all under ``GVAS_INTAKE_*``."""
+
+    model_config = SettingsConfigDict(env_prefix="GVAS_INTAKE_", env_file=".env", extra="ignore")
+
+    # New conversations one business may open per UTC day; 0 = unlimited.
+    max_conversations_per_day: int = Field(default=50, ge=0)
+    # Customer messages one conversation accepts before the agent stops
+    # answering; 0 = unlimited.
+    max_messages_per_conversation: int = Field(default=30, ge=0)
+
+
 class ResendSettings(BaseSettings):
     """Resend delivers approved customer quotes by email."""
 

@@ -133,6 +133,68 @@ whole days; businesses carry no timezone yet, so day boundaries are UTC.
   quote; the owner gets one reply asking to include `customer:` this time and
   the worker logs a sanitized warning.
 
+## Website booking intake (optional — needs OpenAI and Calendly)
+
+The chat widget routes in `docs/public_api.md` are live when
+`GVAS_OPENAI_API_KEY` is set; without OpenAI the intake routes are not
+mounted. Slot offers come from Calendly: for each business in
+`GVAS_CALENDLY_INSTALLATIONS` the adapter lists the user's event types
+(`GET /event_types?user=<user_uri>`) and reads openings from
+`GET /event_type_available_times?event_type=…&start_time=…&end_time=…`
+(the provider's max window is 31 days; we ask for 14 and paged), localized to
+the Calendly user's timezone; without
+Calendly the chat still collects the request but answers "the owner will
+confirm a time" instead of offering slots.
+
+On `approve booking <ref>` the adapter first tries direct invitee creation
+(`POST /invitees`, Scheduling API — available on paid Calendly plans); on a
+4xx it mints a single-use scheduling link (`POST /scheduling_links`,
+`max_event_count=1`) prefilled with the customer's name, email and chosen
+slot, then emails (and texts, when a phone was collected and `GVAS_TELNYX_*`
+is set) the customer to confirm. If the worker dies mid-booking, the retried
+command first reconciles via `GET /scheduled_events` (invitee email + slot
+window) so the approval can never book twice. The same `GVAS_CALENDLY_TOKEN`
+covers all of these calls — no extra scopes.
+
+Calendly webhooks close the loop the scheduling link cannot: the prefilled
+link pins the day but not the time, so the customer can confirm a different
+opening. With `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` set, `POST /calendly/events`
+is mounted; each request must carry a valid `Calendly-Webhook-Signature`
+(`t,v1` HMAC-SHA256 of `t.body` with the subscription's signing key, ~3
+minutes of clock skew allowed). `invitee.created` at the approved time marks
+the request booked and tells the owner; a different time re-routes the
+request to `awaiting_owner` with the actual slot — `approve booking <ref>`
+keeps the event (the arrange command reconciles through the same
+`find_booking` lookup, so nothing is double-booked) and
+`decline booking <ref>` cancels it (`POST /scheduled_events/{uuid}/cancellation`).
+`invitee.canceled` for the recorded event closes the request and notifies the
+owner. Unmatched invitees, unbound Calendly users and other event types are
+acknowledged and dropped.
+
+The subscription is created once per environment, out-of-band:
+
+```sh
+curl -X POST https://api.calendly.com/webhook_subscriptions \
+  -H "Authorization: Bearer $CALENDLY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://<gvas-host>/calendly/events",
+    "events": ["invitee.created", "invitee.canceled"],
+    "organization": "<org uri from GET /users/me>",
+    "user": "<calendly user uri>",
+    "scope": "user"
+  }'
+```
+
+The response's `resource.signing_key` becomes `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY`.
+A subscription is per Calendly user — repeat per business's user (or use
+`scope: "organization"` for all users in the org).
+
+`GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY`
+(default 50) and `GVAS_INTAKE_MAX_MESSAGES_PER_CONVERSATION` (default 30) cap
+intake churn per business; `0` disables each cap. Model calls also consume
+the `GVAS_COST_CEILING_REVIEW_TOKENS` monthly budget.
+
 ## Hosted customer quotes (optional)
 
 GVAS is the system of record for the customer-facing quote page; a client
@@ -315,10 +377,13 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_STRIPE_SECRET_KEY` | Optional set; sent only as a bearer header to `api.stripe.com` |
 | `GVAS_STRIPE_WEBHOOK_SECRET` | Optional set; `Stripe-Signature` verification on `/webhooks/stripe` |
 | `GVAS_PUBLIC_CORS_EXTRA_ORIGINS` | Optional; comma-separated extra CORS origins for the public API (e.g. a preview deployment) |
-| `GVAS_PUBLIC_RATE_LIMIT_PER_MINUTE` | Default 120; per-IP limit on the public claim-token and booking routes |
+| `GVAS_PUBLIC_RATE_LIMIT_PER_MINUTE` | Default 120; per-IP limit on the public claim-token, booking and intake routes |
+| `GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY` | Default 50 per business per UTC day; `0` is unlimited |
+| `GVAS_INTAKE_MAX_MESSAGES_PER_CONVERSATION` | Default 30 customer messages; `0` is unlimited |
 | `GVAS_CALENDLY_TOKEN` | Optional set; personal access token, bearer header only |
 | `GVAS_CALENDLY_INSTALLATIONS` | Optional set; `business_uuid=https://api.calendly.com/users/<uuid>` |
 | `GVAS_CALENDLY_API_BASE_URL`, `GVAS_CALENDLY_API_TIMEOUT_SECONDS`, `GVAS_CALENDLY_PAGE_SIZE` | Defaults suffice |
+| `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` | Optional; signing key of the webhook subscription — mounts `POST /calendly/events` |
 | `GVAS_R2_ACCOUNT_ID`, `GVAS_R2_BUCKET`, `GVAS_R2_ACCESS_KEY_ID`, `GVAS_R2_SECRET_ACCESS_KEY` | Optional as a set: all four on both services keeps every published DOCX in the bucket (an R2 API token with object read/write on that bucket only); none means Slack-only delivery; a partial set fails startup. `GVAS_R2_REGION` defaults to `auto` |
 
 Startup fails immediately when a required variable is missing, so a

@@ -23,6 +23,9 @@ class CalendlySettings(BaseSettings):
     api_base_url: str = "https://api.calendly.com"
     api_timeout_seconds: float = Field(default=30.0, gt=0)
     page_size: int = Field(default=100, ge=1, le=100)
+    # Signing key of the webhook subscription created out-of-band
+    # (POST /webhook_subscriptions); empty disables the webhook route.
+    webhook_signing_key: str = ""
 
     @property
     def required_settings(self) -> dict[str, bool]:
