@@ -168,6 +168,30 @@ class CalendlyAvailability:
                 return BookingResult(kind=BookingKind.BOOKED)
         return None
 
+    async def cancel_booking(self, business_id: BusinessId, event_uri: str) -> None:
+        if business_id not in self._users:
+            raise AvailabilityError("no calendly event type is configured")
+        base = self._settings.api_base_url.rstrip("/")
+        if not event_uri.startswith(f"{base}/"):
+            raise AvailabilityError("unexpected calendly event uri")
+        path = event_uri[len(base) :]
+        try:
+            response = await self._client.post(
+                f"{base}{path}/cancellation",
+                json={"reason": "the owner declined this booking"},
+                headers={"Authorization": f"Bearer {self._settings.token}"},
+                timeout=self._settings.api_timeout_seconds,
+            )
+        except httpx.HTTPError as error:
+            logger.warning("calendly cancellation failed: %s", type(error).__name__)
+            raise AvailabilityError("calendly was unreachable") from error
+        if response.status_code == 404:
+            # Already canceled or never existed — the desired end state.
+            return
+        if response.status_code >= 400:
+            logger.warning("calendly cancellation returned http %s", response.status_code)
+            raise AvailabilityError(f"calendly returned http {response.status_code}")
+
     async def book(self, request: BookingRequest) -> BookingResult:
         spec = await self._event_type(request.business_id)
         if spec is None:

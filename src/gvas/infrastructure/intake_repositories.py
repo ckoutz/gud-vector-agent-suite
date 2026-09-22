@@ -59,6 +59,7 @@ class SqlIntakeConversationRepository:
             booking_kind=row.booking_kind,
             booking_link=row.booking_link,
             booking_attempted_at=_aware_or_none(row.booking_attempted_at),
+            booked_event_uri=row.booked_event_uri,
             decision_reason=row.decision_reason,
             decision_at=_aware_or_none(row.decision_at),
             owner_notified_at=_aware_or_none(row.owner_notified_at),
@@ -87,6 +88,7 @@ class SqlIntakeConversationRepository:
                 booking_kind=conversation.booking_kind,
                 booking_link=conversation.booking_link,
                 booking_attempted_at=conversation.booking_attempted_at,
+                booked_event_uri=conversation.booked_event_uri,
                 decision_reason=conversation.decision_reason,
                 decision_at=conversation.decision_at,
                 owner_notified_at=conversation.owner_notified_at,
@@ -138,6 +140,22 @@ class SqlIntakeConversationRepository:
         )
         return None if row is None else self._record(row)
 
+    async def lock_latest_by_invitee_email(
+        self, business_id: BusinessId, email: str
+    ) -> IntakeConversation | None:
+        row = await self.session.scalar(
+            select(IntakeRow)
+            .where(
+                IntakeRow.business_id == business_id,
+                func.lower(IntakeRow.collected["email"].as_string()) == email.lower(),
+                IntakeRow.state.in_((IntakeState.AWAITING_OWNER.value, IntakeState.APPROVED.value)),
+            )
+            .order_by(IntakeRow.updated_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        return None if row is None else self._record(row)
+
     async def find_by_token(
         self, conversation_id: IntakeConversationId, token_hash: str
     ) -> IntakeConversation | None:
@@ -167,6 +185,7 @@ class SqlIntakeConversationRepository:
                 booking_kind=conversation.booking_kind,
                 booking_link=conversation.booking_link,
                 booking_attempted_at=conversation.booking_attempted_at,
+                booked_event_uri=conversation.booked_event_uri,
                 decision_reason=conversation.decision_reason,
                 decision_at=conversation.decision_at,
                 owner_notified_at=conversation.owner_notified_at,

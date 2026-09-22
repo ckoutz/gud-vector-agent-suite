@@ -10,6 +10,7 @@ from gvas.application.field_note_transcription import (
 )
 from gvas.application.intake import (
     ArrangeIntakeBookingService,
+    CancelIntakeBookingService,
     SendIntakeCustomerEmailService,
     SendIntakeCustomerTextService,
 )
@@ -56,6 +57,7 @@ from gvas.domain.field_notes import (
 from gvas.domain.identifiers import IntakeConversationId, MessageId, QuoteId
 from gvas.domain.intake import (
     INTAKE_BOOKING_ARRANGE_COMMAND_TYPE,
+    INTAKE_BOOKING_CANCEL_COMMAND_TYPE,
     INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
     INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
 )
@@ -144,12 +146,14 @@ class OutboxCommandDispatcher:
         intake_booking: ArrangeIntakeBookingService | None = None,
         intake_email: SendIntakeCustomerEmailService | None = None,
         intake_text: SendIntakeCustomerTextService | None = None,
+        intake_booking_cancel: CancelIntakeBookingService | None = None,
     ) -> None:
         self._quote_text = quote_text
         self._portal_login_email = portal_login_email
         self._intake_booking = intake_booking
         self._intake_email = intake_email
         self._intake_text = intake_text
+        self._intake_booking_cancel = intake_booking_cancel
         self._processing = processing
         self._owner_replies = owner_replies
         self._quote_delivery = quote_delivery
@@ -192,6 +196,8 @@ class OutboxCommandDispatcher:
             return await self._send_portal_login(command)
         if command.command_type == INTAKE_BOOKING_ARRANGE_COMMAND_TYPE:
             return await self._arrange_intake_booking(command)
+        if command.command_type == INTAKE_BOOKING_CANCEL_COMMAND_TYPE:
+            return await self._cancel_intake_booking(command)
         if command.command_type == INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE:
             return await self._send_intake_email(command)
         if command.command_type == INTAKE_CUSTOMER_TEXT_COMMAND_TYPE:
@@ -266,6 +272,12 @@ class OutboxCommandDispatcher:
         conversation_id = IntakeConversationId(_uuid(command, "conversation_id"))
         await self._intake_booking.arrange(command.business_id, conversation_id)
         return DispatchOutcome(command.command_type, f"arranged {conversation_id}")
+
+    async def _cancel_intake_booking(self, command: OutboxCommand) -> DispatchOutcome:
+        if self._intake_booking_cancel is None:
+            raise UnknownCommandTypeError("intake booking cancel is not wired")
+        await self._intake_booking_cancel.cancel(command.business_id, _text(command, "event_uri"))
+        return DispatchOutcome(command.command_type, "canceled")
 
     async def _send_intake_email(self, command: OutboxCommand) -> DispatchOutcome:
         if self._intake_email is None:

@@ -11,6 +11,7 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from uuid import uuid4
 
 from gvas.domain.customer_linking import enqueue_intake_owner_notice
@@ -33,9 +34,11 @@ from gvas.domain.intake import (
     AvailableSlot,
     BookingDecision,
     BookingDecisionAction,
+    BookingEventKind,
     BookingKind,
     BookingRequest,
     IntakeAgentError,
+    IntakeBookingEvent,
     IntakeCollected,
     IntakeConversation,
     IntakeCustomerEmail,
@@ -49,6 +52,7 @@ from gvas.domain.intake import (
     escalation_notice,
     format_slot_label,
     intake_booking_arrange_command,
+    intake_booking_cancel_command,
     intake_customer_email_command,
     intake_customer_email_request,
     intake_customer_text_command,
@@ -565,7 +569,13 @@ class ArrangeIntakeBookingService:
                 address=collected.address,
                 details=collected.problem,
             )
-            attempted = conversation.booking_attempted_at is not None
+            # A webhook-recorded event also counts as attempted: the provider
+            # lookup below finds it, so a re-approved re-route reconciles
+            # instead of booking a second event.
+            attempted = (
+                conversation.booking_attempted_at is not None
+                or conversation.booked_event_uri is not None
+            )
             if not attempted:
                 # Persist the attempt before the provider call: if the process
                 # dies after ``book`` succeeded, the retried command sees the
@@ -764,6 +774,9 @@ class BookingDecisionHandler:
             )
         else:
             notified = "no customer email was collected, so nothing was sent"
+        if updated.booked_event_uri:
+            await unit_of_work.outbox.enqueue(intake_booking_cancel_command(updated))
+            notified = f"{notified}, and the Calendly event is being canceled"
         await unit_of_work.commit()
         return WorkflowResult(
             status=WorkflowRunStatus.SUCCEEDED,
@@ -833,3 +846,175 @@ class SendIntakeCustomerTextService:
         )
         if receipt.status is DeliveryStatus.FAILED:
             raise IntakeDeliveryError(receipt.detail or "customer text failed")
+
+
+class IntakeBookingEventResult(StrEnum):
+    CONFIRMED = "confirmed"
+    REROUTED = "rerouted"
+    CANCELED = "canceled"
+    IGNORED = "ignored"
+
+
+@dataclass(frozen=True)
+class IntakeBookingEventOutcome:
+    result: IntakeBookingEventResult
+
+
+class IntakeBookingEventService:
+    """Applies a provider-confirmed booking event to a pending request.
+
+    The scheduling-link path cannot pin an exact time, so the webhook is the
+    authority on what actually landed on the calendar: an event at the
+    approved time confirms the booking, an event at a different time puts the
+    request back in front of the owner for a fresh decision, and a
+    cancellation closes the request. ``booked_event_uri`` is the processed
+    marker — a redelivered event is ignored, and a later different event is
+    applied on its own.
+    """
+
+    def __init__(
+        self,
+        unit_of_work_factory: UnitOfWorkFactory,
+        *,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._now = now
+
+    async def handle(self, event: IntakeBookingEvent) -> IntakeBookingEventOutcome:
+        async with self._unit_of_work_factory() as unit_of_work:
+            conversation = await unit_of_work.intake_conversations.lock_latest_by_invitee_email(
+                event.business_id, event.invitee_email
+            )
+            if conversation is None:
+                return IntakeBookingEventOutcome(IntakeBookingEventResult.IGNORED)
+            recorded = conversation.booked_event_uri
+            if event.kind is BookingEventKind.CREATED:
+                if recorded == event.event_uri:
+                    return IntakeBookingEventOutcome(IntakeBookingEventResult.IGNORED)
+            elif recorded != event.event_uri:
+                # A cancellation only closes the request when it names the
+                # event we already recorded — others are not ours to act on.
+                return IntakeBookingEventOutcome(IntakeBookingEventResult.IGNORED)
+            now = self._now()
+            if event.kind is BookingEventKind.CANCELED:
+                result = await self._canceled(unit_of_work, conversation, event, now)
+            else:
+                result = await self._created(unit_of_work, conversation, event, now)
+            await unit_of_work.commit()
+            return IntakeBookingEventOutcome(result)
+
+    async def _created(
+        self,
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        event: IntakeBookingEvent,
+        now: datetime,
+    ) -> IntakeBookingEventResult:
+        if event.start == conversation.requested_slot_start:
+            already_booked = conversation.booking_kind == BookingKind.BOOKED.value
+            updated = conversation.with_updates(
+                now,
+                booked_event_uri=event.event_uri,
+                booking_kind=BookingKind.BOOKED.value,
+            )
+            if conversation.state is IntakeState.APPROVED and not already_booked:
+                await self._notify(
+                    unit_of_work,
+                    conversation,
+                    event,
+                    text=(
+                        f"Booking {conversation.reference} is on the calendar: "
+                        f"{conversation.collected.name or 'the customer'} confirmed "
+                        f"{format_slot_label(event.start)}."
+                    ),
+                )
+            await unit_of_work.intake_conversations.save(updated)
+            return IntakeBookingEventResult.CONFIRMED
+        # The customer picked a different time than the approved/requested
+        # slot: put the request back in front of the owner with the time that
+        # actually landed. Approving keeps the event (arrange reconciles
+        # through find_booking); declining cancels it.
+        original = (
+            format_slot_label(conversation.requested_slot_start)
+            if conversation.requested_slot_start is not None
+            else "their requested time"
+        )
+        updated = conversation.with_updates(
+            now,
+            state=IntakeState.AWAITING_OWNER,
+            requested_slot_start=event.start,
+            requested_slot_end=event.end,
+            booking_kind=None,
+            booked_event_uri=event.event_uri,
+            decision_at=None,
+            decision_reason=None,
+        )
+        await self._notify(
+            unit_of_work,
+            conversation,
+            event,
+            text=(
+                f"Booking {conversation.reference} — "
+                f"{conversation.collected.name or 'the customer'} booked "
+                f"{format_slot_label(event.start)} instead of the requested "
+                f"{original}. Reply `approve booking {conversation.reference}` "
+                f"to keep it or `decline booking {conversation.reference} <reason>` to cancel."
+            ),
+        )
+        await unit_of_work.intake_conversations.save(updated)
+        return IntakeBookingEventResult.REROUTED
+
+    async def _canceled(
+        self,
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        event: IntakeBookingEvent,
+        now: datetime,
+    ) -> IntakeBookingEventResult:
+        updated = conversation.with_updates(
+            now, state=IntakeState.CLOSED, booked_event_uri=event.event_uri
+        )
+        await self._notify(
+            unit_of_work,
+            conversation,
+            event,
+            text=(
+                f"Booking {conversation.reference} was canceled on Calendly — "
+                "the event is off the calendar."
+            ),
+        )
+        await unit_of_work.intake_conversations.save(updated)
+        return IntakeBookingEventResult.CANCELED
+
+    async def _notify(
+        self,
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        event: IntakeBookingEvent,
+        *,
+        text: str,
+    ) -> None:
+        notified = await enqueue_intake_owner_notice(
+            unit_of_work,
+            conversation.business_id,
+            correlation_id=f"intake_booking_event:{event.event_uri}",
+            text=text,
+        )
+        if not notified:
+            logger.warning(
+                "booking event for request %s stored without an owner notice",
+                conversation.reference,
+            )
+
+
+class CancelIntakeBookingService:
+    """Cancels the calendar event recorded on a declined request."""
+
+    def __init__(self, *, availability: AvailabilityPort | None) -> None:
+        self._availability = availability
+
+    async def cancel(self, business_id: BusinessId, event_uri: str) -> None:
+        if self._availability is None:
+            raise IntakeAvailabilityError("no availability provider is configured")
+        await self._availability.cancel_booking(business_id, event_uri)

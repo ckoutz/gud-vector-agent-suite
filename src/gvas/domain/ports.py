@@ -179,3 +179,11 @@ class AvailabilityPort(Protocol):
         ``book`` again so a crashed earlier attempt cannot double-book.
         """
         ...
+
+    async def cancel_booking(self, business_id: BusinessId, event_uri: str) -> None:
+        """Cancel an existing calendar event (a declined customer pick).
+
+        An event the provider no longer knows is already canceled — only
+        provider failures raise ``AvailabilityError``.
+        """
+        ...

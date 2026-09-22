@@ -126,6 +126,7 @@ class AvailabilityFake:
         self.slot_calls: list[tuple[BusinessId, datetime, datetime]] = []
         self.book_calls: list[BookingRequest] = []
         self.find_calls: list[BookingRequest] = []
+        self.cancel_calls: list[tuple[BusinessId, str]] = []
 
     async def available_slots(
         self, business_id: BusinessId, start: datetime, end: datetime
@@ -144,6 +145,9 @@ class AvailabilityFake:
         if self._error is not None:
             raise self._error
         return self._result
+
+    async def cancel_booking(self, business_id: BusinessId, event_uri: str) -> None:
+        self.cancel_calls.append((business_id, event_uri))
 
 
 async def intake_business(

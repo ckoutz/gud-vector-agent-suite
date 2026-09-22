@@ -24,6 +24,8 @@ from gvas.application.ingestion import IngestOwnerMessageService
 from gvas.application.intake import (
     ArrangeIntakeBookingService,
     BookingDecisionHandler,
+    CancelIntakeBookingService,
+    IntakeBookingEventService,
     IntakeService,
     SendIntakeCustomerEmailService,
     SendIntakeCustomerTextService,
@@ -169,6 +171,7 @@ class Application:
     public_quotes: PublicQuoteService
     portal: PortalService
     intake: IntakeService | None
+    intake_booking_events: IntakeBookingEventService
     failure_notice_service: NotifyExhaustedCommandService
     usage_ledger: UsageLedgerPort
     usage_ceilings: UsageCeilings
@@ -374,6 +377,7 @@ def build_application(
             if ports.customer_text is not None
             else None
         ),
+        intake_booking_cancel=CancelIntakeBookingService(availability=ports.availability),
     )
     return Application(
         engine=resolved_engine,
@@ -404,6 +408,7 @@ def build_application(
         public_quotes=public_quotes,
         portal=portal,
         intake=intake_service,
+        intake_booking_events=IntakeBookingEventService(unit_of_work_factory, now=now),
         failure_notice_service=failure_notices,
         usage_ledger=usage_ledger,
         usage_ceilings=usage_ceilings,

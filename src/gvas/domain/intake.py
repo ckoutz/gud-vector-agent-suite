@@ -47,6 +47,8 @@ INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE = "intake_customer.email"
 INTAKE_CUSTOMER_EMAIL_COMMAND_NAMESPACE = UUID("3a9d1c5f-7e24-4b18-9c36-2e5f8a1d4b60")
 INTAKE_CUSTOMER_TEXT_COMMAND_TYPE = "intake_customer.text"
 INTAKE_CUSTOMER_TEXT_COMMAND_NAMESPACE = UUID("5f2b8d1a-9c47-4e63-b1d5-8a3f6c2e9d15")
+INTAKE_BOOKING_CANCEL_COMMAND_TYPE = "intake_booking.cancel"
+INTAKE_BOOKING_CANCEL_COMMAND_NAMESPACE = UUID("7e4b2a91-3c58-4d1e-b6f9-0a2d5c8e4f17")
 
 DECLINE_REASON_MAX_CHARS = 200
 
@@ -184,6 +186,9 @@ class IntakeConversation(IntakeModel):
     # Set before the provider call runs: a retried arrange command that sees
     # this reconciles the booking instead of booking twice.
     booking_attempted_at: datetime | None = None
+    # The provider event URI a webhook confirmed exists for this request.
+    # Doubles as the processed-event marker so redelivered webhooks no-op.
+    booked_event_uri: str | None = None
     decision_reason: str | None = None
     decision_at: datetime | None = None
     owner_notified_at: datetime | None = None
@@ -407,12 +412,18 @@ def slot_confirmed_reply(slot: AvailableSlot) -> str:
 def intake_booking_arrange_command(
     conversation: IntakeConversation,
 ) -> OutboxCommand:
-    """Worker command that turns an approval into a calendar booking."""
+    """Worker command that turns an approval into a calendar booking.
 
+    Deduped per decision: a webhook re-route puts the request back in front of
+    the owner, and the second approval must enqueue its own arrange command
+    instead of deduping against the first.
+    """
+
+    decision_marker = conversation.decision_at.isoformat() if conversation.decision_at else "first"
     command_id = OutboxCommandId(
         uuid5(
             INTAKE_BOOKING_ARRANGE_COMMAND_NAMESPACE,
-            f"{conversation.business_id}:{conversation.conversation_id}",
+            f"{conversation.business_id}:{conversation.conversation_id}:{decision_marker}",
         )
     )
     return OutboxCommand(
@@ -420,7 +431,7 @@ def intake_booking_arrange_command(
         business_id=conversation.business_id,
         command_type=INTAKE_BOOKING_ARRANGE_COMMAND_TYPE,
         payload={"conversation_id": str(conversation.conversation_id)},
-        dedup_key=f"intake_booking:{conversation.conversation_id}",
+        dedup_key=f"intake_booking:{conversation.conversation_id}:{decision_marker}",
     )
 
 
@@ -467,6 +478,31 @@ def intake_customer_email_request(
     )
 
 
+def intake_booking_cancel_command(
+    conversation: IntakeConversation,
+) -> OutboxCommand:
+    """Worker command that cancels the calendar event recorded on the request.
+
+    Deduped per event URI: a declined re-routed booking cancels exactly the
+    event the customer created, and a later different event cancels separately.
+    """
+
+    event_uri = conversation.booked_event_uri or ""
+    command_id = OutboxCommandId(
+        uuid5(
+            INTAKE_BOOKING_CANCEL_COMMAND_NAMESPACE,
+            f"{conversation.business_id}:{event_uri}",
+        )
+    )
+    return OutboxCommand(
+        command_id=command_id,
+        business_id=conversation.business_id,
+        command_type=INTAKE_BOOKING_CANCEL_COMMAND_TYPE,
+        payload={"event_uri": event_uri},
+        dedup_key=f"intake_cancel:{conversation.business_id}:{event_uri}",
+    )
+
+
 def intake_customer_text_command(
     business_id: BusinessId, *, phone: str, text: str, idempotency_key: str
 ) -> OutboxCommand:
@@ -503,6 +539,15 @@ class IntakeConversationRepository(Protocol):
     ) -> IntakeConversation | None:
         """Row-level lock by owner-facing reference: concurrent approve and
         decline decisions serialize so only one reaches a terminal state."""
+        ...
+
+    async def lock_latest_by_invitee_email(
+        self, business_id: BusinessId, email: str
+    ) -> IntakeConversation | None:
+        """Row-level lock on the newest undecided conversation for ``email``.
+
+        Booking webhooks arrive per invitee; the lock serializes the update
+        against an owner decision that may land at the same moment."""
         ...
 
     async def find_by_token(
@@ -586,3 +631,25 @@ class BookingRequest(IntakeModel):
 class BookingResult(IntakeModel):
     kind: BookingKind
     link: str | None = None
+
+
+class BookingEventKind(StrEnum):
+    CREATED = "created"
+    CANCELED = "canceled"
+
+
+class IntakeBookingEvent(IntakeModel):
+    """A provider-confirmed calendar event, translated from a webhook.
+
+    The vendor-specific shape is parsed in infrastructure; the application
+    layer only sees the booking fact: whose invitee, which event, and when.
+    """
+
+    kind: BookingEventKind
+    business_id: BusinessId
+    invitee_email: str = Field(min_length=3)
+    event_uri: str = Field(min_length=1)
+    start: datetime
+    end: datetime | None = None
+
+    _aware_event_start = field_validator("start")(_aware)

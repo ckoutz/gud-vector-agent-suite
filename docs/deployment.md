@@ -154,7 +154,43 @@ slot, then emails (and texts, when a phone was collected and `GVAS_TELNYX_*`
 is set) the customer to confirm. If the worker dies mid-booking, the retried
 command first reconciles via `GET /scheduled_events` (invitee email + slot
 window) so the approval can never book twice. The same `GVAS_CALENDLY_TOKEN`
-covers all of these calls — no extra scopes. `GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY`
+covers all of these calls — no extra scopes.
+
+Calendly webhooks close the loop the scheduling link cannot: the prefilled
+link pins the day but not the time, so the customer can confirm a different
+opening. With `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` set, `POST /calendly/events`
+is mounted; each request must carry a valid `Calendly-Webhook-Signature`
+(`t,v1` HMAC-SHA256 of `t.body` with the subscription's signing key, ~3
+minutes of clock skew allowed). `invitee.created` at the approved time marks
+the request booked and tells the owner; a different time re-routes the
+request to `awaiting_owner` with the actual slot — `approve booking <ref>`
+keeps the event (the arrange command reconciles through the same
+`find_booking` lookup, so nothing is double-booked) and
+`decline booking <ref>` cancels it (`POST /scheduled_events/{uuid}/cancellation`).
+`invitee.canceled` for the recorded event closes the request and notifies the
+owner. Unmatched invitees, unbound Calendly users and other event types are
+acknowledged and dropped.
+
+The subscription is created once per environment, out-of-band:
+
+```sh
+curl -X POST https://api.calendly.com/webhook_subscriptions \
+  -H "Authorization: Bearer $CALENDLY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://<gvas-host>/calendly/events",
+    "events": ["invitee.created", "invitee.canceled"],
+    "organization": "<org uri from GET /users/me>",
+    "user": "<calendly user uri>",
+    "scope": "user"
+  }'
+```
+
+The response's `resource.signing_key` becomes `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY`.
+A subscription is per Calendly user — repeat per business's user (or use
+`scope: "organization"` for all users in the org).
+
+`GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY`
 (default 50) and `GVAS_INTAKE_MAX_MESSAGES_PER_CONVERSATION` (default 30) cap
 intake churn per business; `0` disables each cap. Model calls also consume
 the `GVAS_COST_CEILING_REVIEW_TOKENS` monthly budget.
@@ -347,6 +383,7 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_CALENDLY_TOKEN` | Optional set; personal access token, bearer header only |
 | `GVAS_CALENDLY_INSTALLATIONS` | Optional set; `business_uuid=https://api.calendly.com/users/<uuid>` |
 | `GVAS_CALENDLY_API_BASE_URL`, `GVAS_CALENDLY_API_TIMEOUT_SECONDS`, `GVAS_CALENDLY_PAGE_SIZE` | Defaults suffice |
+| `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` | Optional; signing key of the webhook subscription — mounts `POST /calendly/events` |
 | `GVAS_R2_ACCOUNT_ID`, `GVAS_R2_BUCKET`, `GVAS_R2_ACCESS_KEY_ID`, `GVAS_R2_SECRET_ACCESS_KEY` | Optional as a set: all four on both services keeps every published DOCX in the bucket (an R2 API token with object read/write on that bucket only); none means Slack-only delivery; a partial set fails startup. `GVAS_R2_REGION` defaults to `auto` |
 
 Startup fails immediately when a required variable is missing, so a

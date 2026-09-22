@@ -54,6 +54,7 @@ from gvas.domain.ports import (
 from gvas.domain.usage import UsageCeilingGuard, UsageCeilings
 from gvas.infrastructure.calendly.api import CalendlyAppointmentLookup
 from gvas.infrastructure.calendly.availability import CalendlyAvailability
+from gvas.infrastructure.calendly.composition import build_calendly_webhook_router
 from gvas.infrastructure.calendly.config import (
     CalendlyInstallationError,
     CalendlySettings,
@@ -236,6 +237,11 @@ def _require_complete_calendly_lookup(settings: CalendlySettings) -> None:
             f"calendly lookup is partially configured; missing: {', '.join(missing)}"
         )
     if not settings.is_configured:
+        if settings.webhook_signing_key:
+            raise ProductionConfigurationError(
+                "GVAS_CALENDLY_WEBHOOK_SIGNING_KEY requires "
+                "GVAS_CALENDLY_TOKEN and GVAS_CALENDLY_INSTALLATIONS"
+            )
         return
     try:
         parse_calendly_installations(settings.installations)
@@ -468,6 +474,10 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
     routers = [build_slack_event_router(application.ingest_service, resolved.slack)]
     if resolved.telnyx.is_configured:
         routers.append(build_telnyx_webhook_router(application.ingest_service, resolved.telnyx))
+    if resolved.calendly.webhook_signing_key:
+        routers.append(
+            build_calendly_webhook_router(application.intake_booking_events, resolved.calendly)
+        )
 
     async def cors_origins() -> frozenset[str]:
         async with session_factory() as session:
