@@ -53,7 +53,12 @@ customer's name, email and chosen date when the API rejects the write.
 1. Letterhead DOCX templates per business (`docs/templates_and_site_plans.md`
    §4). **Needs decision:** who supplies the template and where the binding
    manifest lives.
-2. Retention and redaction of transcripts, media, and reports.
+2. Office manager: one owner assistant behind the Slack and SMS inbox that
+   answers calendar/customer/quote questions and proposes confirmed writes
+   (cancel, reschedule, add customer, pause service). Design in
+   [`docs/office_manager.md`](office_manager.md). **Needs decision:** D1–D6
+   there.
+3. Retention and redaction of transcripts, media, and reports.
 
 ## Not planned for the pilot
 
