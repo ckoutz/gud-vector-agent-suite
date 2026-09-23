@@ -56,8 +56,21 @@ customer's name, email and chosen date when the API rejects the write.
 2. Office manager: one owner assistant behind the Slack and SMS inbox that
    answers calendar/customer/quote questions and proposes confirmed writes
    (cancel, reschedule, add customer, pause service). Design in
-   [`docs/office_manager.md`](office_manager.md). **Needs decision:** D1–D6
-   there.
+   [`docs/office_manager.md`](office_manager.md). Fixed points (§0.1 there):
+   - a routing/interpretation layer over the existing, tested actions (quote
+     approval, `approve booking`, Calendly book/cancel, customer upsert,
+     Stripe subscription update) — no new agent with its own provider access;
+   - every write needs the owner's `yes <ref>`, no exceptions, same as today;
+   - owner-only: reachable only via the authenticated owner Slack/SMS
+     channels, never on the widget or portal; the customer-facing intake
+     agent stays tool-less (`docs/security/intake_agent_threat_model.md`);
+   - "add customer" = a lead for an existing business; onboarding a new
+     tenant (as done manually for DVM) is out of scope and stays manual;
+   - existing keyword commands (`quote:`, `notes:`, …) stay and match first;
+     the assistant is the fallback for otherwise-unmatched messages.
+   **Not started; design review pending.** **Needs decision:** D1–D6 there.
+   Prerequisite: fix M1 from the intake threat model before building on the
+   intake path.
 3. Retention and redaction of transcripts, media, and reports.
 
 ## Not planned for the pilot

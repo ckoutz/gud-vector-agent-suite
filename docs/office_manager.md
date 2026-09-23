@@ -12,6 +12,41 @@ depends on them and are not built until answered.
 > adds new customers, pauses services — anything that can be done, the agent
 > can do, through Slack or text. Basically an office manager I can talk to.
 
+## 0.1 Non-negotiables (owner requirements)
+
+1. **A routing/interpretation layer, not a new agent.** The office manager
+   turns owner language into calls on the actions GVAS already has and has
+   already tested — quote approval, `approve/decline booking`, Calendly
+   `book`/`cancel_booking`, customer upsert, Stripe subscription updates. It
+   does not get a Calendly or Stripe client, does not compose its own API
+   calls, and cannot reach any provider except through the fixed tool list in
+   §3. If an action is not in that list, the assistant's only move is to say
+   so and point at the existing command.
+2. **Every write is confirmed by the owner, no exceptions.** The model can only
+   *propose* a `PendingAction`; nothing runs until the owner types
+   `yes <ref>`. There is no auto-confirm, no "trusted" tool, no batch mode,
+   and no channel where this is relaxed — the same rule as the quote and
+   booking workflows today.
+3. **Owner-only, never customer-facing.** The assistant exists only behind the
+   owner's authenticated Slack workspace and enrolled Telnyx owner numbers
+   (`is_authorized_owner`). It is not exposed on the website widget, the portal
+   or any public route, and the customer-facing intake agent keeps having *no
+   tools at all* (see `docs/security/intake_agent_threat_model.md`). The two
+   agents share no prompt, no port and no code path beyond the outbox.
+4. **"Add a customer" means a lead for an existing business.** `customer.add`
+   creates a `CustomerRecord` under the business the owner's message belongs
+   to — the same thing the intake widget and quote flow already do. Onboarding
+   a *new business* into the multi-tenant system (business row, Slack/Telnyx
+   installation, Calendly installation, Stripe account, public key, site
+   env — what was done by hand for DVM) is **out of scope** and stays a manual,
+   operator-run step. Nothing typed into Slack or SMS can create a tenant.
+5. **Existing keyword commands stay.** `quote:`, `notes:`, `approve booking
+   <ref>`, `send report to …` and the rest keep working exactly as today and
+   are matched *first*; the assistant only sees messages that would otherwise
+   have been `message.unmatched`. Nothing in this design removes a trigger;
+   phase 4 only proposes retiring ones nobody types any more, and each such
+   removal is its own reviewed change.
+
 ## 1. What exists today
 
 The owner already talks to GVAS from one Slack workspace and one Telnyx number,
@@ -231,10 +266,17 @@ sentence so the owner knows the customer will be contacted.
 ## 5. Guardrails
 
 - **Scope**: only the tools in §3 exist. There is no "run arbitrary API call".
+  Each write tool is a thin wrapper around an existing service method
+  (`BookingDecisionHandler`, `ArrangeIntakeBookingService`, the quote
+  services, `CustomerRepository.upsert`) or one of the three named Stripe
+  additions in §4 — the assistant adds no new way to touch a provider.
 - **Tenant**: every tool takes `business_id` from the message, never from the
-  model.
+  model. Tenant creation is not a tool (§0.1 #4).
 - **Writes**: never without a matching `yes <ref>`. The model cannot emit a
-  confirmed action.
+  confirmed action; `PendingAction.state` moves to `confirmed` only in the
+  deterministic `office.confirm` handler.
+- **Audience**: owner channels only (§0.1 #3). No public or portal route
+  mounts the assistant; the intake agent stays tool-less.
 - **Provider secrets**: unchanged — stay in adapters behind `ApplicationPorts`.
 - **Spend**: `GVAS_COST_CEILING_*` review tokens cover the assistant; a new
   per-business daily turn cap (`GVAS_OFFICE_DAILY_TURN_CAP`, default 200) like
