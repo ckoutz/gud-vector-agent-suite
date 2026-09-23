@@ -199,8 +199,17 @@ Rules:
 ### 3.4 Execution
 
 A confirmed action is one outbox command (`office.action.run`) with a
-deterministic id derived from `action_id`, so retries cannot cancel twice or
-book twice. Each tool maps to an existing adapter call or a small new one (§4).
+deterministic id derived from `action_id`, so a confirmation is enqueued once.
+That only deduplicates the *row*; it says nothing about whether a crashed
+worker already made the provider call. Every write tool therefore defines its
+own execution idempotency, following `ArrangeIntakeBookingService`
+(`application/intake.py`): persist an attempt marker on the `PendingAction`
+before the provider call, and on retry **reconcile first** — `find_booking`
+for `calendar.book`, the event's `status` for `calendar.cancel`, the Stripe
+subscription's current state for `service.*`, `find_by_email` for
+`customer.add` — and only call the provider when the reconciled state shows the
+write has not happened. Each tool maps to an existing adapter call or a small
+new one (§4).
 Outcome goes back as one reply; failures are sanitized the way quote drafting
 failures are (no provider error text to SMS).
 
@@ -213,7 +222,7 @@ sentence so the owner knows the customer will be contacted.
 
 | Gap | Size | Notes |
 | --- | --- | --- |
-| Reschedule | small | Calendly's API has no "move" write. `calendar.reschedule` = `cancel_booking` + `book` in one command with a compensating notice if the second step fails. The booking path already handles direct-invitee vs scheduling-link fallback. |
+| Reschedule | medium | Calendly's API has no "move" write. `calendar.reschedule` = `book` **then** `cancel_booking`, never the other way round: the original event is cancelled only once the replacement is provider-confirmed (`BookingKind.DIRECT`). When the adapter falls back to a scheduling link (`BookingKind.LINK`, plans without direct booking) the original stays on the calendar, the customer gets the prefilled link, and the existing `POST /calendly/events` webhook cancels the original when the replacement event is created — the `PendingAction` stays in `confirmed` until then and expires back to the owner with a notice if the customer never books. |
 | Add a customer with no quote | small | `CustomerRepository.upsert` exists; needs an owner-initiated path and an optional phone/address. Sends nothing to the customer unless asked. |
 | Pause / resume / cancel a service | medium | Stripe adapter gains `pause_subscription` (`pause_collection`), `resume_subscription`, `cancel_subscription(at_period_end)`. The existing `customer.subscription.updated` webhook already folds the status back into `quote_subscriptions`, so the record stays the source of truth and the reply can quote the new state. |
 | Calendar read window with invitee contact | none | `find(window)` returns invitees already; needs a 7-day default window and per-business timezone (open follow-up in the roadmap). |
