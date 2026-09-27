@@ -1,32 +1,32 @@
 # Güd Vector — Project Status Dashboard
 
-**Last updated:** 2026-09-26 19:03 UTC (auto-refreshed by the Devin dashboard automation)
+**Last updated:** 2026-09-27 01:05 UTC (auto-refreshed by the Devin dashboard automation)
 
 ## Where we are
 
-No code movement since 2026-09-22: `main` is unchanged in both repos (GVAS `c1c66af`, site `62b4130`) and the same three PRs are still open — site #8 (Telnyx opt-in wording fix, mergeable, Vercel previews green, now ~85 h old), GVAS #45 (docs only, CI green) and the stale, conflicting site #1. gudvector-site.vercel.app serves the whole demo pipeline (`/`, `/contact`, `/book`, `/portal`, `/sms-opt-in` 200; `/q/*` wired to GVAS). Telnyx toll-free verification is still **"Waiting For Customer"** (unchanged since 2026-09-23 05:19 UTC) — customer SMS stays blocked until site #8 is merged, deployed and the opt-in URL resubmitted. GVAS web on Railway answers `/healthz` 200 (0.30 s) but the deployed commit still cannot be confirmed from here (web does not auto-deploy — trigger a deploy). gudvector.com resolves and is served by Vercel (200) but still serves an old build: `/contact`, `/book`, `/sms-opt-in`, `/q/*` 404 — the domain is not pointed at the current `gudvector-site` project.
+Still no code movement since 2026-09-22: `main` is unchanged in both repos (GVAS `c1c66af`, site `62b4130`) and the same three PRs are open — site #8 (Telnyx opt-in wording fix, mergeable, Vercel previews green, ~91 h old), GVAS #45 (docs only, CI green) and the stale, conflicting site #1. New this refresh: the Railway **web** service is confirmed to be running the post-2026-09-22 code — its OpenAPI spec exposes `/v1/portal/*` and `/v1/businesses/{key}/intake/*` (customer portal + AI booking agent backends, #40–#42), so those steps move from MERGED-NOT-DEPLOYED to LIVE. The Calendly booking webhook route `/calendly/events` is **not** mounted, which means `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` is not set on Railway — booking confirmations from Calendly are not received. Telnyx toll-free verification is still **"Waiting For Customer"** (unchanged since 2026-09-23 05:19 UTC): customer SMS stays blocked until site #8 is merged, deployed and the opt-in URL resubmitted. gudvector.com resolves and returns 200 via Vercel but still serves an old build (`/contact`, `/book`, `/sms-opt-in`, `/q/*` 404) — the domain is not pointed at the current `gudvector-site` project.
 
 ## Demo pipeline
 
 | Step | Status | Note |
 | --- | --- | --- |
 | Contact form | LIVE | gudvector-site.vercel.app/contact 200 (Resend + intake widget). On gudvector.com it 404s (old deployment). |
-| Calendly | LIVE | Customer lookup (#32) and booking (#41, #44) on main; booking webhooks need `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` and a web deploy. |
+| Calendly | LIVE (partial) | Customer lookup (#32), availability and owner-approved booking (#41, #44) deployed; `/calendly/events` webhook not mounted — set `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` on Railway web and register the webhook. |
 | Quote drafting | LIVE | Structured + free-text quotes (#33) over Slack/SMS. |
 | Owner approval | LIVE | `approve`/`send` over Slack; SMS owner channel works but customer SMS is blocked (see Telnyx). |
 | Email/SMS delivery | BLOCKED (SMS) | Email via Resend works; SMS to customers blocked until Telnyx toll-free verification is Verified (still "Waiting For Customer" — action on us: merge site #8, resubmit). |
 | /q/\<token\> portal | LIVE | gudvector-site.vercel.app/q/nonexistent-token → 200 "couldn't find" (wired to GVAS). |
 | Stripe payment | LIVE (sandbox) | Webhook endpoint `enabled`, 7 events, test mode. Live keys at cutover. |
-| Customer portal | MERGED-NOT-DEPLOYED | Site #4 live (vercel.app/portal 200); GVAS #40 on main — Railway web deploy not confirmed. |
-| AI booking agent | MERGED-NOT-DEPLOYED | Site #5/#7 live (vercel.app/book 200); GVAS #41–#44 on main — Railway web deploy not confirmed. |
+| Customer portal | LIVE | Site #4 live (vercel.app/portal 200); GVAS `/v1/portal/*` routes present on the Railway web service. |
+| AI booking agent | LIVE (partial) | Site #5/#7 live (vercel.app/book 200); GVAS `/v1/businesses/{key}/intake/*` routes present on Railway web. Calendly confirmation webhook not mounted (see Calendly). |
 
 ## Open PRs
 
 | Repo | PR | Title | Base | Mergeable | CI | Age | Merge order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| gudvector-site | [#8](https://github.com/ckoutz/gudvector-site/pull/8) | sms-opt-in: name the message types in the consent text (Telnyx TFV feedback) | main | Mergeable (clean) | Vercel previews (gudvector-site, gudvector-sitev2): success | 85 h | **1 — merge first** (unblocks Telnyx resubmission) |
-| gud-vector-agent-suite | [#45](https://github.com/ckoutz/gud-vector-agent-suite/pull/45) | docs: office manager design + intake agent threat model | main | Mergeable (clean) | ruff/mypy/pytest/alembic: all success | 85 h | 2 — docs only, no deploy needed |
-| gudvector-site | [#1](https://github.com/ckoutz/gudvector-site/pull/1) | Rebuild Güd Vector marketing site as crawlable Next.js pages | main | **Conflicts** | Vercel: success | 23 days | Superseded by #3–#7 — close or rebase; do not merge as-is |
+| gudvector-site | [#8](https://github.com/ckoutz/gudvector-site/pull/8) | sms-opt-in: name the message types in the consent text (Telnyx TFV feedback) | main | Mergeable (clean) | Vercel previews: success (3/3) | 91 h | **1 — merge first** (unblocks Telnyx resubmission) |
+| gud-vector-agent-suite | [#45](https://github.com/ckoutz/gud-vector-agent-suite/pull/45) | docs: office manager design + intake agent threat model | main | Mergeable (clean) | ruff/mypy/pytest/alembic: success (4/4) | 91 h | 2 — docs only, no deploy needed |
+| gudvector-site | [#1](https://github.com/ckoutz/gudvector-site/pull/1) | Rebuild Güd Vector marketing site as crawlable Next.js pages | main | **Conflicts** | Vercel: success | 24 days | Superseded by #3–#7 — close or rebase; do not merge as-is |
 
 No stacked PRs.
 
@@ -35,19 +35,19 @@ No stacked PRs.
 | Target | Result |
 | --- | --- |
 | GVAS main | `c1c66af` 2026-09-22 22:52 UTC — Merge #44 (intake: Calendly availability from a few minutes ahead) |
-| GVAS web (Railway) `/healthz` | 200 in 0.30 s (`/health` and `/` are 404) |
-| GVAS web deployed commit | unknown (Railway API not reachable from this session) — web does not auto-deploy; trigger after the 2026-09-22 merges |
+| GVAS web (Railway) `/healthz` | 200 in 0.37 s (`/health` and `/` are 404) |
+| GVAS web deployed code | Post-#42 build confirmed via `/openapi.json` (portal + intake routes present; `/calendly/events` absent → signing key unset). Exact commit unknown (Railway API not queried). |
 | gudvector-site main | `62b4130` 2026-09-22 22:43 UTC — Merge #7 (intake widget on main) |
-| gudvector-site.vercel.app `/` | 200 in 0.43 s |
-| gudvector-site.vercel.app `/q/nonexistent-token` | 200 "couldn't find" in 1.18 s → wired to GVAS |
+| gudvector-site.vercel.app `/` | 200 in 0.30 s |
+| gudvector-site.vercel.app `/q/nonexistent-token` | 200 "couldn't find" in 1.14 s → wired to GVAS |
 | gudvector-site.vercel.app `/contact`, `/book`, `/portal`, `/sms-opt-in` | all 200 |
-| gudvector.com | Online: 200 in 0.42 s (served by Vercel; www → 307 to apex) — but `/contact`, `/book`, `/sms-opt-in`, `/q/*` 404 and `/portal` 307 → old deployment/project. Point the domain at the current `gudvector-site` project. |
+| gudvector.com | Online: 200 (Vercel; http → 308 https) — but `/contact`, `/book`, `/sms-opt-in`, `/q/*` 404 and `/portal` 307 → old deployment/project. Point the domain at the current `gudvector-site` project. |
 
 ## Integrations
 
 | Integration | Status |
 | --- | --- |
-| Calendly | Wired (customer lookup, availability, direct booking with scheduling-link fallback). Webhook signing key required for booking confirmations. |
+| Calendly | Wired (customer lookup, availability, direct booking with scheduling-link fallback). Booking-confirmation webhook **not mounted** on Railway web (`GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` unset). |
 | Resend | Wired (contact form, quote and magic-link emails). |
 | Telnyx | Owner SMS channel live. Toll-free verification for +18775411550 (`f77d0422-…`): **Waiting For Customer** (unchanged since 2026-09-23 05:19 UTC) — reason: opt-in must state what type of SMS is sent. Fix is site PR #8; merge, deploy, resubmit. Customer SMS blocked until Verified. |
 | Stripe | Sandbox. Webhook `…/webhooks/stripe`: `enabled`, 7 enabled events, livemode=false. |
@@ -58,7 +58,8 @@ No stacked PRs.
 ## Owner to-do
 
 - [ ] Merge open PRs in dependency order: site #8 first (Telnyx fix), then GVAS #45 (docs); decide close vs. rebase for site PR #1 (conflicting, superseded).
-- [ ] Trigger Railway **web** service deploy now that #40–#44 are on main (web does not auto-deploy on push; worker does). Set `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` and register the Calendly webhook.
+- [x] Trigger Railway **web** service deploy for #40–#44 — confirmed: portal and intake routes are live on the web service.
+- [ ] Railway web: set `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY`, redeploy, and register the Calendly webhook at `…/calendly/events` (route currently absent).
 - [x] Namecheap: registrant WHOIS verification — gudvector.com resolves and returns 200 again.
 - [ ] Point gudvector.com DNS/Vercel domain at the current `gudvector-site` project (it currently serves an old build that 404s on `/contact`, `/book` and `/q/*`); then swap site_url/CORS/Telnyx URLs from gudvector-site.vercel.app to gudvector.com.
 - [ ] Telnyx: verification is "Waiting For Customer" — after site #8 deploys, resubmit the opt-in page URL/screenshot with the message types named; SMS to customers blocked until Verified.
