@@ -1,10 +1,10 @@
 # Güd Vector — Project Status Dashboard
 
-**Last updated:** 2026-09-27 07:05 UTC (auto-refreshed by the Devin dashboard automation)
+**Last updated:** 2026-09-27 13:03 UTC (auto-refreshed by the Devin dashboard automation)
 
 ## Where we are
 
-No change since the last refresh (2026-09-27 01:05 UTC) and no code movement since 2026-09-22: `main` is unchanged in both repos (GVAS `c1c66af`, site `62b4130`) and the same three PRs are open — site #8 (Telnyx opt-in wording fix, mergeable, Vercel previews green, ~97 h old), GVAS #45 (docs only, CI green, ~97 h old) and the stale, conflicting site #1 (24 days). Railway **web** is healthy (`/healthz` 200) and runs the post-#42 code (portal + intake routes present in `/openapi.json`), but the Calendly booking webhook route `/calendly/events` is still **not mounted**, i.e. `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` is unset on Railway — Calendly booking confirmations are not received. Telnyx toll-free verification is still **"Waiting For Customer"** (unchanged since 2026-09-23 05:19 UTC): customer SMS stays blocked until site #8 is merged, deployed and the opt-in URL resubmitted. gudvector.com resolves and returns 200 but still serves an old build (`/contact`, `/book`, `/sms-opt-in`, `/q/*` 404) — the domain is not pointed at the current `gudvector-site` project. The three blockers are all owner actions, not code.
+No change since the last refresh (2026-09-27 07:05 UTC) and no code movement since 2026-09-22: `main` is unchanged in both repos (GVAS `c1c66af`, site `62b4130`) and the same three PRs are open — site #8 (Telnyx opt-in wording fix, mergeable, Vercel previews green, ~103 h old), GVAS #45 (docs only, CI green, ~103 h old) and the stale, conflicting site #1 (24 days). Railway **web** is healthy (`/healthz` 200) and runs the post-#42 code (portal + intake routes present in `/openapi.json`), but the Calendly booking webhook route `/calendly/events` is still **not mounted**, i.e. `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` is unset on Railway — Calendly booking confirmations are not received. Telnyx toll-free verification is still **"Waiting For Customer"** (unchanged since 2026-09-23 05:19 UTC): customer SMS stays blocked until site #8 is merged, deployed and the opt-in URL resubmitted. gudvector.com resolves and returns 200 but still serves an old build (`/contact`, `/book`, `/sms-opt-in`, `/q/*` 404) — the domain is not pointed at the current `gudvector-site` project. The three blockers are all owner actions, not code.
 
 ## Demo pipeline
 
@@ -24,8 +24,8 @@ No change since the last refresh (2026-09-27 01:05 UTC) and no code movement sin
 
 | Repo | PR | Title | Base | Mergeable | CI | Age | Merge order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| gudvector-site | [#8](https://github.com/ckoutz/gudvector-site/pull/8) | sms-opt-in: name the message types in the consent text (Telnyx TFV feedback) | main | Mergeable (clean) | Vercel previews: success | 97 h | **1 — merge first** (unblocks Telnyx resubmission) |
-| gud-vector-agent-suite | [#45](https://github.com/ckoutz/gud-vector-agent-suite/pull/45) | docs: office manager design + intake agent threat model | main | Mergeable (clean) | ruff/mypy/pytest/alembic: success (4/4) | 97 h | 2 — docs only, no deploy needed |
+| gudvector-site | [#8](https://github.com/ckoutz/gudvector-site/pull/8) | sms-opt-in: name the message types in the consent text (Telnyx TFV feedback) | main | Mergeable (clean) | Vercel previews: success | 103 h | **1 — merge first** (unblocks Telnyx resubmission) |
+| gud-vector-agent-suite | [#45](https://github.com/ckoutz/gud-vector-agent-suite/pull/45) | docs: office manager design + intake agent threat model | main | Mergeable (clean) | ruff/mypy/pytest/alembic: success (4/4) | 103 h | 2 — docs only, no deploy needed |
 | gudvector-site | [#1](https://github.com/ckoutz/gudvector-site/pull/1) | Rebuild Güd Vector marketing site as crawlable Next.js pages | main | **Conflicts** | Vercel: success | 24 days | Superseded by #3–#7 — close or rebase; do not merge as-is |
 
 No stacked PRs.
@@ -35,13 +35,13 @@ No stacked PRs.
 | Target | Result |
 | --- | --- |
 | GVAS main | `c1c66af` 2026-09-22 22:52 UTC — Merge #44 (intake: Calendly availability from a few minutes ahead) |
-| GVAS web (Railway) `/healthz` | 200 in 0.40 s (`/health` and `/` are 404) |
+| GVAS web (Railway) `/healthz` | 200 in 0.32 s (`/health` and `/` are 404) |
 | GVAS web deployed code | Post-#42 build confirmed via `/openapi.json` (portal + intake routes present; `/calendly/events` absent → signing key unset). Exact commit unknown (Railway API not queried). |
 | gudvector-site main | `62b4130` 2026-09-22 22:43 UTC — Merge #7 (intake widget on main) |
-| gudvector-site.vercel.app `/` | 200 in 0.34 s |
-| gudvector-site.vercel.app `/q/nonexistent-token` | 200 "couldn't find" in 1.20 s → wired to GVAS |
+| gudvector-site.vercel.app `/` | 200 in 0.29 s |
+| gudvector-site.vercel.app `/q/nonexistent-token` | 200 "couldn't find" in 1.21 s → wired to GVAS |
 | gudvector-site.vercel.app `/contact`, `/book`, `/portal`, `/sms-opt-in` | all 200 |
-| gudvector.com | Online: 200 in 0.31 s — but `/contact`, `/book`, `/sms-opt-in`, `/q/*` 404 and `/portal` 307 → old deployment/project. Point the domain at the current `gudvector-site` project. |
+| gudvector.com | Online: 200 in 0.36 s — but `/contact`, `/book`, `/sms-opt-in`, `/q/*` 404 and `/portal` 307 → old deployment/project. Point the domain at the current `gudvector-site` project. |
 
 ## Integrations
 
