@@ -60,10 +60,17 @@ GENERIC_NOT_FOUND = "not found"
 GENERIC_UNAUTHORIZED = "unauthorized"
 
 
+class IntakeStartBody(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    sms_consent: bool | None = Field(default=None, alias="smsConsent")
+
+
 class IntakeMessageBody(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     message: str = Field(min_length=1, max_length=INTAKE_MESSAGE_MAX_CHARS)
+    sms_consent: bool | None = Field(default=None, alias="smsConsent")
 
 
 def _slot_payloads(
@@ -86,6 +93,7 @@ def intake_start_payload(start: IntakeStart) -> dict[str, object]:
         "state": start.conversation.state.value,
         "reply": start.reply,
         "slots": None,
+        "smsConsent": start.conversation.sms_consent,
     }
 
 
@@ -99,6 +107,7 @@ def intake_reply_payload(
         "slots": _slot_payloads(conversation),
         "summary": summary,
         "bookingKind": conversation.booking_kind,
+        "smsConsent": conversation.sms_consent,
     }
 
 
@@ -123,6 +132,7 @@ def intake_view_payload(
         # customer's confirmation link is still outstanding, else null — the
         # widget shows booked vs awaiting-confirmation distinctly.
         "bookingKind": conversation.booking_kind,
+        "smsConsent": conversation.sms_consent,
     }
 
 
@@ -374,9 +384,12 @@ def _mount_intake(router: APIRouter, intake: IntakeService, limited: list[params
         dependencies=limited,
         status_code=201,
     )
-    async def create_intake_conversation(public_key: str) -> JSONResponse:
+    async def create_intake_conversation(
+        public_key: str, body: IntakeStartBody | None = None
+    ) -> JSONResponse:
+        consent = None if body is None else body.sms_consent
         try:
-            start = await intake.start_conversation(public_key)
+            start = await intake.start_conversation(public_key, sms_consent=consent)
         except IntakeNotFoundError:
             return JSONResponse({"detail": GENERIC_NOT_FOUND}, status_code=404)
         except IntakeLimitError:
@@ -391,6 +404,8 @@ def _mount_intake(router: APIRouter, intake: IntakeService, limited: list[params
         conversation = await _intake_authenticate(intake, request, resolved)
         if not body.message.strip():
             return JSONResponse({"detail": "message is required"}, status_code=422)
+        if body.sms_consent is not None:
+            conversation = await intake.record_sms_consent(conversation, body.sms_consent)
         try:
             result = await intake.post_message(conversation, body.message)
         except IntakeClosedError:

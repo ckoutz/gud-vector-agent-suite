@@ -373,7 +373,7 @@ def build_application(
             else None
         ),
         intake_text=(
-            SendIntakeCustomerTextService(ports.customer_text)
+            SendIntakeCustomerTextService(ports.customer_text, unit_of_work_factory)
             if ports.customer_text is not None
             else None
         ),

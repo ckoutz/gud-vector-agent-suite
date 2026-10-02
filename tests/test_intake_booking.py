@@ -26,6 +26,7 @@ from gvas.application.intake import (
     UNAVAILABLE_REPLY,
     IntakeClosedError,
     IntakeDeliveryError,
+    IntakeTextStatus,
     SendIntakeCustomerEmailService,
     SendIntakeCustomerTextService,
 )
@@ -58,15 +59,18 @@ from gvas.domain.messages import (
     CustomerTextRequest,
     DeliveryReceipt,
 )
+from gvas.infrastructure.customer_repositories import SqlCustomerRepository
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
 from gvas.infrastructure.models import OutboxMessage
 from gvas.infrastructure.repositories import SqlBusinessRepository
+from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
 from gvas.interfaces.http.app import create_app
 from gvas.interfaces.http.portal import create_portal_router
 from gvas.interfaces.http.public import create_public_router
 from test_composition import Clock, inbound, seed_business
 from test_hosted_quotes import CustomerTextFake
 from test_pilot_runtime import deterministic_ports, immediate_worker, texts_of
+from test_portal_quote_handoff import consent_to_texts
 
 NOW = datetime(2026, 1, 5, 12, 0, tzinfo=UTC)  # a Monday
 PUBLIC_KEY = "gvb_intake_test"
@@ -266,6 +270,7 @@ async def reach_awaiting_owner(
     availability: AvailabilityFake,
     agent: IntakeAgentFake | None = None,
     customer_text: CustomerTextFake | None = None,
+    sms_consent: bool | None = None,
 ) -> tuple[Application, OwnerReplyFake, BusinessId, str]:
     """Drives one conversation to ``awaiting_owner`` via HTTP; returns the ref."""
 
@@ -294,9 +299,13 @@ async def reach_awaiting_owner(
     await immediate_worker(application).drain()
 
     async with http_client(application) as client:
-        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        start_body = None if sms_consent is None else {"smsConsent": sms_consent}
+        created = await client.post(
+            f"/v1/businesses/{PUBLIC_KEY}/intake/conversations", json=start_body
+        )
         assert created.status_code == 201
         body = created.json()
+        assert body["smsConsent"] is sms_consent
         token = body["conversationToken"]
         headers = {"Authorization": f"Bearer {token}"}
         conversation_id = body["conversationId"]
@@ -621,7 +630,7 @@ async def test_owner_approve_with_link_fallback_sends_link_and_text(
     availability = AvailabilityFake(result=BookingResult(kind=BookingKind.LINK, link=link))
     customer_text = CustomerTextFake()
     application, owner, business_id, reference = await reach_awaiting_owner(
-        session_factory, availability=availability, customer_text=customer_text
+        session_factory, availability=availability, customer_text=customer_text, sms_consent=True
     )
     await application.ingest_service.ingest(
         inbound(business_id, f"approve booking {reference}", message_key="approve-2")
@@ -924,11 +933,22 @@ async def test_failed_customer_deliveries_raise_so_the_outbox_retries(
                 "idempotency_key": "key-1",
             },
         )
-    text = SendIntakeCustomerTextService(FailingText())
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    await consent_to_texts(session_factory, business_id, EMAIL)
+    async with session_factory() as session:
+        customer = await SqlCustomerRepository(session).find_by_email(business_id, EMAIL)
+    assert customer is not None
+    text = SendIntakeCustomerTextService(FailingText(), SqlUnitOfWorkFactory(session_factory))
     with pytest.raises(IntakeDeliveryError):
         await text.send(
-            BusinessId(uuid4()),
-            {"phone": "+15555550100", "text": "details", "idempotency_key": "key-2"},
+            business_id,
+            {
+                "customer_id": str(customer.customer_id),
+                "phone": "+15555550100",
+                "text": "details",
+                "idempotency_key": "key-2",
+            },
         )
 
 
@@ -1205,3 +1225,109 @@ def test_only_a_business_s_own_questions_waive_the_address() -> None:
     assert summary is not None and summary["details"] == "ants"
     with_address = collected.model_copy(update={"address": "2 Elm St"})
     assert with_address.summary() is not None
+
+
+async def customer_row(
+    session_factory: async_sessionmaker[AsyncSession], business_id: BusinessId
+) -> CustomerRecord:
+    async with session_factory() as session:
+        customer = await SqlCustomerRepository(session).find_by_email(business_id, EMAIL)
+    assert customer is not None
+    return customer
+
+
+async def approve_link_booking(
+    session_factory: async_sessionmaker[AsyncSession], *, sms_consent: bool | None
+) -> tuple[BusinessId, CustomerTextFake]:
+    availability = AvailabilityFake(
+        result=BookingResult(kind=BookingKind.LINK, link="https://calendly.com/test/x?s=1")
+    )
+    customer_text = CustomerTextFake()
+    application, _, business_id, reference = await reach_awaiting_owner(
+        session_factory,
+        availability=availability,
+        customer_text=customer_text,
+        sms_consent=sms_consent,
+    )
+    await application.ingest_service.ingest(
+        inbound(business_id, f"approve booking {reference}", message_key="approve-consent")
+    )
+    for _ in range(6):
+        await immediate_worker(application).drain()
+    return business_id, customer_text
+
+
+@pytest.mark.asyncio
+async def test_sms_consent_is_stored_and_copied_to_the_customer_on_the_booking_request(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id, customer_text = await approve_link_booking(session_factory, sms_consent=True)
+
+    row = await conversation_row(session_factory, business_id)
+    assert row.sms_consent is True and row.sms_consent_at is not None
+    customer = await customer_row(session_factory, business_id)
+    assert customer.sms_consent is True and customer.sms_consent_at is not None
+    assert len(customer_text.requests) == 1
+    assert customer_text.requests[0].phone_number == "+15555550100"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sms_consent", [None, False])
+async def test_booking_is_emailed_but_never_texted_without_sms_consent(
+    session_factory: async_sessionmaker[AsyncSession], sms_consent: bool | None
+) -> None:
+    business_id, customer_text = await approve_link_booking(
+        session_factory, sms_consent=sms_consent
+    )
+
+    assert await commands_of(session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE)
+    assert await commands_of(session_factory, business_id, INTAKE_CUSTOMER_TEXT_COMMAND_TYPE) == []
+    assert customer_text.requests == []
+    customer = await customer_row(session_factory, business_id)
+    assert customer.sms_consent is sms_consent
+
+
+@pytest.mark.asyncio
+async def test_sms_consent_on_a_message_updates_the_conversation_and_response(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await intake_business(session_factory)
+    application, _ = intake_app(
+        session_factory, agent=IntakeAgentFake([IntakeTurn(reply="What do you need?")])
+    )
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        body = created.json()
+        assert body["smsConsent"] is None
+        headers = {"Authorization": f"Bearer {body['conversationToken']}"}
+        url = f"/v1/intake/conversations/{body['conversationId']}"
+        posted = await client.post(
+            f"{url}/messages",
+            json={"message": "hi", "sms_consent": True},
+            headers=headers,
+        )
+        assert posted.status_code == 200
+        assert posted.json()["smsConsent"] is True
+        viewed = await client.get(url, headers=headers)
+        assert viewed.json()["smsConsent"] is True
+
+
+@pytest.mark.asyncio
+async def test_queued_intake_text_is_dropped_unless_the_customer_consented(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    customer_text = CustomerTextFake()
+    service = SendIntakeCustomerTextService(customer_text, SqlUnitOfWorkFactory(session_factory))
+    payload = {"phone": "+15555550100", "text": "details", "idempotency_key": "key-3"}
+
+    assert await service.send(business_id, payload) is IntakeTextStatus.NO_CONSENT
+    await consent_to_texts(session_factory, business_id, EMAIL, consent=False)
+    customer = await customer_row(session_factory, business_id)
+    with_customer = {**payload, "customer_id": str(customer.customer_id)}
+    assert await service.send(business_id, with_customer) is IntakeTextStatus.NO_CONSENT
+    assert customer_text.requests == []
+    await consent_to_texts(session_factory, business_id, EMAIL, consent=True)
+    assert await service.send(business_id, with_customer) is IntakeTextStatus.SENT
+    assert len(customer_text.requests) == 1

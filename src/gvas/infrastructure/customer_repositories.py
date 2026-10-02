@@ -47,6 +47,8 @@ class SqlCustomerRepository:
             display_name=row.display_name,
             phone=row.phone,
             stripe_customer_id=row.stripe_customer_id,
+            sms_consent=row.sms_consent,
+            sms_consent_at=_aware_or_none(row.sms_consent_at),
             created_at=_aware(row.created_at),
         )
 
@@ -116,6 +118,15 @@ class SqlCustomerRepository:
                 Customer.stripe_customer_id.is_(None),
             )
             .values(stripe_customer_id=stripe_customer_id)
+        )
+
+    async def set_sms_consent(
+        self, business_id: BusinessId, customer_id: CustomerId, consent: bool, at: datetime
+    ) -> None:
+        await self.session.execute(
+            update(Customer)
+            .where(Customer.business_id == business_id, Customer.id == customer_id)
+            .values(sms_consent=consent, sms_consent_at=at)
         )
 
 

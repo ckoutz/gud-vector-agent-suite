@@ -2,6 +2,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -297,6 +298,8 @@ class Customer(Base):
     display_name: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(64))
     stripe_customer_id: Mapped[str | None] = mapped_column(String(255))
+    sms_consent: Mapped[bool | None] = mapped_column(Boolean)
+    sms_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

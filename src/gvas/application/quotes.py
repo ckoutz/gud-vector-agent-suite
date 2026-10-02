@@ -429,13 +429,16 @@ class DeliverApprovedQuoteService:
         if receipt.status is DeliveryStatus.FAILED:
             raise QuoteDeliveryError(receipt.detail or "quote delivery failed")
         delivered = quote.record_delivery(receipt)
-        texting = self._will_text(delivered)
         try:
             async with self._unit_of_work_factory() as unit_of_work:
                 await unit_of_work.quotes.save(delivered, expected_version=quote.version)
+                consented = await customer_consented_to_texts(unit_of_work, delivered)
+                texting = self._will_text(delivered) and consented
                 if texting:
                     await unit_of_work.outbox.enqueue(quote_text_command(delivered))
-                await self._confirm_to_owner(unit_of_work, delivered, texting=texting)
+                await self._confirm_to_owner(
+                    unit_of_work, delivered, texting=texting, consented=consented
+                )
                 await unit_of_work.commit()
         except QuoteConcurrencyError:
             async with self._unit_of_work_factory() as unit_of_work:
@@ -478,7 +481,7 @@ class DeliverApprovedQuoteService:
         )
 
     async def _confirm_to_owner(
-        self, unit_of_work: UnitOfWork, quote: Quote, *, texting: bool
+        self, unit_of_work: UnitOfWork, quote: Quote, *, texting: bool, consented: bool
     ) -> None:
         """Anchored on the message that started the quote; without one (nothing
         was ingested through a channel) there is nowhere to reply."""
@@ -495,7 +498,9 @@ class DeliverApprovedQuoteService:
             conversation_ref=quote.conversation_ref,
             parts=(
                 TextPart(
-                    text=quote_delivered_reply(quote.draft, quote.delivery_receipt, texting=texting)
+                    text=quote_delivered_reply(
+                        quote.draft, quote.delivery_receipt, texting=texting, consented=consented
+                    )
                 ),
             ),
             correlation_id=f"quote:{quote.quote_id}:delivered",
@@ -534,6 +539,7 @@ class SiteAwareQuoteDelivery:
 class QuoteTextStatus(StrEnum):
     SENT = "sent"
     NOTHING_TO_TEXT = "nothing_to_text"
+    NO_CONSENT = "no_consent"
     NOT_DELIVERED = "not_delivered"
     MISSING = "missing"
 
@@ -563,6 +569,7 @@ class TextDeliveredQuoteService:
     async def text(self, business_id: BusinessId, quote_id: QuoteId) -> QuoteTextOutcome:
         async with self._unit_of_work_factory() as unit_of_work:
             quote = await unit_of_work.quotes.get(business_id, quote_id)
+            consented = quote is not None and await customer_consented_to_texts(unit_of_work, quote)
             await unit_of_work.commit()
         if quote is None:
             return QuoteTextOutcome(QuoteTextStatus.MISSING, quote_id)
@@ -575,6 +582,8 @@ class TextDeliveredQuoteService:
         phone_number = draft.recipient.phone_number
         if phone_number is None:
             return QuoteTextOutcome(QuoteTextStatus.NOTHING_TO_TEXT, quote_id)
+        if not consented:
+            return QuoteTextOutcome(QuoteTextStatus.NO_CONSENT, quote_id)
         sent = await self._text_port.send_text(
             CustomerTextRequest(
                 business_id=quote.business_id,
@@ -586,6 +595,15 @@ class TextDeliveredQuoteService:
         if sent.status is DeliveryStatus.FAILED:
             raise QuoteTextError(sent.detail or "customer text failed")
         return QuoteTextOutcome(QuoteTextStatus.SENT, quote_id)
+
+
+async def customer_consented_to_texts(unit_of_work: UnitOfWork, quote: Quote) -> bool:
+    """Only a linked customer who said yes to texts may be texted."""
+
+    if quote.customer_id is None:
+        return False
+    customer = await unit_of_work.customers.get(quote.business_id, quote.customer_id)
+    return customer is not None and customer.sms_consent is True
 
 
 def normalized_text(message: NormalizedOwnerMessage) -> str:
@@ -728,7 +746,11 @@ def _owner_quote_body(quote: Quote) -> str:
 
 
 def quote_delivered_reply(
-    draft: QuoteDraftProposal, receipt: DeliveryReceipt, *, texting: bool
+    draft: QuoteDraftProposal,
+    receipt: DeliveryReceipt,
+    *,
+    texting: bool,
+    consented: bool = True,
 ) -> str:
     """What the owner is told once the customer holds a hosted quote: the
     link, and which channels carried it."""
@@ -740,6 +762,8 @@ def quote_delivered_reply(
     phone = recipient.phone_number if texting else None
     if email and phone:
         lines.append(f"Emailed to {email}; texting {phone}.")
+    elif email and recipient.phone_number and not consented:
+        lines.append(f"Emailed to {email}. No SMS consent on file, so no text.")
     elif email:
         lines.append(f"Emailed to {email}. No phone on file, so no text.")
     elif phone:

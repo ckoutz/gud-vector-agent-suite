@@ -11,6 +11,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -61,6 +62,8 @@ class IntakeConversation(Base):
     decision_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     owner_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     escalation_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sms_consent: Mapped[bool | None] = mapped_column(Boolean)
+    sms_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

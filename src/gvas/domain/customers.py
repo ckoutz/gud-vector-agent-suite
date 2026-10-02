@@ -52,6 +52,10 @@ class CustomerRecord(CustomerModel):
     phone: str | None = None
     # The billing provider's customer handle, once a subscription was opened.
     stripe_customer_id: str | None = None
+    # Whether the customer agreed to receive texts; only ``True`` lets GVAS
+    # text them. ``None`` means they were never asked.
+    sms_consent: bool | None = None
+    sms_consent_at: datetime | None = None
     created_at: datetime
 
     @field_validator("email")
@@ -219,6 +223,10 @@ class CustomerRepository(Protocol):
 
     async def set_stripe_customer_id(
         self, business_id: BusinessId, customer_id: CustomerId, stripe_customer_id: str
+    ) -> None: ...
+
+    async def set_sms_consent(
+        self, business_id: BusinessId, customer_id: CustomerId, consent: bool, at: datetime
     ) -> None: ...
 
 
