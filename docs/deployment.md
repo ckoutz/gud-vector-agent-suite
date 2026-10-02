@@ -127,8 +127,12 @@ gated.
   `POST /v1/intake/conversations/{id}/messages` or
   `POST /v1/portal/intake/conversations`. It is stored on the conversation
   (`sms_consent`, `sms_consent_at`) and copied onto the customer record when
-  the visitor picks a slot (the booking request); a later change on the same
-  conversation updates the customer too. Responses echo it as `smsConsent`.
+  the visitor picks a slot (the booking request); a signed-in portal
+  customer's answer reaches their record immediately, and a later change on
+  the same conversation updates the customer too. The newest answer wins: an
+  older chat for the same email never overwrites a newer one. A "no" is
+  accepted even after the booking was approved or declined; a new "yes" needs
+  a live chat. Responses echo it as `smsConsent`.
 - **Quotes**: a quote's text goes out only when its recipient is a linked
   customer who consented through intake; phone-only quote recipients have no
   customer record, so they are never texted. The owner confirmation says

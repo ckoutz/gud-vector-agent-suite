@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.engine import CursorResult, Result
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -125,7 +125,11 @@ class SqlCustomerRepository:
     ) -> None:
         await self.session.execute(
             update(Customer)
-            .where(Customer.business_id == business_id, Customer.id == customer_id)
+            .where(
+                Customer.business_id == business_id,
+                Customer.id == customer_id,
+                or_(Customer.sms_consent_at.is_(None), Customer.sms_consent_at <= at),
+            )
             .values(sms_consent=consent, sms_consent_at=at)
         )
 

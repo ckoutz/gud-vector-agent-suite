@@ -49,6 +49,7 @@ from gvas.domain.intake import (
     IntakeCollected,
     IntakeConversation,
     IntakeProfile,
+    IntakeState,
     IntakeTurn,
     IntakeTurnRequest,
     booking_request_notice,
@@ -61,6 +62,7 @@ from gvas.domain.messages import (
 )
 from gvas.infrastructure.customer_repositories import SqlCustomerRepository
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
+from gvas.infrastructure.intake_repositories import SqlIntakeConversationRepository
 from gvas.infrastructure.models import OutboxMessage
 from gvas.infrastructure.repositories import SqlBusinessRepository
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
@@ -1331,3 +1333,81 @@ async def test_queued_intake_text_is_dropped_unless_the_customer_consented(
     await consent_to_texts(session_factory, business_id, EMAIL, consent=True)
     assert await service.send(business_id, with_customer) is IntakeTextStatus.SENT
     assert len(customer_text.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_older_answer_never_overwrites_a_newer_one(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    await consent_to_texts(session_factory, business_id, EMAIL, consent=True)
+    customer = await customer_row(session_factory, business_id)
+    assert customer.sms_consent_at is not None
+    withdrawn_at = customer.sms_consent_at + timedelta(hours=2)
+    async with session_factory() as session:
+        customers = SqlCustomerRepository(session)
+        await customers.set_sms_consent(business_id, customer.customer_id, False, withdrawn_at)
+        await customers.set_sms_consent(
+            business_id, customer.customer_id, True, withdrawn_at - timedelta(hours=1)
+        )
+        await session.commit()
+
+    customer = await customer_row(session_factory, business_id)
+    assert customer.sms_consent is False
+    assert customer.sms_consent_at == withdrawn_at
+
+
+@pytest.mark.asyncio
+async def test_portal_start_answer_reaches_the_customer_immediately(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await intake_business(session_factory)
+    application, _ = intake_app(session_factory)
+    assert application.intake is not None
+    await consent_to_texts(session_factory, business_id, EMAIL, consent=True)
+    customer = await customer_row(session_factory, business_id)
+    async with session_factory() as db_session:
+        business_row = await SqlBusinessRepository(db_session).get(business_id)
+    assert business_row is not None
+
+    start = await application.intake.start_portal_conversation(
+        business_row, customer, sms_consent=False
+    )
+
+    assert start.conversation.sms_consent is False
+    assert (await customer_row(session_factory, business_id)).sms_consent is False
+    inherited = await application.intake.start_portal_conversation(
+        business_row, await customer_row(session_factory, business_id)
+    )
+    assert inherited.conversation.sms_consent is False
+
+
+@pytest.mark.asyncio
+async def test_a_no_is_accepted_after_approval_but_a_new_yes_is_not(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    availability = AvailabilityFake()
+    application, _, business_id, reference = await reach_awaiting_owner(
+        session_factory, availability=availability, sms_consent=True
+    )
+    assert application.intake is not None
+    await application.ingest_service.ingest(
+        inbound(business_id, f"approve booking {reference}", message_key="approve-withdraw")
+    )
+    for _ in range(6):
+        await immediate_worker(application).drain()
+    async with session_factory() as session:
+        conversation = await SqlIntakeConversationRepository(session).find_by_reference(
+            business_id, reference
+        )
+    assert conversation is not None and conversation.state is IntakeState.APPROVED
+
+    withdrawn = await application.intake.record_sms_consent(conversation, False)
+
+    assert withdrawn.sms_consent is False
+    assert (await conversation_row(session_factory, business_id)).sms_consent is False
+    assert (await customer_row(session_factory, business_id)).sms_consent is False
+    again = await application.intake.record_sms_consent(withdrawn, True)
+    assert again.sms_consent is False
+    assert (await customer_row(session_factory, business_id)).sms_consent is False

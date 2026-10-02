@@ -227,7 +227,9 @@ class CustomerRepository(Protocol):
 
     async def set_sms_consent(
         self, business_id: BusinessId, customer_id: CustomerId, consent: bool, at: datetime
-    ) -> None: ...
+    ) -> None:
+        """Records the answer unless the customer already has a newer one."""
+        ...
 
 
 class PortalLoginTokenRepository(Protocol):

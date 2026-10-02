@@ -228,8 +228,9 @@ class IntakeService:
     ) -> IntakeStart:
         customer_record = customer
         now = self._now()
-        consent_at = None if sms_consent is None else now
-        if sms_consent is None and customer_record is not None:
+        answered = sms_consent is not None
+        consent_at = now if answered else None
+        if not answered and customer_record is not None:
             sms_consent = customer_record.sms_consent
             consent_at = customer_record.sms_consent_at
         token = new_conversation_token()
@@ -259,6 +260,10 @@ class IntakeService:
             updated_at=now,
         )
         await unit_of_work.intake_conversations.add(conversation)
+        if customer_record is not None and answered and sms_consent is not None:
+            await unit_of_work.customers.set_sms_consent(
+                business.business_id, customer_record.customer_id, sms_consent, now
+            )
         await self._append(unit_of_work, conversation, IntakeMessageRole.AGENT, reply, now)
         await unit_of_work.commit()
         return IntakeStart(conversation=conversation, token=token, reply=reply)
@@ -283,14 +288,19 @@ class IntakeService:
         self, conversation: IntakeConversation, consent: bool
     ) -> IntakeConversation:
         """Stores the visitor's SMS consent answer; once a booking request
-        made them a customer, the customer record follows it too."""
+        made them a customer, the customer record follows it too. A finished
+        chat still accepts a withdrawal, never a new yes."""
 
         now = self._now()
         async with self._unit_of_work_factory() as unit_of_work:
             locked = await unit_of_work.intake_conversations.lock(
                 conversation.business_id, conversation.conversation_id
             )
-            if locked is None or not locked.is_live(now) or locked.sms_consent is consent:
+            if (
+                locked is None
+                or locked.sms_consent is consent
+                or (consent and not locked.is_live(now))
+            ):
                 await unit_of_work.commit()
                 return locked or conversation
             updated = locked.with_updates(now, sms_consent=consent, sms_consent_at=now)
