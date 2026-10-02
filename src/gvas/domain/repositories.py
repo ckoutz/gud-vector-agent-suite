@@ -24,7 +24,11 @@ from gvas.domain.identifiers import (
     WorkflowIntent,
     WorkflowRunId,
 )
-from gvas.domain.intake import IntakeConversationRepository, IntakeMessageRepository
+from gvas.domain.intake import (
+    IntakeConversationRepository,
+    IntakeMessageRepository,
+    IntakeProfile,
+)
 from gvas.domain.messages import (
     ChannelEndpointRef,
     ConversationRef,
@@ -96,6 +100,9 @@ class BusinessRecord(BaseModel):
     calendly_url: str | None = None
     stripe_account_id: str | None = None
     public_key: str | None = None
+    # What the website booking agent says the business is, asks and opens
+    # with; empty means the generic default.
+    intake_profile: IntakeProfile = IntakeProfile()
 
     @field_validator("site_url")
     @classmethod
@@ -198,9 +205,13 @@ class BusinessRepository(Protocol):
         calendly_url: str | None = None,
         stripe_account_id: str | None = None,
         public_key: str | None = None,
+        intake_brief: str | None = None,
+        intake_questions: str | None = None,
+        intake_opening: str | None = None,
         now: datetime,
     ) -> BusinessRecord:
-        """Set hosted-quote fields; ``None`` arguments leave stored values."""
+        """Set hosted-quote and intake-profile fields; ``None`` arguments
+        leave stored values."""
         ...
 
 

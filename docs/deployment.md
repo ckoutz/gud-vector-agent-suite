@@ -229,6 +229,23 @@ undoes the other, and owner failure notices stay sanitized.
   local development hosts. `--stripe-account-id` stores a future Stripe
   Connect account id; it is stored only. Run it from the Railway shell after
   the migration like `gvas-bootstrap`.
+- **Per-business booking agent**: the same CLI stores the website intake
+  agent's profile. `--intake-brief` (1–3 sentences: what the business does and
+  what the agent books) and `--intake-questions` (what to find out beyond
+  name, email and phone) are injected into the agent's prompt;
+  `--intake-opening` replaces the chat's first message (the portal "welcome
+  back" opening stays generic). Each flag is optional and an omitted flag
+  keeps the stored value. Without a profile the agent stays the generic
+  estimate/consultation flow and still needs a service address before it
+  offers times; with one it is ready on name, email and what the customer
+  needs plus whatever the questions ask for. For example:
+
+  ```sh
+  gvas-configure-business --business-id <uuid> \
+    --intake-brief "Acme Web builds websites for local trades; you book a free 20-minute discovery call." \
+    --intake-questions "whether they want a website, automation, or both; their business name and trade; their timeline" \
+    --intake-opening "Hi! Are you looking for a website, an automation, or both?"
+  ```
 - **Stripe** (`GVAS_STRIPE_SECRET_KEY`, `GVAS_STRIPE_WEBHOOK_SECRET`) is an
   optional pair: both set enables `accept` (Checkout Sessions via
   `api.stripe.com`, `Idempotency-Key` = the quote's delivery key) and the

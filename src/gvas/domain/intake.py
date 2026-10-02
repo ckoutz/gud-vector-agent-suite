@@ -18,7 +18,7 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import UUID, uuid4, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from gvas.domain.customers import hash_portal_token, new_portal_token, portal_token_matches
 from gvas.domain.identifiers import (
@@ -51,6 +51,11 @@ INTAKE_BOOKING_CANCEL_COMMAND_TYPE = "intake_booking.cancel"
 INTAKE_BOOKING_CANCEL_COMMAND_NAMESPACE = UUID("7e4b2a91-3c58-4d1e-b6f9-0a2d5c8e4f17")
 
 DECLINE_REASON_MAX_CHARS = 200
+INTAKE_BRIEF_MAX_CHARS = 1000
+INTAKE_QUESTIONS_MAX_CHARS = 2000
+INTAKE_OPENING_MAX_CHARS = 600
+INTAKE_DETAILS_MAX_CHARS = 2000
+INTAKE_NOTES_MAX_CHARS = 2000
 
 PRICE_GUARD_REPLY = (
     "I can't discuss pricing — the owner will confirm pricing when they review your request."
@@ -95,49 +100,94 @@ def _aware(value: datetime) -> datetime:
     return value
 
 
+class IntakeProfile(IntakeModel):
+    """Per-business agent copy: what the business is and books (``brief``),
+    what to find out beyond contact details (``questions``) and the first
+    message a visitor reads (``opening``). ``None`` means the generic
+    default."""
+
+    brief: str | None = Field(default=None, max_length=INTAKE_BRIEF_MAX_CHARS)
+    questions: str | None = Field(default=None, max_length=INTAKE_QUESTIONS_MAX_CHARS)
+    opening: str | None = Field(default=None, max_length=INTAKE_OPENING_MAX_CHARS)
+
+    @property
+    def is_configured(self) -> bool:
+        return any(value for value in (self.brief, self.questions, self.opening))
+
+
 class IntakeCollected(IntakeModel):
-    """What the agent has gathered so far; ``None`` means not yet asked."""
+    """What the agent has gathered so far; ``None`` means not yet asked.
+
+    ``details`` is what the customer needs in their words; ``notes`` holds
+    answers to the business's own intake questions. ``address``,
+    ``property_type`` and ``urgency`` are optional, for businesses whose
+    questions ask for them.
+    """
 
     name: str | None = Field(default=None, max_length=200)
     email: str | None = Field(default=None, max_length=320)
     phone: str | None = Field(default=None, max_length=64)
+    details: str | None = Field(default=None, max_length=INTAKE_DETAILS_MAX_CHARS)
+    notes: str | None = Field(default=None, max_length=INTAKE_NOTES_MAX_CHARS)
     address: str | None = Field(default=None, max_length=500)
-    problem: str | None = Field(default=None, max_length=2000)
     property_type: str | None = Field(default=None, alias="propertyType", max_length=200)
     urgency: str | None = Field(default=None, max_length=200)
 
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_problem_is_details(cls, data: object) -> object:
+        """Snapshots written before ``details`` carried it as ``problem``."""
+
+        if isinstance(data, Mapping) and "problem" in data:
+            values = dict(data)
+            problem = values.pop("problem")
+            if values.get("details") is None:
+                values["details"] = problem
+            return values
+        return data
+
     def merge(self, reported: "IntakeCollected") -> "IntakeCollected":
-        """Fills blanks with newly reported values; never overwrites."""
+        """Fills blanks with newly reported values; never overwrites.
+
+        ``notes`` accumulates instead: a new note is appended unless it
+        already repeats (or extends) what is stored.
+        """
 
         updates: dict[str, object] = {}
         for key in (
             "name",
             "email",
             "phone",
+            "details",
             "address",
-            "problem",
             "property_type",
             "urgency",
         ):
             value = getattr(reported, key)
             if getattr(self, key) is None and value is not None and value.strip():
                 updates[key] = value.strip()
+        notes = _merged_notes(self.notes, reported.notes)
+        if notes != self.notes:
+            updates["notes"] = notes
         return self.model_copy(update=updates)
 
     @property
     def ready_for_slots(self) -> bool:
-        """Contact details and the job description needed before scheduling."""
+        """Contact details and what the customer needs, before scheduling."""
 
         return all(
-            value is not None and value.strip()
-            for value in (self.name, self.email, self.address, self.problem)
+            value is not None and value.strip() for value in (self.name, self.email, self.details)
         )
 
     def as_stored(self) -> dict[str, object]:
         return self.model_dump(mode="json", by_alias=True)
 
     def summary(self) -> dict[str, object] | None:
-        """The public summary projection: only once the request is complete."""
+        """The public summary projection: only once the request is complete.
+
+        ``problem`` mirrors ``details`` for widgets built against the
+        original shape.
+        """
 
         if not self.ready_for_slots:
             return None
@@ -146,8 +196,23 @@ class IntakeCollected(IntakeModel):
             "email": self.email,
             "phone": self.phone,
             "address": self.address,
-            "problem": self.problem,
+            "problem": self.details,
+            "details": self.details,
+            "notes": self.notes,
         }
+
+
+def _merged_notes(stored: str | None, reported: str | None) -> str | None:
+    new = " ".join((reported or "").split())
+    if not new:
+        return stored
+    if not stored:
+        return new[:INTAKE_NOTES_MAX_CHARS]
+    if new.lower() in stored.lower():
+        return stored
+    if stored.lower() in new.lower():
+        return new[:INTAKE_NOTES_MAX_CHARS]
+    return f"{stored}; {new}"[:INTAKE_NOTES_MAX_CHARS]
 
 
 class AvailableSlot(IntakeModel):
@@ -364,13 +429,21 @@ def booking_request_notice(
     conversation: IntakeConversation,
     *,
     business_name: str | None = None,
+    profile: IntakeProfile | None = None,
 ) -> str:
-    """The owner notice posted when a customer picks a slot."""
+    """The owner notice posted when a customer picks a slot.
+
+    Businesses with an intake profile do not book at an address, so a missing
+    one is left out instead of reported as unknown.
+    """
 
     collected = conversation.collected
-    name = collected.name or "A customer"
-    address = collected.address or "address unknown"
-    problem = collected.problem or "New request"
+    who = [collected.name or "A customer"]
+    if collected.address:
+        who.append(collected.address)
+    elif profile is None or not profile.is_configured:
+        who.append("address unknown")
+    details = collected.details or "New request"
     requested = (
         format_slot_label(conversation.requested_slot_start)
         if conversation.requested_slot_start is not None
@@ -378,9 +451,11 @@ def booking_request_notice(
     )
     ref = conversation.reference
     lines = [
-        f"Booking request #{ref} — {name}, {address}. {problem}. Requested {requested}.",
-        f"Reply `approve booking {ref}` or `decline booking {ref} <reason>`.",
+        f"Booking request #{ref} — {', '.join(who)}. {details}. Requested {requested}.",
     ]
+    if collected.notes:
+        lines.append(f"Notes: {collected.notes}")
+    lines.append(f"Reply `approve booking {ref}` or `decline booking {ref} <reason>`.")
     if business_name:
         lines.append(f"Business: {business_name}.")
     return "\n".join(lines)
@@ -395,7 +470,7 @@ def escalation_notice(conversation: IntakeConversation, summary: str) -> str:
         for part in (
             collected.name or "",
             collected.email or "",
-            collected.problem or "",
+            collected.details or "",
         )
         if part
     )
@@ -590,6 +665,10 @@ class IntakeTurnRequest(IntakeModel):
     # Portal-linked customers already identified themselves; the agent skips
     # name/email/phone questions and only asks about the new service.
     known_customer: bool = False
+    # The business's intake profile; ``None`` means the agent's generic
+    # default.
+    brief: str | None = Field(default=None, max_length=INTAKE_BRIEF_MAX_CHARS)
+    questions: str | None = Field(default=None, max_length=INTAKE_QUESTIONS_MAX_CHARS)
 
 
 class IntakeTurn(IntakeModel):

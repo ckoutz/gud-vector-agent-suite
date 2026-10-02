@@ -19,6 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from gvas.config import OpenAISettings
 from gvas.domain.intake import (
+    INTAKE_DETAILS_MAX_CHARS,
+    INTAKE_NOTES_MAX_CHARS,
     IntakeAgentError,
     IntakeCollected,
     IntakeMessageRole,
@@ -36,14 +38,22 @@ MAX_REPLY_CHARS: Final = 600
 MAX_SUMMARY_CHARS: Final = 800
 TRANSCRIPT_MESSAGE_LIMIT: Final = 40
 
-SYSTEM_PROMPT: Final = """You are the booking assistant on a small service business's website.
-Customers message you to request an inspection or estimate and pick a time.
+DEFAULT_BRIEF: Final = "a small service business; you book an estimate or consultation"
+DEFAULT_QUESTIONS: Final = (
+    "what the problem or service need is (record it as `details`), the "
+    "property address, the property type, and how urgent it is"
+)
 
-Collect, conversationally: the customer's name, email, phone (optional), the
-property address, what the problem or service need is, the property type, and
-how urgent it is. The JSON you return carries the fields you have learned so
-far in `collected`; leave fields empty when the customer has not answered them
-yet.
+SYSTEM_PROMPT_TEMPLATE: Final = """You are the booking assistant on a business's website.
+About the business: {brief}
+Customers message you to request a booking and pick a time.
+
+Collect, conversationally: the customer's name, email, phone (optional), and
+{questions}. The JSON you return carries the fields you have learned so far in
+`collected`: `details` is what the customer needs, in a sentence; `notes`
+holds the other answers to the questions above; fill `address`,
+`propertyType` and `urgency` only when the customer gives them. Leave fields
+empty when the customer has not answered them yet.
 
 Rules:
 - Ask one question at a time. Keep every reply under 60 words, warm and plain.
@@ -53,9 +63,9 @@ Rules:
   only times in that list may be picked; help the customer choose one and set
   `chosen_slot` to its ISO `start` once they commit ("the second one",
   "Tuesday at 9"). Set it to null until they do, and while the list is empty.
-- Set `ready_for_slots` to true once you have at least the name, email,
-  address and problem — and the customer has indicated they want to book a
-  time.
+- Set `ready_for_slots` to true once you have at least the name, email and
+  details, plus the answers to the questions above that the customer is able
+  to give — and the customer has indicated they want to book a time.
 - If the customer is an existing customer (`known_customer` is true), their
   name, email and phone are already collected — do not ask for them again;
   ask about the new service.
@@ -66,6 +76,21 @@ Rules:
 - `reply` is the next thing the customer reads. When everything needed is
   collected, say that the owner will review and confirm — never that anything
   is booked."""
+
+SYSTEM_PROMPT: Final = SYSTEM_PROMPT_TEMPLATE.format(
+    brief=DEFAULT_BRIEF, questions=DEFAULT_QUESTIONS
+)
+
+
+def system_prompt(brief: str | None = None, questions: str | None = None) -> str:
+    """The system prompt for one business; blank profile fields fall back
+    to the generic defaults."""
+
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        brief=_squash(brief or "") or DEFAULT_BRIEF,
+        questions=_squash(questions or "").rstrip(".") or DEFAULT_QUESTIONS,
+    )
+
 
 RESPONSE_SCHEMA: Final[dict[str, Any]] = {
     "type": "object",
@@ -87,8 +112,9 @@ RESPONSE_SCHEMA: Final[dict[str, Any]] = {
                 "name",
                 "email",
                 "phone",
+                "details",
+                "notes",
                 "address",
-                "problem",
                 "propertyType",
                 "urgency",
             ],
@@ -96,8 +122,9 @@ RESPONSE_SCHEMA: Final[dict[str, Any]] = {
                 "name": {"type": "string"},
                 "email": {"type": "string"},
                 "phone": {"type": "string"},
+                "details": {"type": "string"},
+                "notes": {"type": "string"},
                 "address": {"type": "string"},
-                "problem": {"type": "string"},
                 "propertyType": {"type": "string"},
                 "urgency": {"type": "string"},
             },
@@ -116,8 +143,9 @@ class _ReportedCollected(BaseModel):
     name: str = ""
     email: str = ""
     phone: str = ""
+    details: str = ""
+    notes: str = ""
     address: str = ""
-    problem: str = ""
     property_type: str = Field(default="", alias="propertyType")
     urgency: str = ""
 
@@ -190,7 +218,7 @@ def _request_body(model: str, request: IntakeTurnRequest) -> dict[str, Any]:
         "model": model,
         "seed": SEED,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt(request.brief, request.questions)},
             {"role": "user", "content": _user_content(request)},
         ],
         "response_format": {
@@ -211,6 +239,8 @@ def _user_content(request: IntakeTurnRequest) -> str:
     return json.dumps(
         {
             "business_name": request.business_name,
+            "business_brief": _squash(request.brief or "") or DEFAULT_BRIEF,
+            "intake_questions": _squash(request.questions or "") or DEFAULT_QUESTIONS,
             "known_customer": request.known_customer,
             "collected_so_far": request.collected.as_stored(),
             "offered_slots": [
@@ -253,8 +283,9 @@ def _turn(response: httpx.Response) -> IntakeTurn:
             name=_blank_none(collected.name),
             email=_blank_none(collected.email),
             phone=_blank_none(collected.phone),
+            details=_clip(collected.details, INTAKE_DETAILS_MAX_CHARS),
+            notes=_clip(collected.notes, INTAKE_NOTES_MAX_CHARS),
             address=_blank_none(collected.address),
-            problem=_blank_none(collected.problem),
             property_type=_blank_none(collected.property_type),
             urgency=_blank_none(collected.urgency),
         ),
@@ -263,6 +294,10 @@ def _turn(response: httpx.Response) -> IntakeTurn:
         needs_human=reported.needs_human,
         summary=_squash(reported.summary)[:MAX_SUMMARY_CHARS],
     )
+
+
+def _clip(value: str, max_chars: int) -> str | None:
+    return _squash(value)[:max_chars].strip() or None
 
 
 def _blank_none(value: str) -> str | None:

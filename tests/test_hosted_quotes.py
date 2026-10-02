@@ -905,6 +905,9 @@ def test_configure_rejects_unusable_public_keys_and_booking_links() -> None:
             "calendly_url": CALENDLY_URL,
             "stripe_account_id": None,
             "public_key": "gvb_ok-1.~_x",
+            "intake_brief": None,
+            "intake_questions": None,
+            "intake_opening": None,
         }
         base.update(overrides)
         return Namespace(**base)

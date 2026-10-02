@@ -44,6 +44,7 @@ from gvas.domain.intake import (
     IntakeCustomerEmail,
     IntakeMessage,
     IntakeMessageRole,
+    IntakeProfile,
     IntakeState,
     IntakeTurnRequest,
     booking_decision,
@@ -108,6 +109,7 @@ OPENING_REPLY = (
     "Hi! I can help you book an inspection or estimate. What's going on, and where is the property?"
 )
 PORTAL_OPENING_REPLY = "Welcome back! What do you need this time, and where is the property?"
+BOOKING_ABOUT_MAX_CHARS = 120
 
 
 class IntakeError(ValueError):
@@ -224,7 +226,10 @@ class IntakeService:
                 email=customer_record.email,
                 phone=customer_record.phone,
             )
-        reply = PORTAL_OPENING_REPLY if customer_record is not None else OPENING_REPLY
+        if customer_record is not None:
+            reply = PORTAL_OPENING_REPLY
+        else:
+            reply = business.intake_profile.opening or OPENING_REPLY
         conversation = IntakeConversation(
             conversation_id=IntakeConversationId(uuid4()),
             business_id=business.business_id,
@@ -377,6 +382,8 @@ class IntakeService:
                     collected=conversation.collected,
                     offered_slots=conversation.proposed_slots,
                     known_customer=conversation.customer_id is not None,
+                    brief=business.intake_profile.brief,
+                    questions=business.intake_profile.questions,
                 )
             )
         except (IntakeAgentError, AvailabilityError) as error:
@@ -410,7 +417,7 @@ class IntakeService:
                 unit_of_work, current, turn.chosen_slot, now, explicit=False
             )
 
-        if turn.ready_for_slots and current.collected.ready_for_slots:
+        if turn.ready_for_slots and _ready_for_slots(current.collected, business.intake_profile):
             if current.state is IntakeState.PROPOSING_SLOTS:
                 # A re-offer while slots are on the table: the customer can
                 # still pick, just show them again.
@@ -495,7 +502,9 @@ class IntakeService:
             conversation.business_id,
             correlation_id=f"intake_request:{conversation.conversation_id}",
             text=booking_request_notice(
-                updated, business_name=business.display_name or business.name
+                updated,
+                business_name=business.display_name or business.name,
+                profile=business.intake_profile,
             ),
         )
         if not notified:
@@ -516,7 +525,7 @@ class IntakeService:
                     request_id=ServiceRequestId(uuid4()),
                     business_id=conversation.business_id,
                     customer_id=customer_id,
-                    message=collected.problem or "Booking request",
+                    message=collected.details or "Booking request",
                     preferred_dates=preferred,
                     source=SERVICE_REQUEST_SOURCE_INTAKE,
                     created_at=now,
@@ -579,7 +588,7 @@ class ArrangeIntakeBookingService:
                 invitee_email=collected.email,
                 invitee_phone=collected.phone,
                 address=collected.address,
-                details=collected.problem,
+                details=collected.details,
                 reference=conversation.reference,
                 event_type_uri=conversation.booking_event_type_uri,
             )
@@ -627,16 +636,17 @@ class ArrangeIntakeBookingService:
                 "" if business is None else (business.display_name or business.name)
             ) or "the business"
             slot_label = format_slot_label(conversation.requested_slot_start)
+            about = _booking_about(conversation.collected, business)
             if result.kind is BookingKind.BOOKED:
                 body = (
-                    f"Good news — your {business_name} appointment for "
+                    f"Good news — your {business_name} appointment{about} for "
                     f"{slot_label} is booked. You'll get the calendar invite "
                     "by email shortly."
                 )
                 subject = "Your appointment is confirmed"
             else:
                 link = result.link or ""
-                body = f"{business_name} approved {slot_label}. Confirm your spot: {link}"
+                body = f"{business_name} approved {slot_label}{about}. Confirm your spot: {link}"
                 subject = "Confirm your appointment"
             key_base = f"intake_booking:{conversation.conversation_id}"
             await unit_of_work.outbox.enqueue(
@@ -669,6 +679,27 @@ class ArrangeIntakeBookingService:
             )
             await unit_of_work.intake_conversations.save(updated)
             await unit_of_work.commit()
+
+
+def _ready_for_slots(collected: IntakeCollected, profile: IntakeProfile) -> bool:
+    """Contact details and what is needed; without a profile the generic
+    estimate flow also needs the service address."""
+
+    if not collected.ready_for_slots:
+        return False
+    return profile.is_configured or bool(collected.address and collected.address.strip())
+
+
+def _booking_about(collected: IntakeCollected, business: BusinessRecord | None) -> str:
+    """`` (re: <details>)`` for profiled businesses, so the customer copy
+    names what they booked rather than a generic appointment."""
+
+    if business is None or not business.intake_profile.is_configured or not collected.details:
+        return ""
+    details = collected.details.strip().rstrip(".")
+    if len(details) > BOOKING_ABOUT_MAX_CHARS:
+        details = details[: BOOKING_ABOUT_MAX_CHARS - 1].rstrip() + "…"
+    return f" (re: {details})"
 
 
 def _decision_reply(message: NormalizedOwnerMessage, text: str) -> OutboundOwnerMessage:

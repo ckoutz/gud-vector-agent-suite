@@ -22,6 +22,7 @@ from composition_fakes import (
 )
 from gvas.application.intake import (
     NO_AVAILABILITY_REPLY,
+    OPENING_REPLY,
     UNAVAILABLE_REPLY,
     IntakeClosedError,
     IntakeDeliveryError,
@@ -32,7 +33,7 @@ from gvas.composition import Application, build_application
 from gvas.config import IntakeSettings
 from gvas.domain.customers import CustomerRecord
 from gvas.domain.enums import DeliveryStatus
-from gvas.domain.identifiers import BusinessId, CustomerId
+from gvas.domain.identifiers import BusinessId, CustomerId, IntakeConversationId
 from gvas.domain.intake import (
     INTAKE_BOOKING_ARRANGE_COMMAND_TYPE,
     INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
@@ -45,8 +46,11 @@ from gvas.domain.intake import (
     BookingResult,
     IntakeAgentError,
     IntakeCollected,
+    IntakeConversation,
+    IntakeProfile,
     IntakeTurn,
     IntakeTurnRequest,
+    booking_request_notice,
     pick_offer_slots,
 )
 from gvas.domain.messages import (
@@ -497,7 +501,7 @@ async def test_unlisted_slot_pick_is_rejected(
 ) -> None:
     business_id = await intake_business(session_factory)
     offered = slot(datetime.now(UTC))
-    not_offered = slot(datetime.now(UTC), days=3)
+    not_offered = slot(offered.start, days=1)
     availability = AvailabilityFake((offered,))
     agent = IntakeAgentFake(
         [
@@ -999,3 +1003,185 @@ def test_pick_offer_slots_anchors_the_day_window_on_the_slot_timezone() -> None:
     )
     assert offered, "the business-local Monday is lost when anchored on UTC"
     assert offered[0].start == start
+
+
+PROFILE_BRIEF = "Acme Web builds websites for plumbers; you book a free discovery call."
+PROFILE_QUESTIONS = "whether they want a website, automation, or both; their trade"
+PROFILE_OPENING = "Hi! Are you after a website, an automation, or both?"
+
+
+async def profiled_business(session_factory: async_sessionmaker[AsyncSession]) -> BusinessId:
+    business_id = await intake_business(session_factory)
+    async with session_factory() as session:
+        await SqlBusinessRepository(session).configure_site(
+            business_id,
+            intake_brief=PROFILE_BRIEF,
+            intake_questions=PROFILE_QUESTIONS,
+            intake_opening=PROFILE_OPENING,
+            now=NOW,
+        )
+        await session.commit()
+    return business_id
+
+
+@pytest.mark.asyncio
+async def test_intake_profile_is_stored_and_kept_when_other_fields_change(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await profiled_business(session_factory)
+    async with session_factory() as session:
+        record = await SqlBusinessRepository(session).configure_site(
+            business_id, display_name="Renamed Co", now=NOW
+        )
+        await session.commit()
+    assert record.display_name == "Renamed Co"
+    assert record.intake_profile == IntakeProfile(
+        brief=PROFILE_BRIEF, questions=PROFILE_QUESTIONS, opening=PROFILE_OPENING
+    )
+    assert record.intake_profile.is_configured
+
+
+@pytest.mark.asyncio
+async def test_intake_profile_drives_opening_agent_request_and_owner_notice(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await profiled_business(session_factory)
+    offered = slot(datetime.now(UTC))
+    availability = AvailabilityFake((offered,))
+    agent = IntakeAgentFake(
+        [
+            collected_turn(
+                name="Jane Doe",
+                email=EMAIL,
+                details="A new website",
+                notes="Plumber; wants it live by May",
+            ),
+            IntakeTurn(reply="Here is what is open.", ready_for_slots=True),
+        ]
+    )
+    application, owner = intake_app(session_factory, agent=agent, availability=availability)
+    await seed_owner_thread(application, business_id)
+    await immediate_worker(application).drain()
+
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        assert created.status_code == 201
+        assert created.json()["reply"] == PROFILE_OPENING
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+        await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "I need a website for my plumbing business"},
+            headers=headers,
+        )
+        # No address was ever asked for: a profiled business is ready on
+        # name, email and details.
+        proposed = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "what times do you have?"},
+            headers=headers,
+        )
+        payload = proposed.json()
+        assert payload["state"] == "proposing_slots"
+        assert payload["summary"]["details"] == "A new website"
+        assert payload["summary"]["problem"] == "A new website"
+        assert payload["summary"]["notes"] == "Plumber; wants it live by May"
+        picked = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": f"slot:{offered.start.isoformat()}"},
+            headers=headers,
+        )
+        assert picked.json()["state"] == "awaiting_owner"
+
+    assert agent.requests
+    assert all(request.brief == PROFILE_BRIEF for request in agent.requests)
+    assert all(request.questions == PROFILE_QUESTIONS for request in agent.requests)
+    for _ in range(4):
+        await immediate_worker(application).drain()
+    notices = texts_of(owner, "Booking request")
+    assert len(notices) == 1
+    assert "Jane Doe. A new website." in notices[0]
+    assert "address" not in notices[0]
+    assert "Notes: Plumber; wants it live by May" in notices[0]
+
+
+@pytest.mark.asyncio
+async def test_intake_without_profile_keeps_default_opening_and_needs_an_address(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await intake_business(session_factory)
+    offered = slot(datetime.now(UTC))
+    availability = AvailabilityFake((offered,))
+    agent = IntakeAgentFake(
+        [
+            collected_turn(name="Jane", email=EMAIL, details="ants"),
+            IntakeTurn(reply="ok", ready_for_slots=True),
+            IntakeTurn(
+                reply="ok",
+                collected=IntakeCollected(address="2 Elm St"),
+                ready_for_slots=True,
+            ),
+        ]
+    )
+    application, _ = intake_app(session_factory, agent=agent, availability=availability)
+    await seed_owner_thread(application, business_id)
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        assert created.json()["reply"] == OPENING_REPLY
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+        states = []
+        for text in ("ants", "times?", "2 Elm St"):
+            response = await client.post(
+                f"/v1/intake/conversations/{conversation_id}/messages",
+                json={"message": text},
+                headers=headers,
+            )
+            states.append(response.json()["state"])
+    assert states == ["collecting", "collecting", "proposing_slots"]
+    assert all(request.brief is None and request.questions is None for request in agent.requests)
+
+
+def test_intake_collected_reads_legacy_problem_as_details() -> None:
+    legacy = IntakeCollected.model_validate(
+        {"name": "Jane", "email": EMAIL, "address": "2 Elm St", "problem": "ants"}
+    )
+    assert legacy.details == "ants"
+    assert legacy.notes is None
+    assert "problem" not in legacy.as_stored()
+    assert legacy.as_stored()["details"] == "ants"
+    both = IntakeCollected.model_validate({"details": "mold", "problem": "ants"})
+    assert both.details == "mold"
+
+
+def test_intake_notes_accumulate_without_repeating() -> None:
+    first = IntakeCollected().merge(IntakeCollected(notes="Plumber"))
+    assert first.notes == "Plumber"
+    assert first.merge(IntakeCollected(notes="plumber")).notes == "Plumber"
+    extended = first.merge(IntakeCollected(notes="Plumber, 3 vans"))
+    assert extended.notes == "Plumber, 3 vans"
+    assert extended.merge(IntakeCollected(notes="Uses Jobber")).notes == (
+        "Plumber, 3 vans; Uses Jobber"
+    )
+
+
+def test_intake_booking_notice_reports_a_missing_address_only_without_a_profile() -> None:
+    conversation = IntakeConversation(
+        conversation_id=IntakeConversationId(uuid4()),
+        business_id=BusinessId(uuid4()),
+        reference="abc123",
+        token_hash="0" * 64,
+        channel="web",
+        collected=IntakeCollected(name="Jane", email=EMAIL, details="ants"),
+        expires_at=NOW + timedelta(days=1),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    default = booking_request_notice(conversation, business_name="Test Co")
+    assert default.startswith("Booking request #abc123 — Jane, address unknown. ants.")
+    profiled = booking_request_notice(
+        conversation,
+        business_name="Test Co",
+        profile=IntakeProfile(brief=PROFILE_BRIEF),
+    )
+    assert profiled.startswith("Booking request #abc123 — Jane. ants.")

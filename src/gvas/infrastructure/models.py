@@ -35,6 +35,10 @@ class Business(Base):
     calendly_url: Mapped[str | None] = mapped_column(String(2048))
     stripe_account_id: Mapped[str | None] = mapped_column(String(255))
     public_key: Mapped[str | None] = mapped_column(String(255))
+    # The website booking agent's per-business profile.
+    intake_brief: Mapped[str | None] = mapped_column(Text)
+    intake_questions: Mapped[str | None] = mapped_column(Text)
+    intake_opening: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
