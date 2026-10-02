@@ -1,10 +1,10 @@
 # Güd Vector — Project Status Dashboard
 
-**Last updated:** 2026-10-02 13:06 UTC (auto-refreshed by the Devin dashboard automation)
+**Last updated:** 2026-10-02 19:05 UTC (auto-refreshed by the Devin dashboard automation)
 
 ## Where we are
 
-No change since the last refresh (2026-10-02 07:06 UTC) — both regressions are still open. **GVAS web on Railway is still down:** `/health`, `/healthz`, `/` and `/openapi.json` all return Railway's edge fallback `404 {"message":"Application not found"}` (`x-railway-fallback: true`), so everything behind the backend is offline — quote API, Stripe webhook delivery, portal API, intake agent, Slack/Telnyx owner channels. Cause unknown (Railway API not reachable from this run). **Telnyx toll-free verification is still Rejected** (2026-09-30 16:09 UTC, "Message Content Does Not Align with Use Case or is Incomplete"); the opt-in copy fixes (site #9 / duplicate #8) are still unmerged. **gudvector.com is online and serves the current site** (all key routes 200). No code has merged in either repo since 2026-09-22 (GVAS `c1c66af`, site `62b4130`). All blockers are owner actions, not code.
+No change since the last refresh (2026-10-02 13:06 UTC) — both regressions are still open. **GVAS web on Railway is still down:** `/health`, `/healthz`, `/` and `/openapi.json` all return Railway's edge fallback `404 {"message":"Application not found"}` (`x-railway-fallback: true`), so everything behind the backend is offline — quote API, Stripe webhook delivery, portal API, intake agent, Slack/Telnyx owner channels. Cause unknown (Railway API not reachable from this run). **Telnyx toll-free verification is still Rejected** (2026-09-30 16:09 UTC, "Message Content Does Not Align with Use Case or is Incomplete"); the opt-in copy fixes (site #9 / duplicate #8) are still unmerged. **gudvector.com is online and serves the current site** (all key routes 200). No code has merged in either repo since 2026-09-22 (GVAS `c1c66af`, site `62b4130`). All blockers are owner actions, not code.
 
 ## Demo pipeline
 
@@ -24,10 +24,10 @@ No change since the last refresh (2026-10-02 07:06 UTC) — both regressions are
 
 | Repo | PR | Title | Base | Mergeable | CI | Age | Merge order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| gudvector-site | [#9](https://github.com/ckoutz/gudvector-site/pull/9) | sms-opt-in: state the type of SMS (business updates) in the consent copy | main | Mergeable (clean) | Vercel previews: success (2/2) | 4.8 days | **1 — merge ONE of #9/#8** (same file, same Telnyx fix; close the other), then file a new Telnyx verification |
-| gudvector-site | [#8](https://github.com/ckoutz/gudvector-site/pull/8) | sms-opt-in: name the message types in the consent text (Telnyx TFV feedback) | main | Mergeable (clean) | Vercel previews: success (2/2) | 9.3 days | Duplicate of #9 — close whichever is not merged |
-| gud-vector-agent-suite | [#45](https://github.com/ckoutz/gud-vector-agent-suite/pull/45) | docs: office manager design + intake agent threat model | main | Mergeable (clean) | ruff/mypy/pytest/alembic: success (4/4) | 9.3 days | 2 — docs only, no deploy needed |
-| gudvector-site | [#1](https://github.com/ckoutz/gudvector-site/pull/1) | Rebuild Güd Vector marketing site as crawlable Next.js pages | main | **Conflicts** (dirty) | Vercel: success | 29.5 days | Superseded by #3–#7 — close; do not merge |
+| gudvector-site | [#9](https://github.com/ckoutz/gudvector-site/pull/9) | sms-opt-in: state the type of SMS (business updates) in the consent copy | main | Mergeable (clean) | Vercel previews: success (2/2) | 5.1 days | **1 — merge ONE of #9/#8** (same file, same Telnyx fix; close the other), then file a new Telnyx verification |
+| gudvector-site | [#8](https://github.com/ckoutz/gudvector-site/pull/8) | sms-opt-in: name the message types in the consent text (Telnyx TFV feedback) | main | Mergeable (clean) | Vercel previews: success (2/2) | 9.5 days | Duplicate of #9 — close whichever is not merged |
+| gud-vector-agent-suite | [#45](https://github.com/ckoutz/gud-vector-agent-suite/pull/45) | docs: office manager design + intake agent threat model | main | Mergeable (clean) | ruff/mypy/pytest/alembic: success (4/4) | 9.5 days | 2 — docs only, no deploy needed |
+| gudvector-site | [#1](https://github.com/ckoutz/gudvector-site/pull/1) | Rebuild Güd Vector marketing site as crawlable Next.js pages | main | **Conflicts** (dirty) | Vercel: success | 29.7 days | Superseded by #3–#7 — close; do not merge |
 
 No stacked PRs.
 
@@ -36,14 +36,14 @@ No stacked PRs.
 | Target | Result |
 | --- | --- |
 | GVAS main | `c1c66af` 2026-09-22 22:52 UTC — Merge #44 (intake: Calendly availability from a few minutes ahead) |
-| GVAS web (Railway) `/health` | **404 in 0.41 s** — Railway fallback "Application not found" |
+| GVAS web (Railway) `/health` | **404 in 0.39 s** — Railway fallback "Application not found" |
 | GVAS web `/healthz`, `/`, `/openapi.json` | **404** (same fallback; last 200 on `/healthz` was 2026-09-27) |
 | GVAS deployment / worker | unknown (Railway API not reachable from this run) |
 | gudvector-site main | `62b4130` 2026-09-22 22:43 UTC — Merge #7 (intake widget on main) |
-| gudvector-site.vercel.app `/` | 200 in 0.52 s |
-| gudvector-site.vercel.app `/q/nonexistent-token` | 200 "couldn't find" in 0.34 s (site env set; see GVAS-down caveat above) |
+| gudvector-site.vercel.app `/` | 200 in 0.58 s |
+| gudvector-site.vercel.app `/q/nonexistent-token` | 200 "couldn't find" in 0.38 s (site env set; see GVAS-down caveat above) |
 | gudvector-site.vercel.app `/contact`, `/book`, `/portal`, `/sms-opt-in` | all 200 |
-| gudvector.com | **Online and current:** `/` 200 in 0.18 s (Vercel, `216.198.79.1`); `www` 308 → apex; `/contact`, `/book`, `/portal`, `/sms-opt-in` 200; `/q/nonexistent-token` 200 "couldn't find" |
+| gudvector.com | **Online and current:** `/` 200 in 0.39 s (Vercel, `216.198.79.1`); `www` 308 → apex; `/contact`, `/book`, `/portal`, `/sms-opt-in` 200; `/q/nonexistent-token` 200 "couldn't find" |
 
 ## Integrations
 
