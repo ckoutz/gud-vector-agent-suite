@@ -337,7 +337,8 @@ characters. `200`:
 `slots` is non-null only while `state` is `proposing_slots` (ISO-8601 with
 offset, business-local; at most 5 real openings across the next 7 business
 days, 60 minutes each). `summary` is null until name, email and `details`
-(what the customer needs) are collected; `problem` mirrors `details` for
+(what the customer needs) are collected — and, unless the business set its
+own `--intake-questions`, the address too; `problem` mirrors `details` for
 widgets built against the original shape, `notes` holds the answers to the
 business's own intake questions and `address` is null when the business does
 not ask for one. `bookingKind` is `booked` once the calendar event

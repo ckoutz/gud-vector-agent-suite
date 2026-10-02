@@ -94,6 +94,7 @@ async def test_intake_agent_without_a_profile_uses_the_generic_default() -> None
 def test_intake_prompt_keeps_the_guardrails_for_every_profile() -> None:
     for prompt in (SYSTEM_PROMPT, system_prompt(BRIEF, QUESTIONS)):
         assert "Ask one question at a time" in prompt
+        assert "these take precedence over the business description" in prompt
         assert "NEVER quote prices" in prompt
         assert "NEVER invent or estimate availability" in prompt
         assert "the owner will review and confirm — never that anything" in prompt

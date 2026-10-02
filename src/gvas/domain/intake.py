@@ -114,6 +114,13 @@ class IntakeProfile(IntakeModel):
     def is_configured(self) -> bool:
         return any(value for value in (self.brief, self.questions, self.opening))
 
+    @property
+    def requires_address(self) -> bool:
+        """Only the generic questions ask for a service address; a business
+        that lists its own questions decides what it needs."""
+
+        return not (self.questions and self.questions.strip())
+
 
 class IntakeCollected(IntakeModel):
     """What the agent has gathered so far; ``None`` means not yet asked.
@@ -179,17 +186,22 @@ class IntakeCollected(IntakeModel):
             value is not None and value.strip() for value in (self.name, self.email, self.details)
         )
 
+    def is_complete(self, *, address_required: bool) -> bool:
+        if not self.ready_for_slots:
+            return False
+        return not address_required or bool(self.address and self.address.strip())
+
     def as_stored(self) -> dict[str, object]:
         return self.model_dump(mode="json", by_alias=True)
 
-    def summary(self) -> dict[str, object] | None:
+    def summary(self, *, address_required: bool = True) -> dict[str, object] | None:
         """The public summary projection: only once the request is complete.
 
         ``problem`` mirrors ``details`` for widgets built against the
         original shape.
         """
 
-        if not self.ready_for_slots:
+        if not self.is_complete(address_required=address_required):
             return None
         return {
             "name": self.name,
@@ -208,9 +220,9 @@ def _merged_notes(stored: str | None, reported: str | None) -> str | None:
         return stored
     if not stored:
         return new[:INTAKE_NOTES_MAX_CHARS]
-    if new.lower() in stored.lower():
+    if new.lower() in (segment.strip().lower() for segment in stored.split(";")):
         return stored
-    if stored.lower() in new.lower():
+    if new.lower().startswith(stored.lower()):
         return new[:INTAKE_NOTES_MAX_CHARS]
     return f"{stored}; {new}"[:INTAKE_NOTES_MAX_CHARS]
 
@@ -433,15 +445,15 @@ def booking_request_notice(
 ) -> str:
     """The owner notice posted when a customer picks a slot.
 
-    Businesses with an intake profile do not book at an address, so a missing
-    one is left out instead of reported as unknown.
+    Businesses that list their own intake questions may not book at an
+    address, so a missing one is left out instead of reported as unknown.
     """
 
     collected = conversation.collected
     who = [collected.name or "A customer"]
     if collected.address:
         who.append(collected.address)
-    elif profile is None or not profile.is_configured:
+    elif profile is None or profile.requires_address:
         who.append("address unknown")
     details = collected.details or "New request"
     requested = (

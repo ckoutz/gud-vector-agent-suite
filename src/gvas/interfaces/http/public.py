@@ -89,19 +89,23 @@ def intake_start_payload(start: IntakeStart) -> dict[str, object]:
     }
 
 
-def intake_reply_payload(result: IntakeReply) -> dict[str, object]:
+def intake_reply_payload(
+    result: IntakeReply, summary: dict[str, object] | None
+) -> dict[str, object]:
     conversation = result.conversation
     return {
         "state": conversation.state.value,
         "reply": result.reply,
         "slots": _slot_payloads(conversation),
-        "summary": conversation.collected.summary(),
+        "summary": summary,
         "bookingKind": conversation.booking_kind,
     }
 
 
 def intake_view_payload(
-    conversation: IntakeConversation, messages: tuple[IntakeMessage, ...]
+    conversation: IntakeConversation,
+    messages: tuple[IntakeMessage, ...],
+    summary: dict[str, object] | None,
 ) -> dict[str, object]:
     return {
         "state": conversation.state.value,
@@ -114,7 +118,7 @@ def intake_view_payload(
             for message in messages
         ],
         "slots": _slot_payloads(conversation),
-        "summary": conversation.collected.summary(),
+        "summary": summary,
         # "booked" once the calendar event is confirmed, "link" while the
         # customer's confirmation link is still outstanding, else null — the
         # widget shows booked vs awaiting-confirmation distinctly.
@@ -395,11 +399,13 @@ def _mount_intake(router: APIRouter, intake: IntakeService, limited: list[params
             return JSONResponse({"detail": GENERIC_NOT_FOUND}, status_code=404)
         except IntakeError:
             return JSONResponse({"detail": "invalid message"}, status_code=422)
-        return JSONResponse(intake_reply_payload(result), status_code=200)
+        summary = await intake.summary(result.conversation)
+        return JSONResponse(intake_reply_payload(result, summary), status_code=200)
 
     @router.get("/v1/intake/conversations/{conversation_id}", dependencies=limited)
     async def fetch_intake_conversation(conversation_id: str, request: Request) -> JSONResponse:
         resolved = _intake_conversation_id(conversation_id)
         conversation = await _intake_authenticate(intake, request, resolved)
         messages = await intake.get_view(conversation)
-        return JSONResponse(intake_view_payload(conversation, messages), status_code=200)
+        summary = await intake.summary(conversation)
+        return JSONResponse(intake_view_payload(conversation, messages, summary), status_code=200)

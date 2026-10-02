@@ -1163,6 +1163,7 @@ def test_intake_notes_accumulate_without_repeating() -> None:
     assert extended.merge(IntakeCollected(notes="Uses Jobber")).notes == (
         "Plumber, 3 vans; Uses Jobber"
     )
+    assert extended.merge(IntakeCollected(notes="vans")).notes == "Plumber, 3 vans; vans"
 
 
 def test_intake_booking_notice_reports_a_missing_address_only_without_a_profile() -> None:
@@ -1182,6 +1183,25 @@ def test_intake_booking_notice_reports_a_missing_address_only_without_a_profile(
     profiled = booking_request_notice(
         conversation,
         business_name="Test Co",
-        profile=IntakeProfile(brief=PROFILE_BRIEF),
+        profile=IntakeProfile(brief=PROFILE_BRIEF, questions=PROFILE_QUESTIONS),
     )
     assert profiled.startswith("Booking request #abc123 — Jane. ants.")
+    opening_only = booking_request_notice(
+        conversation,
+        business_name="Test Co",
+        profile=IntakeProfile(opening=PROFILE_OPENING),
+    )
+    assert "address unknown" in opening_only
+
+
+def test_only_a_business_s_own_questions_waive_the_address() -> None:
+    collected = IntakeCollected(name="Jane", email=EMAIL, details="ants")
+    assert collected.summary() is None, "the generic flow is not complete without an address"
+    assert IntakeProfile(brief=PROFILE_BRIEF, opening=PROFILE_OPENING).requires_address
+    assert IntakeProfile().requires_address
+    custom = IntakeProfile(questions=PROFILE_QUESTIONS)
+    assert not custom.requires_address
+    summary = collected.summary(address_required=custom.requires_address)
+    assert summary is not None and summary["details"] == "ants"
+    with_address = collected.model_copy(update={"address": "2 Elm St"})
+    assert with_address.summary() is not None

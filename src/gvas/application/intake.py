@@ -263,6 +263,14 @@ class IntakeService:
             raise IntakeAuthenticationError("invalid or expired conversation token")
         return conversation
 
+    async def summary(self, conversation: IntakeConversation) -> dict[str, object] | None:
+        """The public summary, complete by the business's own questions."""
+
+        async with self._unit_of_work_factory() as unit_of_work:
+            business = await unit_of_work.businesses.get(conversation.business_id)
+        address_required = business is None or business.intake_profile.requires_address
+        return conversation.collected.summary(address_required=address_required)
+
     async def get_view(self, conversation: IntakeConversation) -> tuple[IntakeMessage, ...]:
         async with self._unit_of_work_factory() as unit_of_work:
             return await unit_of_work.intake_messages.list_for(
@@ -682,12 +690,10 @@ class ArrangeIntakeBookingService:
 
 
 def _ready_for_slots(collected: IntakeCollected, profile: IntakeProfile) -> bool:
-    """Contact details and what is needed; without a profile the generic
-    estimate flow also needs the service address."""
+    """Contact details and what is needed; the generic questions also need
+    the service address."""
 
-    if not collected.ready_for_slots:
-        return False
-    return profile.is_configured or bool(collected.address and collected.address.strip())
+    return collected.is_complete(address_required=profile.requires_address)
 
 
 def _booking_about(collected: IntakeCollected, business: BusinessRecord | None) -> str:

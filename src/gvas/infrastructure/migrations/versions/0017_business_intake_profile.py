@@ -22,6 +22,7 @@ depends_on = None
 
 json_type = sa.JSON().with_variant(postgresql.JSONB(), "postgresql")
 TEXT_MAX_CHARS = 2000
+SEPARATOR = " — "
 
 intake_conversations = sa.table(
     "intake_conversations",
@@ -43,8 +44,14 @@ def _details_to_problem(collected: dict[str, object]) -> dict[str, object]:
     values = dict(collected)
     details = values.pop("details", None)
     notes = values.pop("notes", None)
-    parts = [str(part) for part in (details, notes) if part]
-    values["problem"] = " — ".join(parts)[:TEXT_MAX_CHARS] if parts else None
+    if details and notes:
+        # Both survive a combined value over the limit: notes keep at least
+        # half of the room, details fill the rest.
+        room = TEXT_MAX_CHARS - len(SEPARATOR)
+        kept_notes = str(notes)[: max(room // 2, room - len(str(details)))]
+        values["problem"] = f"{str(details)[: room - len(kept_notes)]}{SEPARATOR}{kept_notes}"
+    else:
+        values["problem"] = str(details or notes)[:TEXT_MAX_CHARS] if details or notes else None
     return values
 
 

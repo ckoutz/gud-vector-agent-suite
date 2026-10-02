@@ -2,8 +2,10 @@
 ``details`` on upgrade and comes back (with notes folded in) on downgrade."""
 
 import asyncio
+import importlib.util
 import os
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -12,6 +14,7 @@ import sqlalchemy as sa
 from alembic import command
 from sqlalchemy.ext.asyncio import create_async_engine
 
+import gvas.infrastructure as infrastructure_package
 from gvas.interfaces.migrate import build_config
 
 BEFORE = "0016_intake_booking_event_type"
@@ -139,3 +142,26 @@ def test_intake_profile_migration_round_trip(monkeypatch: pytest.MonkeyPatch) ->
         assert _collected(database_url, conversation_id)["details"] == "ants — basement too"
     finally:
         command.downgrade(config, "base")
+
+
+def _migration_module() -> Any:
+    path = Path(infrastructure_package.__file__).parent / "migrations" / "versions" / f"{AFTER}.py"
+    spec = importlib.util.spec_from_file_location(AFTER, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_downgrade_keeps_notes_when_details_fill_the_old_limit() -> None:
+    migration = _migration_module()
+    limit = migration.TEXT_MAX_CHARS
+    folded = migration._details_to_problem({"details": "d" * limit, "notes": "n" * 50})
+    problem = folded["problem"]
+    assert len(problem) == limit
+    assert problem.endswith(" — " + "n" * 50)
+    long_notes = migration._details_to_problem({"details": "d" * 10, "notes": "n" * limit})
+    assert long_notes["problem"].startswith("d" * 10 + " — n")
+    assert len(long_notes["problem"]) == limit
+    assert migration._details_to_problem({"details": None, "notes": "n"})["problem"] == "n"
+    assert migration._details_to_problem({"details": None, "notes": None})["problem"] is None

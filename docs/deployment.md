@@ -235,10 +235,12 @@ undoes the other, and owner failure notices stay sanitized.
   name, email and phone) are injected into the agent's prompt;
   `--intake-opening` replaces the chat's first message (the portal "welcome
   back" opening stays generic). Each flag is optional and an omitted flag
-  keeps the stored value. Without a profile the agent stays the generic
-  estimate/consultation flow and still needs a service address before it
-  offers times; with one it is ready on name, email and what the customer
-  needs plus whatever the questions ask for. For example:
+  keeps the stored value. Without `--intake-questions` the agent asks the
+  generic estimate/consultation questions and still needs a service address
+  before it offers times; with them it is ready on name, email and what the
+  customer needs plus whatever the questions ask for. The brief and questions
+  never override the agent's rules (no prices, no invented availability,
+  owner approval before anything is booked). For example:
 
   ```sh
   gvas-configure-business --business-id <uuid> \
