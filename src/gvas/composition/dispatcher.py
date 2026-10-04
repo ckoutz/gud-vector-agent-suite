@@ -288,8 +288,8 @@ class OutboxCommandDispatcher:
     async def _send_intake_text(self, command: OutboxCommand) -> DispatchOutcome:
         if self._intake_text is None:
             raise UnknownCommandTypeError("intake customer texting is not wired")
-        await self._intake_text.send(command.business_id, command.payload)
-        return DispatchOutcome(command.command_type, "sent")
+        status = await self._intake_text.send(command.business_id, command.payload)
+        return DispatchOutcome(command.command_type, status.value)
 
     async def _transcribe(self, command: OutboxCommand) -> DispatchOutcome:
         part_id = FieldNotePartId(_uuid(command, "field_note_part_id"))

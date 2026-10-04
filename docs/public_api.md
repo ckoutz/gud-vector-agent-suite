@@ -309,17 +309,25 @@ Starts a chat for a new or unknown customer. `201`:
   "conversationToken": "secret",
   "state": "collecting",
   "reply": "agent's opening message",
-  "slots": null
+  "slots": null,
+  "smsConsent": null
 }
 ```
+
+Optional body `{"smsConsent": true|false}` (`sms_consent` is accepted too):
+the visitor's answer to the site's SMS consent checkbox. GVAS texts a customer
+only when they said `true`; otherwise every customer message is email only.
+`smsConsent` in every intake response echoes the stored answer (`null` when
+none was sent).
 
 Errors: `404` unknown key · `429` per-IP rate limited, or the business is over
 its daily intake cap (`GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY`).
 
 ## `POST /v1/intake/conversations/{conversationId}/messages`
 
-Bearer `conversationToken`. Body `{"message": "…"}` — required, at most 2000
-characters. `200`:
+Bearer `conversationToken`. Body `{"message": "…", "smsConsent": true}` —
+`message` required, at most 2000 characters; `smsConsent` optional and, when
+sent, replaces the stored answer. `200`:
 
 ```json
 {
@@ -330,7 +338,8 @@ characters. `200`:
     "name": "…", "email": "…", "phone": "…", "address": "…",
     "problem": "…", "details": "…", "notes": "…"
   },
-  "bookingKind": null
+  "bookingKind": null,
+  "smsConsent": true
 }
 ```
 
@@ -370,7 +379,8 @@ Bearer `conversationToken`. `200`:
   "messages": [{"role": "user|agent|owner", "content": "…", "createdAt": "…"}],
   "slots": null,
   "summary": null,
-  "bookingKind": null
+  "bookingKind": null,
+  "smsConsent": null
 }
 ```
 
@@ -381,4 +391,5 @@ Errors: `401` · `404` · `429`.
 Bearer portal session (see the portal section above). Same `201` response as
 the public create, but the conversation is linked to the signed-in customer
 and pre-filled with their name/email/phone — the agent skips identity
-questions and only asks about the new service.
+questions and only asks about the new service. Takes the same optional
+`{"smsConsent": …}` body; without one the customer's stored answer is kept.

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.engine import CursorResult, Result
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,6 +47,8 @@ class SqlCustomerRepository:
             display_name=row.display_name,
             phone=row.phone,
             stripe_customer_id=row.stripe_customer_id,
+            sms_consent=row.sms_consent,
+            sms_consent_at=_aware_or_none(row.sms_consent_at),
             created_at=_aware(row.created_at),
         )
 
@@ -116,6 +118,19 @@ class SqlCustomerRepository:
                 Customer.stripe_customer_id.is_(None),
             )
             .values(stripe_customer_id=stripe_customer_id)
+        )
+
+    async def set_sms_consent(
+        self, business_id: BusinessId, customer_id: CustomerId, consent: bool, at: datetime
+    ) -> None:
+        await self.session.execute(
+            update(Customer)
+            .where(
+                Customer.business_id == business_id,
+                Customer.id == customer_id,
+                or_(Customer.sms_consent_at.is_(None), Customer.sms_consent_at <= at),
+            )
+            .values(sms_consent=consent, sms_consent_at=at)
         )
 
 

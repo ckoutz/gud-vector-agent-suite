@@ -273,6 +273,9 @@ class IntakeConversation(IntakeModel):
     decision_at: datetime | None = None
     owner_notified_at: datetime | None = None
     escalation_notified_at: datetime | None = None
+    # The visitor's answer to the site's SMS consent checkbox, if it sent one.
+    sms_consent: bool | None = None
+    sms_consent_at: datetime | None = None
     expires_at: datetime
     created_at: datetime
     updated_at: datetime
@@ -594,14 +597,24 @@ def intake_booking_cancel_command(
 
 
 def intake_customer_text_command(
-    business_id: BusinessId, *, phone: str, text: str, idempotency_key: str
+    business_id: BusinessId,
+    *,
+    customer_id: CustomerId,
+    phone: str,
+    text: str,
+    idempotency_key: str,
 ) -> OutboxCommand:
     command_id = OutboxCommandId(uuid5(INTAKE_CUSTOMER_TEXT_COMMAND_NAMESPACE, idempotency_key))
     return OutboxCommand(
         command_id=command_id,
         business_id=business_id,
         command_type=INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
-        payload={"phone": phone, "text": text, "idempotency_key": idempotency_key},
+        payload={
+            "customer_id": str(customer_id),
+            "phone": phone,
+            "text": text,
+            "idempotency_key": idempotency_key,
+        },
         dedup_key=f"intake_text:{idempotency_key}",
     )
 

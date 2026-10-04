@@ -12,13 +12,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from gvas.domain.customer_linking import enqueue_intake_owner_notice
 from gvas.domain.customers import CustomerRecord, ServiceRequest
 from gvas.domain.enums import DeliveryStatus, RecipientAddressKind, WorkflowRunStatus
 from gvas.domain.identifiers import (
     BusinessId,
+    CustomerId,
     IntakeConversationId,
     IntakeMessageId,
     ServiceRequestId,
@@ -176,16 +177,22 @@ class IntakeService:
         self._max_user_messages = max_user_messages
         self._now = now
 
-    async def start_conversation(self, public_key: str) -> IntakeStart:
+    async def start_conversation(
+        self, public_key: str, *, sms_consent: bool | None = None
+    ) -> IntakeStart:
         async with self._unit_of_work_factory() as unit_of_work:
             business = await unit_of_work.businesses.get_by_public_key(public_key)
             if business is None:
                 raise IntakeNotFoundError("unknown business")
             await self._check_daily_cap(unit_of_work, business)
-            return await self._open(unit_of_work, business, customer=None)
+            return await self._open(unit_of_work, business, customer=None, sms_consent=sms_consent)
 
     async def start_portal_conversation(
-        self, business: BusinessRecord, customer: CustomerRecord
+        self,
+        business: BusinessRecord,
+        customer: CustomerRecord,
+        *,
+        sms_consent: bool | None = None,
     ) -> IntakeStart:
         """Portal-authenticated start: the customer is already identified, so
         the collected record comes pre-filled and identity questions are
@@ -193,7 +200,9 @@ class IntakeService:
 
         async with self._unit_of_work_factory() as unit_of_work:
             await self._check_daily_cap(unit_of_work, business)
-            return await self._open(unit_of_work, business, customer=customer)
+            return await self._open(
+                unit_of_work, business, customer=customer, sms_consent=sms_consent
+            )
 
     async def _check_daily_cap(self, unit_of_work: UnitOfWork, business: BusinessRecord) -> None:
         if self._max_conversations_per_day <= 0:
@@ -215,9 +224,15 @@ class IntakeService:
         business: BusinessRecord,
         *,
         customer: CustomerRecord | None,
+        sms_consent: bool | None,
     ) -> IntakeStart:
         customer_record = customer
         now = self._now()
+        answered = sms_consent is not None
+        consent_at = now if answered else None
+        if not answered and customer_record is not None:
+            sms_consent = customer_record.sms_consent
+            consent_at = customer_record.sms_consent_at
         token = new_conversation_token()
         collected = IntakeCollected()
         if customer_record is not None:
@@ -238,11 +253,17 @@ class IntakeService:
             token_hash=conversation_token_hash(token),
             channel=INTAKE_CHANNEL_WEB,
             collected=collected,
+            sms_consent=sms_consent,
+            sms_consent_at=consent_at,
             expires_at=now + INTAKE_CONVERSATION_TTL,
             created_at=now,
             updated_at=now,
         )
         await unit_of_work.intake_conversations.add(conversation)
+        if customer_record is not None and answered and sms_consent is not None:
+            await unit_of_work.customers.set_sms_consent(
+                business.business_id, customer_record.customer_id, sms_consent, now
+            )
         await self._append(unit_of_work, conversation, IntakeMessageRole.AGENT, reply, now)
         await unit_of_work.commit()
         return IntakeStart(conversation=conversation, token=token, reply=reply)
@@ -262,6 +283,34 @@ class IntakeService:
         if conversation is None or self._now() >= conversation.expires_at:
             raise IntakeAuthenticationError("invalid or expired conversation token")
         return conversation
+
+    async def record_sms_consent(
+        self, conversation: IntakeConversation, consent: bool
+    ) -> IntakeConversation:
+        """Stores the visitor's SMS consent answer; once a booking request
+        made them a customer, the customer record follows it too. A finished
+        chat still accepts a withdrawal, never a new yes."""
+
+        now = self._now()
+        async with self._unit_of_work_factory() as unit_of_work:
+            locked = await unit_of_work.intake_conversations.lock(
+                conversation.business_id, conversation.conversation_id
+            )
+            if (
+                locked is None
+                or locked.sms_consent is consent
+                or (consent and not locked.is_live(now))
+            ):
+                await unit_of_work.commit()
+                return locked or conversation
+            updated = locked.with_updates(now, sms_consent=consent, sms_consent_at=now)
+            await unit_of_work.intake_conversations.save(updated)
+            if updated.customer_id is not None:
+                await unit_of_work.customers.set_sms_consent(
+                    updated.business_id, updated.customer_id, consent, now
+                )
+            await unit_of_work.commit()
+            return updated
 
     async def summary(self, conversation: IntakeConversation) -> dict[str, object] | None:
         """The public summary, complete by the business's own questions."""
@@ -497,6 +546,13 @@ class IntakeService:
                 now=now,
             )
             customer_id = customer.customer_id
+        if customer_id is not None and conversation.sms_consent is not None:
+            await unit_of_work.customers.set_sms_consent(
+                conversation.business_id,
+                customer_id,
+                conversation.sms_consent,
+                conversation.sms_consent_at or now,
+            )
         updated = conversation.with_updates(
             now,
             state=IntakeState.AWAITING_OWNER,
@@ -668,10 +724,16 @@ class ArrangeIntakeBookingService:
                     )
                 )
             )
-            if collected.phone:
+            customer = (
+                None
+                if conversation.customer_id is None
+                else await unit_of_work.customers.get(business_id, conversation.customer_id)
+            )
+            if collected.phone and customer is not None and customer.sms_consent is True:
                 await unit_of_work.outbox.enqueue(
                     intake_customer_text_command(
                         business_id,
+                        customer_id=customer.customer_id,
                         phone=collected.phone,
                         text=body,
                         idempotency_key=f"{key_base}:text",
@@ -887,18 +949,31 @@ class SendIntakeCustomerEmailService:
             raise IntakeDeliveryError(receipt.detail or "customer email failed")
 
 
+class IntakeTextStatus(StrEnum):
+    SENT = "sent"
+    NO_CONSENT = "no_consent"
+
+
 class SendIntakeCustomerTextService:
-    """Delivers one customer SMS verbatim."""
+    """Delivers one customer SMS verbatim, only to a customer whose record
+    says they consented to texts at the time of sending."""
 
-    def __init__(self, texts: CustomerTextDeliveryPort) -> None:
+    def __init__(
+        self, texts: CustomerTextDeliveryPort, unit_of_work_factory: UnitOfWorkFactory
+    ) -> None:
         self._texts = texts
+        self._unit_of_work_factory = unit_of_work_factory
 
-    async def send(self, business_id: BusinessId, payload: Mapping[str, object]) -> None:
+    async def send(
+        self, business_id: BusinessId, payload: Mapping[str, object]
+    ) -> IntakeTextStatus:
         phone = payload.get("phone")
         text = payload.get("text")
         key = payload.get("idempotency_key")
         if not all(isinstance(value, str) and value for value in (phone, text, key)):
             raise ValueError("intake text command payload is incomplete")
+        if not await self._consented(business_id, payload.get("customer_id")):
+            return IntakeTextStatus.NO_CONSENT
         receipt = await self._texts.send_text(
             CustomerTextRequest(
                 business_id=business_id,
@@ -909,6 +984,19 @@ class SendIntakeCustomerTextService:
         )
         if receipt.status is DeliveryStatus.FAILED:
             raise IntakeDeliveryError(receipt.detail or "customer text failed")
+        return IntakeTextStatus.SENT
+
+    async def _consented(self, business_id: BusinessId, raw_customer_id: object) -> bool:
+        if not isinstance(raw_customer_id, str):
+            return False
+        try:
+            customer_id = CustomerId(UUID(raw_customer_id))
+        except ValueError:
+            return False
+        async with self._unit_of_work_factory() as unit_of_work:
+            customer = await unit_of_work.customers.get(business_id, customer_id)
+            await unit_of_work.commit()
+        return customer is not None and customer.sms_consent is True
 
 
 class IntakeBookingEventResult(StrEnum):
