@@ -69,7 +69,7 @@ from gvas.interfaces.http.app import create_app
 from gvas.interfaces.http.public import PerIpRateLimiter, create_public_router
 from test_composition import Clock, inbound, seed_business
 from test_pilot_runtime import immediate_worker, texts_of
-from test_portal_quote_handoff import PhoneAwareDrafting, recipient
+from test_portal_quote_handoff import PhoneAwareDrafting, consent_to_texts, recipient
 
 SITE_URL = "https://gudvector.com"
 CALENDLY_URL = "https://calendly.com/gudvector"
@@ -178,11 +178,14 @@ async def hosted_quote(
     checkout: CheckoutFake | None = None,
     customer_text: CustomerTextFake | None = None,
     configure_site: bool = True,
+    sms_consent: bool | None = None,
 ) -> tuple[Application, OwnerReplyFake, HostedEmailDelivery, str]:
     """A business with a site URL whose owner approves one quote end to end."""
 
     business_id = BusinessId(uuid4())
     await seed_business(session_factory, business_id)
+    if sms_consent is not None:
+        await consent_to_texts(session_factory, business_id, "jane@example.test", sms_consent)
     if configure_site:
         async with session_factory() as session:
             await SqlBusinessRepository(session).configure_site(
@@ -438,7 +441,7 @@ async def test_hosted_approve_emails_the_quote_url_and_texts_it(
 ) -> None:
     text = CustomerTextFake()
     application, owner_replies, delivery, claim_token = await hosted_quote(
-        session_factory, customer_text=text
+        session_factory, customer_text=text, sms_consent=True
     )
     assert delivery.requests[0].quote_url == f"{SITE_URL}/q/{claim_token}"
     assert delivery.requests[0].business_name == DISPLAY_NAME
@@ -905,6 +908,9 @@ def test_configure_rejects_unusable_public_keys_and_booking_links() -> None:
             "calendly_url": CALENDLY_URL,
             "stripe_account_id": None,
             "public_key": "gvb_ok-1.~_x",
+            "intake_brief": None,
+            "intake_questions": None,
+            "intake_opening": None,
         }
         base.update(overrides)
         return Namespace(**base)

@@ -28,6 +28,7 @@ from gvas.domain.enums import CustomerQuoteStatus
 from gvas.domain.payments import PaymentCheckoutError, QuoteSubscriptionRecord
 from gvas.domain.quotes import Quote, normalize_customer_email, public_quote_id
 from gvas.interfaces.http.public import (
+    IntakeStartBody,
     PerIpRateLimiter,
     client_ip,
     intake_start_payload,
@@ -235,10 +236,14 @@ def create_portal_router(
 
         @router.post("/v1/portal/intake/conversations", dependencies=limited, status_code=201)
         async def create_portal_intake_conversation(
+            body: IntakeStartBody | None = None,
             context: PortalContext = Depends(authenticated),  # noqa: B008
         ) -> JSONResponse:
+            consent = None if body is None else body.sms_consent
             try:
-                start = await intake.start_portal_conversation(context.business, context.customer)
+                start = await intake.start_portal_conversation(
+                    context.business, context.customer, sms_consent=consent
+                )
             except IntakeLimitError:
                 return JSONResponse({"detail": "rate limited"}, status_code=429)
             return JSONResponse(intake_start_payload(start), status_code=201)

@@ -8,8 +8,13 @@ different values updates the row; a value that is not supplied is left alone.
 When no ``--public-key`` is given and the business has none, a fresh one is
 generated; it is printed so it can be copied into the site's frontend config.
 
+The ``--intake-*`` options set the website booking agent's profile: a brief
+describing the business and what the agent books, the questions to ask beyond
+name/email/phone, and the first message a visitor reads.
+
     gvas-configure-business --business-id <uuid> --site-url https://gudvector.com \
-        --display-name "Güd Vector" --calendly-url https://calendly.com/gudvector
+        --display-name "Güd Vector" --calendly-url https://calendly.com/gudvector \
+        --intake-brief "..." --intake-questions "..." --intake-opening "..."
 """
 
 import argparse
@@ -24,6 +29,11 @@ from uuid import UUID
 
 from gvas.config import Settings
 from gvas.domain.identifiers import BusinessId
+from gvas.domain.intake import (
+    INTAKE_BRIEF_MAX_CHARS,
+    INTAKE_OPENING_MAX_CHARS,
+    INTAKE_QUESTIONS_MAX_CHARS,
+)
 from gvas.domain.repositories import (
     BusinessRecord,
     is_local_host,
@@ -51,6 +61,9 @@ class ConfigureBusinessRequest:
     calendly_url: str | None
     stripe_account_id: str | None
     public_key: str | None
+    intake_brief: str | None = None
+    intake_questions: str | None = None
+    intake_opening: str | None = None
 
 
 def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
@@ -85,6 +98,13 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
             raise ConfigureBusinessInputError(
                 "--calendly-url must use https outside local development"
             )
+    intake_brief = _optional_text(arguments.intake_brief, "--intake-brief", INTAKE_BRIEF_MAX_CHARS)
+    intake_questions = _optional_text(
+        arguments.intake_questions, "--intake-questions", INTAKE_QUESTIONS_MAX_CHARS
+    )
+    intake_opening = _optional_text(
+        arguments.intake_opening, "--intake-opening", INTAKE_OPENING_MAX_CHARS
+    )
     if all(
         value is None
         for value in (
@@ -93,6 +113,9 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
             calendly_url,
             _optional(arguments.stripe_account_id),
             _optional(arguments.public_key),
+            intake_brief,
+            intake_questions,
+            intake_opening,
         )
     ):
         raise ConfigureBusinessInputError("nothing to configure; pass at least one option")
@@ -108,6 +131,9 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         calendly_url=calendly_url,
         stripe_account_id=_optional(arguments.stripe_account_id),
         public_key=public_key,
+        intake_brief=intake_brief,
+        intake_questions=intake_questions,
+        intake_opening=intake_opening,
     )
 
 
@@ -116,6 +142,16 @@ def _optional(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _optional_text(value: str | None, flag: str, max_chars: int) -> str | None:
+    text = _optional(value)
+    if text is None:
+        return None
+    text = " ".join(text.split())
+    if len(text) > max_chars:
+        raise ConfigureBusinessInputError(f"{flag} must be at most {max_chars} characters")
+    return text
 
 
 async def run_configure(request: ConfigureBusinessRequest) -> BusinessRecord:
@@ -137,6 +173,9 @@ async def run_configure(request: ConfigureBusinessRequest) -> BusinessRecord:
                 calendly_url=request.calendly_url,
                 stripe_account_id=request.stripe_account_id,
                 public_key=public_key,
+                intake_brief=request.intake_brief,
+                intake_questions=request.intake_questions,
+                intake_opening=request.intake_opening,
                 now=datetime.now(UTC),
             )
             await unit_of_work.commit()
@@ -155,6 +194,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--calendly-url")
     parser.add_argument("--stripe-account-id")
     parser.add_argument("--public-key")
+    parser.add_argument(
+        "--intake-brief", help="1-3 sentences: what the business does and what the agent books"
+    )
+    parser.add_argument(
+        "--intake-questions", help="what the agent finds out beyond name, email and phone"
+    )
+    parser.add_argument("--intake-opening", help="the agent's first message to a visitor")
     try:
         request = build_request(parser.parse_args(argv))
         business = asyncio.run(run_configure(request))
@@ -163,7 +209,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(  # noqa: T201
         f"business {business.business_id} site_url {business.site_url} "
         f"display_name {business.display_name} calendly_url {business.calendly_url} "
-        f"public_key {business.public_key}"
+        f"public_key {business.public_key} "
+        f"intake_profile {'custom' if business.intake_profile.is_configured else 'default'}"
     )
     return 0
 

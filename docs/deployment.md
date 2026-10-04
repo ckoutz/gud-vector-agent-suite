@@ -111,6 +111,36 @@ or retried. MMS media is not surfaced to the workflows.
   unset to run without SMS. Setting some but not all fails startup, naming the
   missing variables.
 
+### Customer SMS consent
+
+GVAS texts a customer only when their customer record has
+`sms_consent = true`; no answer (`null`) or `false` means email only. This
+covers every customer-facing text — the intake booking confirmation/approval
+text and the quote link text — and is checked twice: when the text command is
+queued and again by the worker right before Telnyx is called, so a text queued
+before consent was withdrawn (or by an older release) is dropped as
+`no_consent` instead of sent. Owner/staff SMS (the quote channel above) is not
+gated.
+
+- **Where consent comes from**: the site sends `smsConsent` (or
+  `sms_consent`) on `POST /v1/businesses/{key}/intake/conversations`,
+  `POST /v1/intake/conversations/{id}/messages` or
+  `POST /v1/portal/intake/conversations`. It is stored on the conversation
+  (`sms_consent`, `sms_consent_at`) and copied onto the customer record when
+  the visitor picks a slot (the booking request); a signed-in portal
+  customer's answer reaches their record immediately, and a later change on
+  the same conversation updates the customer too. The newest answer wins: an
+  older chat for the same email never overwrites a newer one. A "no" is
+  accepted even after the booking was approved or declined; a new "yes" needs
+  a live chat. Responses echo it as `smsConsent`.
+- **Quotes**: a quote's text goes out only when its recipient is a linked
+  customer who consented through intake; phone-only quote recipients have no
+  customer record, so they are never texted. The owner confirmation says
+  "No SMS consent on file, so no text." when a phone was on file.
+- **Migration**: `0018_customer_sms_consent` adds the nullable
+  `sms_consent`/`sms_consent_at` columns to `customers` and
+  `intake_conversations`; existing rows start as `null` (no texts).
+
 ## Calendly appointment lookup (optional)
 
 With Calendly configured a `quote:` may omit `customer:`; the quote workflow
@@ -150,8 +180,8 @@ On `approve booking <ref>` the adapter first tries direct invitee creation
 (`POST /invitees`, Scheduling API — available on paid Calendly plans); on a
 4xx it mints a single-use scheduling link (`POST /scheduling_links`,
 `max_event_count=1`) prefilled with the customer's name, email and chosen
-slot, then emails (and texts, when a phone was collected and `GVAS_TELNYX_*`
-is set) the customer to confirm. If the worker dies mid-booking, the retried
+slot, then emails (and texts, when a phone was collected, the customer
+consented to texts and `GVAS_TELNYX_*` is set) the customer to confirm. If the worker dies mid-booking, the retried
 command first reconciles via `GET /scheduled_events` (invitee email + slot
 window) so the approval can never book twice. The same `GVAS_CALENDLY_TOKEN`
 covers all of these calls — no extra scopes.
@@ -211,7 +241,7 @@ Delivery precedence on `approve`, per business:
    below): the quote gets a `claim_token`, the Resend email becomes a proper
    quote email (business display name, items, total, link to
    `<site_url>/q/<claim_token>`), and Telnyx texts the same URL when the
-   customer has a phone number and `GVAS_TELNYX_*` is set.
+   customer has a phone number, consented to texts and `GVAS_TELNYX_*` is set.
 2. **External portal** — no `site_url` but `GVAS_PORTAL_*` is set: the quote
    is handed to `POST {base}/api/quotes` as in PR #34.
 3. **Generic email** — neither: today's Resend email with the portal login
@@ -229,6 +259,25 @@ undoes the other, and owner failure notices stay sanitized.
   local development hosts. `--stripe-account-id` stores a future Stripe
   Connect account id; it is stored only. Run it from the Railway shell after
   the migration like `gvas-bootstrap`.
+- **Per-business booking agent**: the same CLI stores the website intake
+  agent's profile. `--intake-brief` (1–3 sentences: what the business does and
+  what the agent books) and `--intake-questions` (what to find out beyond
+  name, email and phone) are injected into the agent's prompt;
+  `--intake-opening` replaces the chat's first message (the portal "welcome
+  back" opening stays generic). Each flag is optional and an omitted flag
+  keeps the stored value. Without `--intake-questions` the agent asks the
+  generic estimate/consultation questions and still needs a service address
+  before it offers times; with them it is ready on name, email and what the
+  customer needs plus whatever the questions ask for. The brief and questions
+  never override the agent's rules (no prices, no invented availability,
+  owner approval before anything is booked). For example:
+
+  ```sh
+  gvas-configure-business --business-id <uuid> \
+    --intake-brief "Acme Web builds websites for local trades; you book a free 20-minute discovery call." \
+    --intake-questions "whether they want a website, automation, or both; their business name and trade; their timeline" \
+    --intake-opening "Hi! Are you looking for a website, an automation, or both?"
+  ```
 - **Stripe** (`GVAS_STRIPE_SECRET_KEY`, `GVAS_STRIPE_WEBHOOK_SECRET`) is an
   optional pair: both set enables `accept` (Checkout Sessions via
   `api.stripe.com`, `Idempotency-Key` = the quote's delivery key) and the
@@ -306,7 +355,7 @@ For businesses without a `site_url`, the `GVAS_PORTAL_*` path below is the
 alternative backend: an approved quote is created on the external portal
 instead of being emailed by Resend; the portal emails the customer its quote
 link, and GVAS texts the same link through Telnyx when the customer has a
-phone number and `GVAS_TELNYX_*` is set.
+phone number, consented to texts and `GVAS_TELNYX_*` is set.
 
 - **Base URL**: `GVAS_PORTAL_BASE_URL`, e.g. `https://gudvector.com`; the
   adapter posts to `{base}/api/quotes` with the items, customer and, when the

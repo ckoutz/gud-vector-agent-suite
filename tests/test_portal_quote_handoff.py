@@ -37,6 +37,7 @@ from gvas.domain.quotes import (
     customer_quote_text,
 )
 from gvas.infrastructure.calendly.api import CalendlyAppointmentLookup
+from gvas.infrastructure.customer_repositories import SqlCustomerRepository
 from gvas.infrastructure.models import OutboxMessage
 from gvas.infrastructure.portal import (
     InMemoryPortalHandoffLedger,
@@ -406,15 +407,33 @@ class PhoneAwareDrafting:
         )
 
 
+async def consent_to_texts(
+    session_factory: async_sessionmaker[AsyncSession],
+    business_id: BusinessId,
+    email: str,
+    consent: bool = True,
+) -> None:
+    async with session_factory() as session:
+        customers = SqlCustomerRepository(session)
+        customer = await customers.upsert(
+            business_id, email, display_name=None, phone=None, now=FAKE_NOW
+        )
+        await customers.set_sms_consent(business_id, customer.customer_id, consent, FAKE_NOW)
+        await session.commit()
+
+
 async def approved_quote(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     customer: CustomerRecipient,
     emailed: bool,
     text: CustomerTextFake | None,
+    sms_consent: bool | None = None,
 ) -> tuple[OwnerReplyFake, PortalLikeDelivery]:
     business_id = BusinessId(uuid4())
     await seed_business(session_factory, business_id)
+    if sms_consent is not None and customer.email_address is not None:
+        await consent_to_texts(session_factory, business_id, customer.email_address, sms_consent)
     owner_replies = OwnerReplyFake()
     delivery = PortalLikeDelivery(emailed=emailed)
     application = build_application(
@@ -462,7 +481,7 @@ async def test_emailed_and_texted_quote_confirms_both_channels_once(
 ) -> None:
     text = CustomerTextFake()
     owner_replies, delivery = await approved_quote(
-        session_factory, customer=recipient(), emailed=True, text=text
+        session_factory, customer=recipient(), emailed=True, text=text, sms_consent=True
     )
 
     assert len(delivery.requests) == 1
@@ -489,7 +508,11 @@ async def test_failed_text_dead_letters_with_the_emailed_flag_and_the_link(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     owner_replies, delivery = await approved_quote(
-        session_factory, customer=recipient(), emailed=True, text=CustomerTextFake(fail=True)
+        session_factory,
+        customer=recipient(),
+        emailed=True,
+        text=CustomerTextFake(fail=True),
+        sms_consent=True,
     )
 
     assert len(delivery.requests) == 1
@@ -519,9 +542,10 @@ async def test_failed_text_after_an_unemailed_quote_says_nothing_reached_the_cus
 ) -> None:
     owner_replies, _ = await approved_quote(
         session_factory,
-        customer=recipient(email=None),
+        customer=recipient(),
         emailed=False,
         text=CustomerTextFake(fail=True),
+        sms_consent=True,
     )
 
     notices = texts_of(owner_replies, "The quote was created, but the text")
@@ -531,6 +555,42 @@ async def test_failed_text_after_an_unemailed_quote_says_nothing_reached_the_cus
     confirmations = texts_of(owner_replies, "Quote for Jane Doe is ready")
     assert confirmations == [
         f"Quote for Jane Doe is ready: {QUOTE_URL}\nTexting +19255551234. No email was sent."
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sms_consent", [None, False])
+async def test_quote_is_never_texted_without_sms_consent(
+    session_factory: async_sessionmaker[AsyncSession], sms_consent: bool | None
+) -> None:
+    text = CustomerTextFake()
+    owner_replies, delivery = await approved_quote(
+        session_factory, customer=recipient(), emailed=True, text=text, sms_consent=sms_consent
+    )
+
+    assert len(delivery.requests) == 1
+    assert text.requests == []
+    assert await command_statuses(session_factory, "customer_quote.text") == []
+    assert texts_of(owner_replies, "Quote for Jane Doe is ready") == [
+        f"Quote for Jane Doe is ready: {QUOTE_URL}\n"
+        "Emailed to jane@example.test. No SMS consent on file, so no text."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_phone_only_quote_has_no_consent_so_it_is_not_texted(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    text = CustomerTextFake()
+    owner_replies, _ = await approved_quote(
+        session_factory, customer=recipient(email=None), emailed=False, text=text
+    )
+
+    assert text.requests == []
+    assert await command_statuses(session_factory, "customer_quote.text") == []
+    assert texts_of(owner_replies, "Quote for Jane Doe is ready") == [
+        f"Quote for Jane Doe is ready: {QUOTE_URL}\n"
+        "Not emailed or texted; forward the link to the customer yourself."
     ]
 
 

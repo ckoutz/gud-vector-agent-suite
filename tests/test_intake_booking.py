@@ -22,9 +22,11 @@ from composition_fakes import (
 )
 from gvas.application.intake import (
     NO_AVAILABILITY_REPLY,
+    OPENING_REPLY,
     UNAVAILABLE_REPLY,
     IntakeClosedError,
     IntakeDeliveryError,
+    IntakeTextStatus,
     SendIntakeCustomerEmailService,
     SendIntakeCustomerTextService,
 )
@@ -32,7 +34,7 @@ from gvas.composition import Application, build_application
 from gvas.config import IntakeSettings
 from gvas.domain.customers import CustomerRecord
 from gvas.domain.enums import DeliveryStatus
-from gvas.domain.identifiers import BusinessId, CustomerId
+from gvas.domain.identifiers import BusinessId, CustomerId, IntakeConversationId
 from gvas.domain.intake import (
     INTAKE_BOOKING_ARRANGE_COMMAND_TYPE,
     INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
@@ -45,8 +47,12 @@ from gvas.domain.intake import (
     BookingResult,
     IntakeAgentError,
     IntakeCollected,
+    IntakeConversation,
+    IntakeProfile,
+    IntakeState,
     IntakeTurn,
     IntakeTurnRequest,
+    booking_request_notice,
     pick_offer_slots,
 )
 from gvas.domain.messages import (
@@ -54,15 +60,19 @@ from gvas.domain.messages import (
     CustomerTextRequest,
     DeliveryReceipt,
 )
+from gvas.infrastructure.customer_repositories import SqlCustomerRepository
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
+from gvas.infrastructure.intake_repositories import SqlIntakeConversationRepository
 from gvas.infrastructure.models import OutboxMessage
 from gvas.infrastructure.repositories import SqlBusinessRepository
+from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
 from gvas.interfaces.http.app import create_app
 from gvas.interfaces.http.portal import create_portal_router
 from gvas.interfaces.http.public import create_public_router
 from test_composition import Clock, inbound, seed_business
 from test_hosted_quotes import CustomerTextFake
 from test_pilot_runtime import deterministic_ports, immediate_worker, texts_of
+from test_portal_quote_handoff import consent_to_texts
 
 NOW = datetime(2026, 1, 5, 12, 0, tzinfo=UTC)  # a Monday
 PUBLIC_KEY = "gvb_intake_test"
@@ -262,6 +272,7 @@ async def reach_awaiting_owner(
     availability: AvailabilityFake,
     agent: IntakeAgentFake | None = None,
     customer_text: CustomerTextFake | None = None,
+    sms_consent: bool | None = None,
 ) -> tuple[Application, OwnerReplyFake, BusinessId, str]:
     """Drives one conversation to ``awaiting_owner`` via HTTP; returns the ref."""
 
@@ -290,9 +301,13 @@ async def reach_awaiting_owner(
     await immediate_worker(application).drain()
 
     async with http_client(application) as client:
-        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        start_body = None if sms_consent is None else {"smsConsent": sms_consent}
+        created = await client.post(
+            f"/v1/businesses/{PUBLIC_KEY}/intake/conversations", json=start_body
+        )
         assert created.status_code == 201
         body = created.json()
+        assert body["smsConsent"] is sms_consent
         token = body["conversationToken"]
         headers = {"Authorization": f"Bearer {token}"}
         conversation_id = body["conversationId"]
@@ -497,7 +512,7 @@ async def test_unlisted_slot_pick_is_rejected(
 ) -> None:
     business_id = await intake_business(session_factory)
     offered = slot(datetime.now(UTC))
-    not_offered = slot(datetime.now(UTC), days=3)
+    not_offered = slot(offered.start, days=1)
     availability = AvailabilityFake((offered,))
     agent = IntakeAgentFake(
         [
@@ -617,7 +632,7 @@ async def test_owner_approve_with_link_fallback_sends_link_and_text(
     availability = AvailabilityFake(result=BookingResult(kind=BookingKind.LINK, link=link))
     customer_text = CustomerTextFake()
     application, owner, business_id, reference = await reach_awaiting_owner(
-        session_factory, availability=availability, customer_text=customer_text
+        session_factory, availability=availability, customer_text=customer_text, sms_consent=True
     )
     await application.ingest_service.ingest(
         inbound(business_id, f"approve booking {reference}", message_key="approve-2")
@@ -920,11 +935,22 @@ async def test_failed_customer_deliveries_raise_so_the_outbox_retries(
                 "idempotency_key": "key-1",
             },
         )
-    text = SendIntakeCustomerTextService(FailingText())
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    await consent_to_texts(session_factory, business_id, EMAIL)
+    async with session_factory() as session:
+        customer = await SqlCustomerRepository(session).find_by_email(business_id, EMAIL)
+    assert customer is not None
+    text = SendIntakeCustomerTextService(FailingText(), SqlUnitOfWorkFactory(session_factory))
     with pytest.raises(IntakeDeliveryError):
         await text.send(
-            BusinessId(uuid4()),
-            {"phone": "+15555550100", "text": "details", "idempotency_key": "key-2"},
+            business_id,
+            {
+                "customer_id": str(customer.customer_id),
+                "phone": "+15555550100",
+                "text": "details",
+                "idempotency_key": "key-2",
+            },
         )
 
 
@@ -999,3 +1025,389 @@ def test_pick_offer_slots_anchors_the_day_window_on_the_slot_timezone() -> None:
     )
     assert offered, "the business-local Monday is lost when anchored on UTC"
     assert offered[0].start == start
+
+
+PROFILE_BRIEF = "Acme Web builds websites for plumbers; you book a free discovery call."
+PROFILE_QUESTIONS = "whether they want a website, automation, or both; their trade"
+PROFILE_OPENING = "Hi! Are you after a website, an automation, or both?"
+
+
+async def profiled_business(session_factory: async_sessionmaker[AsyncSession]) -> BusinessId:
+    business_id = await intake_business(session_factory)
+    async with session_factory() as session:
+        await SqlBusinessRepository(session).configure_site(
+            business_id,
+            intake_brief=PROFILE_BRIEF,
+            intake_questions=PROFILE_QUESTIONS,
+            intake_opening=PROFILE_OPENING,
+            now=NOW,
+        )
+        await session.commit()
+    return business_id
+
+
+@pytest.mark.asyncio
+async def test_intake_profile_is_stored_and_kept_when_other_fields_change(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await profiled_business(session_factory)
+    async with session_factory() as session:
+        record = await SqlBusinessRepository(session).configure_site(
+            business_id, display_name="Renamed Co", now=NOW
+        )
+        await session.commit()
+    assert record.display_name == "Renamed Co"
+    assert record.intake_profile == IntakeProfile(
+        brief=PROFILE_BRIEF, questions=PROFILE_QUESTIONS, opening=PROFILE_OPENING
+    )
+    assert record.intake_profile.is_configured
+
+
+@pytest.mark.asyncio
+async def test_intake_profile_drives_opening_agent_request_and_owner_notice(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await profiled_business(session_factory)
+    offered = slot(datetime.now(UTC))
+    availability = AvailabilityFake((offered,))
+    agent = IntakeAgentFake(
+        [
+            collected_turn(
+                name="Jane Doe",
+                email=EMAIL,
+                details="A new website",
+                notes="Plumber; wants it live by May",
+            ),
+            IntakeTurn(reply="Here is what is open.", ready_for_slots=True),
+        ]
+    )
+    application, owner = intake_app(session_factory, agent=agent, availability=availability)
+    await seed_owner_thread(application, business_id)
+    await immediate_worker(application).drain()
+
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        assert created.status_code == 201
+        assert created.json()["reply"] == PROFILE_OPENING
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+        await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "I need a website for my plumbing business"},
+            headers=headers,
+        )
+        # No address was ever asked for: a profiled business is ready on
+        # name, email and details.
+        proposed = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "what times do you have?"},
+            headers=headers,
+        )
+        payload = proposed.json()
+        assert payload["state"] == "proposing_slots"
+        assert payload["summary"]["details"] == "A new website"
+        assert payload["summary"]["problem"] == "A new website"
+        assert payload["summary"]["notes"] == "Plumber; wants it live by May"
+        picked = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": f"slot:{offered.start.isoformat()}"},
+            headers=headers,
+        )
+        assert picked.json()["state"] == "awaiting_owner"
+
+    assert agent.requests
+    assert all(request.brief == PROFILE_BRIEF for request in agent.requests)
+    assert all(request.questions == PROFILE_QUESTIONS for request in agent.requests)
+    for _ in range(4):
+        await immediate_worker(application).drain()
+    notices = texts_of(owner, "Booking request")
+    assert len(notices) == 1
+    assert "Jane Doe. A new website." in notices[0]
+    assert "address" not in notices[0]
+    assert "Notes: Plumber; wants it live by May" in notices[0]
+
+
+@pytest.mark.asyncio
+async def test_intake_without_profile_keeps_default_opening_and_needs_an_address(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await intake_business(session_factory)
+    offered = slot(datetime.now(UTC))
+    availability = AvailabilityFake((offered,))
+    agent = IntakeAgentFake(
+        [
+            collected_turn(name="Jane", email=EMAIL, details="ants"),
+            IntakeTurn(reply="ok", ready_for_slots=True),
+            IntakeTurn(
+                reply="ok",
+                collected=IntakeCollected(address="2 Elm St"),
+                ready_for_slots=True,
+            ),
+        ]
+    )
+    application, _ = intake_app(session_factory, agent=agent, availability=availability)
+    await seed_owner_thread(application, business_id)
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        assert created.json()["reply"] == OPENING_REPLY
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+        states = []
+        for text in ("ants", "times?", "2 Elm St"):
+            response = await client.post(
+                f"/v1/intake/conversations/{conversation_id}/messages",
+                json={"message": text},
+                headers=headers,
+            )
+            states.append(response.json()["state"])
+    assert states == ["collecting", "collecting", "proposing_slots"]
+    assert all(request.brief is None and request.questions is None for request in agent.requests)
+
+
+def test_intake_collected_reads_legacy_problem_as_details() -> None:
+    legacy = IntakeCollected.model_validate(
+        {"name": "Jane", "email": EMAIL, "address": "2 Elm St", "problem": "ants"}
+    )
+    assert legacy.details == "ants"
+    assert legacy.notes is None
+    assert "problem" not in legacy.as_stored()
+    assert legacy.as_stored()["details"] == "ants"
+    both = IntakeCollected.model_validate({"details": "mold", "problem": "ants"})
+    assert both.details == "mold"
+
+
+def test_intake_notes_accumulate_without_repeating() -> None:
+    first = IntakeCollected().merge(IntakeCollected(notes="Plumber"))
+    assert first.notes == "Plumber"
+    assert first.merge(IntakeCollected(notes="plumber")).notes == "Plumber"
+    extended = first.merge(IntakeCollected(notes="Plumber, 3 vans"))
+    assert extended.notes == "Plumber, 3 vans"
+    assert extended.merge(IntakeCollected(notes="Uses Jobber")).notes == (
+        "Plumber, 3 vans; Uses Jobber"
+    )
+    assert extended.merge(IntakeCollected(notes="vans")).notes == "Plumber, 3 vans; vans"
+
+
+def test_intake_booking_notice_reports_a_missing_address_only_without_a_profile() -> None:
+    conversation = IntakeConversation(
+        conversation_id=IntakeConversationId(uuid4()),
+        business_id=BusinessId(uuid4()),
+        reference="abc123",
+        token_hash="0" * 64,
+        channel="web",
+        collected=IntakeCollected(name="Jane", email=EMAIL, details="ants"),
+        expires_at=NOW + timedelta(days=1),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    default = booking_request_notice(conversation, business_name="Test Co")
+    assert default.startswith("Booking request #abc123 — Jane, address unknown. ants.")
+    profiled = booking_request_notice(
+        conversation,
+        business_name="Test Co",
+        profile=IntakeProfile(brief=PROFILE_BRIEF, questions=PROFILE_QUESTIONS),
+    )
+    assert profiled.startswith("Booking request #abc123 — Jane. ants.")
+    opening_only = booking_request_notice(
+        conversation,
+        business_name="Test Co",
+        profile=IntakeProfile(opening=PROFILE_OPENING),
+    )
+    assert "address unknown" in opening_only
+
+
+def test_only_a_business_s_own_questions_waive_the_address() -> None:
+    collected = IntakeCollected(name="Jane", email=EMAIL, details="ants")
+    assert collected.summary() is None, "the generic flow is not complete without an address"
+    assert IntakeProfile(brief=PROFILE_BRIEF, opening=PROFILE_OPENING).requires_address
+    assert IntakeProfile().requires_address
+    custom = IntakeProfile(questions=PROFILE_QUESTIONS)
+    assert not custom.requires_address
+    summary = collected.summary(address_required=custom.requires_address)
+    assert summary is not None and summary["details"] == "ants"
+    with_address = collected.model_copy(update={"address": "2 Elm St"})
+    assert with_address.summary() is not None
+
+
+async def customer_row(
+    session_factory: async_sessionmaker[AsyncSession], business_id: BusinessId
+) -> CustomerRecord:
+    async with session_factory() as session:
+        customer = await SqlCustomerRepository(session).find_by_email(business_id, EMAIL)
+    assert customer is not None
+    return customer
+
+
+async def approve_link_booking(
+    session_factory: async_sessionmaker[AsyncSession], *, sms_consent: bool | None
+) -> tuple[BusinessId, CustomerTextFake]:
+    availability = AvailabilityFake(
+        result=BookingResult(kind=BookingKind.LINK, link="https://calendly.com/test/x?s=1")
+    )
+    customer_text = CustomerTextFake()
+    application, _, business_id, reference = await reach_awaiting_owner(
+        session_factory,
+        availability=availability,
+        customer_text=customer_text,
+        sms_consent=sms_consent,
+    )
+    await application.ingest_service.ingest(
+        inbound(business_id, f"approve booking {reference}", message_key="approve-consent")
+    )
+    for _ in range(6):
+        await immediate_worker(application).drain()
+    return business_id, customer_text
+
+
+@pytest.mark.asyncio
+async def test_sms_consent_is_stored_and_copied_to_the_customer_on_the_booking_request(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id, customer_text = await approve_link_booking(session_factory, sms_consent=True)
+
+    row = await conversation_row(session_factory, business_id)
+    assert row.sms_consent is True and row.sms_consent_at is not None
+    customer = await customer_row(session_factory, business_id)
+    assert customer.sms_consent is True and customer.sms_consent_at is not None
+    assert len(customer_text.requests) == 1
+    assert customer_text.requests[0].phone_number == "+15555550100"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sms_consent", [None, False])
+async def test_booking_is_emailed_but_never_texted_without_sms_consent(
+    session_factory: async_sessionmaker[AsyncSession], sms_consent: bool | None
+) -> None:
+    business_id, customer_text = await approve_link_booking(
+        session_factory, sms_consent=sms_consent
+    )
+
+    assert await commands_of(session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE)
+    assert await commands_of(session_factory, business_id, INTAKE_CUSTOMER_TEXT_COMMAND_TYPE) == []
+    assert customer_text.requests == []
+    customer = await customer_row(session_factory, business_id)
+    assert customer.sms_consent is sms_consent
+
+
+@pytest.mark.asyncio
+async def test_sms_consent_on_a_message_updates_the_conversation_and_response(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await intake_business(session_factory)
+    application, _ = intake_app(
+        session_factory, agent=IntakeAgentFake([IntakeTurn(reply="What do you need?")])
+    )
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        body = created.json()
+        assert body["smsConsent"] is None
+        headers = {"Authorization": f"Bearer {body['conversationToken']}"}
+        url = f"/v1/intake/conversations/{body['conversationId']}"
+        posted = await client.post(
+            f"{url}/messages",
+            json={"message": "hi", "sms_consent": True},
+            headers=headers,
+        )
+        assert posted.status_code == 200
+        assert posted.json()["smsConsent"] is True
+        viewed = await client.get(url, headers=headers)
+        assert viewed.json()["smsConsent"] is True
+
+
+@pytest.mark.asyncio
+async def test_queued_intake_text_is_dropped_unless_the_customer_consented(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    customer_text = CustomerTextFake()
+    service = SendIntakeCustomerTextService(customer_text, SqlUnitOfWorkFactory(session_factory))
+    payload = {"phone": "+15555550100", "text": "details", "idempotency_key": "key-3"}
+
+    assert await service.send(business_id, payload) is IntakeTextStatus.NO_CONSENT
+    await consent_to_texts(session_factory, business_id, EMAIL, consent=False)
+    customer = await customer_row(session_factory, business_id)
+    with_customer = {**payload, "customer_id": str(customer.customer_id)}
+    assert await service.send(business_id, with_customer) is IntakeTextStatus.NO_CONSENT
+    assert customer_text.requests == []
+    await consent_to_texts(session_factory, business_id, EMAIL, consent=True)
+    assert await service.send(business_id, with_customer) is IntakeTextStatus.SENT
+    assert len(customer_text.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_older_answer_never_overwrites_a_newer_one(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    await consent_to_texts(session_factory, business_id, EMAIL, consent=True)
+    customer = await customer_row(session_factory, business_id)
+    assert customer.sms_consent_at is not None
+    withdrawn_at = customer.sms_consent_at + timedelta(hours=2)
+    async with session_factory() as session:
+        customers = SqlCustomerRepository(session)
+        await customers.set_sms_consent(business_id, customer.customer_id, False, withdrawn_at)
+        await customers.set_sms_consent(
+            business_id, customer.customer_id, True, withdrawn_at - timedelta(hours=1)
+        )
+        await session.commit()
+
+    customer = await customer_row(session_factory, business_id)
+    assert customer.sms_consent is False
+    assert customer.sms_consent_at == withdrawn_at
+
+
+@pytest.mark.asyncio
+async def test_portal_start_answer_reaches_the_customer_immediately(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await intake_business(session_factory)
+    application, _ = intake_app(session_factory)
+    assert application.intake is not None
+    await consent_to_texts(session_factory, business_id, EMAIL, consent=True)
+    customer = await customer_row(session_factory, business_id)
+    async with session_factory() as db_session:
+        business_row = await SqlBusinessRepository(db_session).get(business_id)
+    assert business_row is not None
+
+    start = await application.intake.start_portal_conversation(
+        business_row, customer, sms_consent=False
+    )
+
+    assert start.conversation.sms_consent is False
+    assert (await customer_row(session_factory, business_id)).sms_consent is False
+    inherited = await application.intake.start_portal_conversation(
+        business_row, await customer_row(session_factory, business_id)
+    )
+    assert inherited.conversation.sms_consent is False
+
+
+@pytest.mark.asyncio
+async def test_a_no_is_accepted_after_approval_but_a_new_yes_is_not(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    availability = AvailabilityFake()
+    application, _, business_id, reference = await reach_awaiting_owner(
+        session_factory, availability=availability, sms_consent=True
+    )
+    assert application.intake is not None
+    await application.ingest_service.ingest(
+        inbound(business_id, f"approve booking {reference}", message_key="approve-withdraw")
+    )
+    for _ in range(6):
+        await immediate_worker(application).drain()
+    async with session_factory() as session:
+        conversation = await SqlIntakeConversationRepository(session).find_by_reference(
+            business_id, reference
+        )
+    assert conversation is not None and conversation.state is IntakeState.APPROVED
+
+    withdrawn = await application.intake.record_sms_consent(conversation, False)
+
+    assert withdrawn.sms_consent is False
+    assert (await conversation_row(session_factory, business_id)).sms_consent is False
+    assert (await customer_row(session_factory, business_id)).sms_consent is False
+    again = await application.intake.record_sms_consent(withdrawn, True)
+    assert again.sms_consent is False
+    assert (await customer_row(session_factory, business_id)).sms_consent is False

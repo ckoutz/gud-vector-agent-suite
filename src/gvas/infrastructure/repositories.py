@@ -21,6 +21,7 @@ from gvas.domain.identifiers import (
     WorkflowIntent,
     WorkflowRunId,
 )
+from gvas.domain.intake import IntakeProfile
 from gvas.domain.messages import (
     ChannelEndpointRef,
     ConversationRef,
@@ -94,6 +95,11 @@ class SqlBusinessRepository:
             calendly_url=row.calendly_url,
             stripe_account_id=row.stripe_account_id,
             public_key=row.public_key,
+            intake_profile=IntakeProfile(
+                brief=row.intake_brief,
+                questions=row.intake_questions,
+                opening=row.intake_opening,
+            ),
         )
 
     async def get(self, business_id: BusinessId) -> BusinessRecord | None:
@@ -139,6 +145,9 @@ class SqlBusinessRepository:
         calendly_url: str | None = None,
         stripe_account_id: str | None = None,
         public_key: str | None = None,
+        intake_brief: str | None = None,
+        intake_questions: str | None = None,
+        intake_opening: str | None = None,
         now: datetime,
     ) -> BusinessRecord:
         row = await self.session.scalar(select(Business).where(Business.id == business_id))
@@ -154,6 +163,12 @@ class SqlBusinessRepository:
             row.stripe_account_id = stripe_account_id
         if public_key is not None:
             row.public_key = public_key
+        if intake_brief is not None:
+            row.intake_brief = intake_brief
+        if intake_questions is not None:
+            row.intake_questions = intake_questions
+        if intake_opening is not None:
+            row.intake_opening = intake_opening
         row.updated_at = now
         try:
             async with self.session.begin_nested():

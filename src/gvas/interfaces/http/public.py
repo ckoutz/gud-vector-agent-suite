@@ -60,10 +60,17 @@ GENERIC_NOT_FOUND = "not found"
 GENERIC_UNAUTHORIZED = "unauthorized"
 
 
+class IntakeStartBody(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    sms_consent: bool | None = Field(default=None, alias="smsConsent")
+
+
 class IntakeMessageBody(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
     message: str = Field(min_length=1, max_length=INTAKE_MESSAGE_MAX_CHARS)
+    sms_consent: bool | None = Field(default=None, alias="smsConsent")
 
 
 def _slot_payloads(
@@ -86,22 +93,28 @@ def intake_start_payload(start: IntakeStart) -> dict[str, object]:
         "state": start.conversation.state.value,
         "reply": start.reply,
         "slots": None,
+        "smsConsent": start.conversation.sms_consent,
     }
 
 
-def intake_reply_payload(result: IntakeReply) -> dict[str, object]:
+def intake_reply_payload(
+    result: IntakeReply, summary: dict[str, object] | None
+) -> dict[str, object]:
     conversation = result.conversation
     return {
         "state": conversation.state.value,
         "reply": result.reply,
         "slots": _slot_payloads(conversation),
-        "summary": conversation.collected.summary(),
+        "summary": summary,
         "bookingKind": conversation.booking_kind,
+        "smsConsent": conversation.sms_consent,
     }
 
 
 def intake_view_payload(
-    conversation: IntakeConversation, messages: tuple[IntakeMessage, ...]
+    conversation: IntakeConversation,
+    messages: tuple[IntakeMessage, ...],
+    summary: dict[str, object] | None,
 ) -> dict[str, object]:
     return {
         "state": conversation.state.value,
@@ -114,11 +127,12 @@ def intake_view_payload(
             for message in messages
         ],
         "slots": _slot_payloads(conversation),
-        "summary": conversation.collected.summary(),
+        "summary": summary,
         # "booked" once the calendar event is confirmed, "link" while the
         # customer's confirmation link is still outstanding, else null — the
         # widget shows booked vs awaiting-confirmation distinctly.
         "bookingKind": conversation.booking_kind,
+        "smsConsent": conversation.sms_consent,
     }
 
 
@@ -370,9 +384,12 @@ def _mount_intake(router: APIRouter, intake: IntakeService, limited: list[params
         dependencies=limited,
         status_code=201,
     )
-    async def create_intake_conversation(public_key: str) -> JSONResponse:
+    async def create_intake_conversation(
+        public_key: str, body: IntakeStartBody | None = None
+    ) -> JSONResponse:
+        consent = None if body is None else body.sms_consent
         try:
-            start = await intake.start_conversation(public_key)
+            start = await intake.start_conversation(public_key, sms_consent=consent)
         except IntakeNotFoundError:
             return JSONResponse({"detail": GENERIC_NOT_FOUND}, status_code=404)
         except IntakeLimitError:
@@ -387,6 +404,8 @@ def _mount_intake(router: APIRouter, intake: IntakeService, limited: list[params
         conversation = await _intake_authenticate(intake, request, resolved)
         if not body.message.strip():
             return JSONResponse({"detail": "message is required"}, status_code=422)
+        if body.sms_consent is not None:
+            conversation = await intake.record_sms_consent(conversation, body.sms_consent)
         try:
             result = await intake.post_message(conversation, body.message)
         except IntakeClosedError:
@@ -395,11 +414,13 @@ def _mount_intake(router: APIRouter, intake: IntakeService, limited: list[params
             return JSONResponse({"detail": GENERIC_NOT_FOUND}, status_code=404)
         except IntakeError:
             return JSONResponse({"detail": "invalid message"}, status_code=422)
-        return JSONResponse(intake_reply_payload(result), status_code=200)
+        summary = await intake.summary(result.conversation)
+        return JSONResponse(intake_reply_payload(result, summary), status_code=200)
 
     @router.get("/v1/intake/conversations/{conversation_id}", dependencies=limited)
     async def fetch_intake_conversation(conversation_id: str, request: Request) -> JSONResponse:
         resolved = _intake_conversation_id(conversation_id)
         conversation = await _intake_authenticate(intake, request, resolved)
         messages = await intake.get_view(conversation)
-        return JSONResponse(intake_view_payload(conversation, messages), status_code=200)
+        summary = await intake.summary(conversation)
+        return JSONResponse(intake_view_payload(conversation, messages, summary), status_code=200)
