@@ -34,6 +34,7 @@ from gvas.domain.intake import (
     INTAKE_OPENING_MAX_CHARS,
     INTAKE_QUESTIONS_MAX_CHARS,
 )
+from gvas.domain.reporting import normalize_email_address
 from gvas.domain.repositories import (
     BusinessRecord,
     is_local_host,
@@ -64,6 +65,7 @@ class ConfigureBusinessRequest:
     intake_brief: str | None = None
     intake_questions: str | None = None
     intake_opening: str | None = None
+    notification_email: str | None = None
 
 
 def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
@@ -105,10 +107,17 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
     intake_opening = _optional_text(
         arguments.intake_opening, "--intake-opening", INTAKE_OPENING_MAX_CHARS
     )
+    notification_email = _optional(arguments.notification_email)
+    if notification_email is not None:
+        normalized = normalize_email_address(notification_email)
+        if normalized is None:
+            raise ConfigureBusinessInputError("--notification-email must be an e-mail address")
+        notification_email = normalized
     if all(
         value is None
         for value in (
             site_url,
+            notification_email,
             _optional(arguments.display_name),
             calendly_url,
             _optional(arguments.stripe_account_id),
@@ -134,6 +143,7 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         intake_brief=intake_brief,
         intake_questions=intake_questions,
         intake_opening=intake_opening,
+        notification_email=notification_email,
     )
 
 
@@ -176,6 +186,7 @@ async def run_configure(request: ConfigureBusinessRequest) -> BusinessRecord:
                 intake_brief=request.intake_brief,
                 intake_questions=request.intake_questions,
                 intake_opening=request.intake_opening,
+                notification_email=request.notification_email,
                 now=datetime.now(UTC),
             )
             await unit_of_work.commit()
@@ -201,6 +212,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--intake-questions", help="what the agent finds out beyond name, email and phone"
     )
     parser.add_argument("--intake-opening", help="the agent's first message to a visitor")
+    parser.add_argument(
+        "--notification-email",
+        help="owner inbox that gets a copy of every website booking/escalation/payment notice",
+    )
     try:
         request = build_request(parser.parse_args(argv))
         business = asyncio.run(run_configure(request))
@@ -210,7 +225,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"business {business.business_id} site_url {business.site_url} "
         f"display_name {business.display_name} calendly_url {business.calendly_url} "
         f"public_key {business.public_key} "
-        f"intake_profile {'custom' if business.intake_profile.is_configured else 'default'}"
+        f"intake_profile {'custom' if business.intake_profile.is_configured else 'default'} "
+        f"notification_email {business.notification_email}"
     )
     return 0
 

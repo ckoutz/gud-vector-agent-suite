@@ -10,10 +10,14 @@ from datetime import datetime
 
 from gvas.domain.customers import CustomerRecord
 from gvas.domain.identifiers import BusinessId
+from gvas.domain.intake import IntakeCustomerEmail, intake_customer_email_command
 from gvas.domain.messages import OutboundOwnerMessage, TextPart
 from gvas.domain.outbox import owner_reply_command
 from gvas.domain.quotes import Quote
 from gvas.domain.repositories import UnitOfWork
+
+OWNER_EMAIL_SUBJECT_MAX_CHARS = 78
+OWNER_EMAIL_FOOTER = "Reply in your owner channel to act on this."
 
 
 async def enqueue_quote_owner_notice(
@@ -27,6 +31,9 @@ async def enqueue_quote_owner_notice(
     ``correlation_id`` was queued before (the notice is idempotent).
     """
 
+    await enqueue_owner_email_copy(
+        unit_of_work, quote.business_id, correlation_id=correlation_id, text=text
+    )
     source = await unit_of_work.inbound_messages.find_by_key(
         quote.business_id, quote.conversation_id, quote.source_message_key
     )
@@ -62,6 +69,9 @@ async def enqueue_intake_owner_notice(
     no inbound message to anchor to.
     """
 
+    await enqueue_owner_email_copy(
+        unit_of_work, business_id, correlation_id=correlation_id, text=text
+    )
     source = await unit_of_work.inbound_messages.find_latest_for_business(business_id)
     if source is None:
         return False
@@ -80,6 +90,32 @@ async def enqueue_intake_owner_notice(
         message, source.conversation_id, source.inbound_message_id
     )
     await unit_of_work.outbox.enqueue(owner_reply_command(business_id, outbound_message_id))
+    return True
+
+
+async def enqueue_owner_email_copy(
+    unit_of_work: UnitOfWork, business_id: BusinessId, *, correlation_id: str, text: str
+) -> bool:
+    """Queue a copy of an owner notice to the business's ``notification_email``.
+
+    The channel thread stays the place to act (approve/decline); the e-mail
+    is a second inbox so a notice is never missed. Idempotent on
+    ``correlation_id``; False when no notification e-mail is configured.
+    """
+
+    business = await unit_of_work.businesses.get(business_id)
+    if business is None or business.notification_email is None:
+        return False
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "Notice")
+    subject = first_line[:OWNER_EMAIL_SUBJECT_MAX_CHARS]
+    email = IntakeCustomerEmail(
+        business_id=business_id,
+        to=business.notification_email,
+        subject=f"[{business.display_name or business.name}] {subject}",
+        body=f"{text}\n\n{OWNER_EMAIL_FOOTER}",
+        idempotency_key=f"owner_copy:{business_id}:{correlation_id}",
+    )
+    await unit_of_work.outbox.enqueue(intake_customer_email_command(email))
     return True
 
 
@@ -107,4 +143,9 @@ async def link_quote_customer(
     return quote.link_customer(customer.customer_id, now), customer
 
 
-__all__ = ["enqueue_intake_owner_notice", "enqueue_quote_owner_notice", "link_quote_customer"]
+__all__ = [
+    "enqueue_intake_owner_notice",
+    "enqueue_owner_email_copy",
+    "enqueue_quote_owner_notice",
+    "link_quote_customer",
+]

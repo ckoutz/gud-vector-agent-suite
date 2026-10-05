@@ -100,6 +100,7 @@ class SqlBusinessRepository:
                 questions=row.intake_questions,
                 opening=row.intake_opening,
             ),
+            notification_email=row.notification_email,
         )
 
     async def get(self, business_id: BusinessId) -> BusinessRecord | None:
@@ -148,6 +149,7 @@ class SqlBusinessRepository:
         intake_brief: str | None = None,
         intake_questions: str | None = None,
         intake_opening: str | None = None,
+        notification_email: str | None = None,
         now: datetime,
     ) -> BusinessRecord:
         row = await self.session.scalar(select(Business).where(Business.id == business_id))
@@ -169,6 +171,8 @@ class SqlBusinessRepository:
             row.intake_questions = intake_questions
         if intake_opening is not None:
             row.intake_opening = intake_opening
+        if notification_email is not None:
+            row.notification_email = notification_email
         row.updated_at = now
         try:
             async with self.session.begin_nested():

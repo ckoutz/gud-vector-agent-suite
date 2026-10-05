@@ -103,6 +103,9 @@ class BusinessRecord(BaseModel):
     # What the website booking agent says the business is, asks and opens
     # with; empty means the generic default.
     intake_profile: IntakeProfile = IntakeProfile()
+    # Owner inbox that gets a copy of every owner notice raised by the
+    # website (booking requests, escalations, service requests, payments).
+    notification_email: str | None = None
 
     @field_validator("site_url")
     @classmethod
@@ -208,6 +211,7 @@ class BusinessRepository(Protocol):
         intake_brief: str | None = None,
         intake_questions: str | None = None,
         intake_opening: str | None = None,
+        notification_email: str | None = None,
         now: datetime,
     ) -> BusinessRecord:
         """Set hosted-quote and intake-profile fields; ``None`` arguments

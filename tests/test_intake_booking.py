@@ -167,6 +167,7 @@ async def intake_business(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     public_key: str = PUBLIC_KEY,
+    notification_email: str | None = None,
 ) -> BusinessId:
     business_id = BusinessId(uuid4())
     await seed_business(session_factory, business_id)
@@ -177,6 +178,7 @@ async def intake_business(
             display_name="Test Co",
             calendly_url=CALENDLY_LINK,
             public_key=public_key,
+            notification_email=notification_email,
             now=NOW,
         )
         await session.commit()
@@ -273,10 +275,11 @@ async def reach_awaiting_owner(
     agent: IntakeAgentFake | None = None,
     customer_text: CustomerTextFake | None = None,
     sms_consent: bool | None = None,
+    notification_email: str | None = None,
 ) -> tuple[Application, OwnerReplyFake, BusinessId, str]:
     """Drives one conversation to ``awaiting_owner`` via HTTP; returns the ref."""
 
-    business_id = await intake_business(session_factory)
+    business_id = await intake_business(session_factory, notification_email=notification_email)
     offered = slot(datetime.now(UTC))
     availability.slots = (offered,)
     agent = agent or IntakeAgentFake(
@@ -591,6 +594,23 @@ async def test_slot_pick_notifies_owner_with_decision_commands(
     assert f"approve booking {reference}" in notice
     assert f"decline booking {reference}" in notice
     assert availability.book_calls == []
+    assert await commands_of(session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE) == []
+
+
+@pytest.mark.asyncio
+async def test_booking_request_is_copied_to_the_notification_email(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, owner, business_id, reference = await reach_awaiting_owner(
+        session_factory, availability=AvailabilityFake(), notification_email="owner@example.com"
+    )
+    assert texts_of(owner, "Booking request")
+    copies = await commands_of(session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE)
+    assert len(copies) == 1
+    payload = copies[0].payload
+    assert payload["to"] == "owner@example.com"
+    assert payload["subject"].startswith("[Test Co] Booking request")
+    assert f"approve booking {reference}" in payload["body"]
 
 
 @pytest.mark.asyncio

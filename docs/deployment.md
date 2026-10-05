@@ -278,6 +278,12 @@ undoes the other, and owner failure notices stay sanitized.
     --intake-questions "whether they want a website, automation, or both; their business name and trade; their timeline" \
     --intake-opening "Hi! Are you looking for a website, an automation, or both?"
   ```
+- **Owner notification e-mail**: `gvas-configure-business --business-id <uuid>
+  --notification-email info@example.com` makes GVAS e-mail (via Resend) a
+  copy of every website-originated owner notice — booking requests,
+  escalations, portal service requests, quote accepted/paid — to that inbox,
+  in addition to the owner channel thread. Decisions (`approve booking …`)
+  are still taken in the channel.
 - **Stripe** (`GVAS_STRIPE_SECRET_KEY`, `GVAS_STRIPE_WEBHOOK_SECRET`) is an
   optional pair: both set enables `accept` (Checkout Sessions via
   `api.stripe.com`, `Idempotency-Key` = the quote's delivery key) and the
