@@ -343,6 +343,56 @@ async def test_approved_booking_moves_only_once_the_new_time_is_approved(
 
 
 @pytest.mark.asyncio
+async def test_repeated_reschedules_keep_the_original_booking_in_custody(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    availability = AvailabilityFake(result=BookingResult(kind=BookingKind.BOOKED))
+    agent = IntakeAgentFake(
+        [
+            collected_turn(name="Jane Doe", email=EMAIL, phone="+15555550100", problem="leak"),
+            collected_turn(address="1 Main St"),
+            IntakeTurn(reply="Great, here are openings.", ready_for_slots=True),
+            IntakeTurn(reply="Here are other times.", wants_reschedule=True),
+            IntakeTurn(reply="Here are even more times.", wants_reschedule=True),
+        ]
+    )
+    application, _o, business_id, reference, conversation_id, token = await drive(
+        session_factory, availability=availability, agent=agent
+    )
+    await owner_approve(application, business_id, reference, "approve-one")
+    row = await conversation_row(session_factory, business_id)
+    await record_event(application, business_id, row)
+    row = await conversation_row(session_factory, business_id)
+    assert row.booked_event_uri == OLD_EVENT
+
+    first = slot(datetime.now(UTC), days=3)
+    second = slot(datetime.now(UTC), days=4)
+    availability.slots = (first,)
+    async with http_client(application) as client:
+        await post(client, conversation_id, token, "need to move it")
+        await post(client, conversation_id, token, f"slot:{first.start.isoformat()}")
+        # Change their mind again before the owner decides: the first event
+        # must stay in custody or approving would leave two bookings live.
+        availability.slots = (second,)
+        offered = await post(client, conversation_id, token, "actually move it again")
+        assert offered.json()["slots"]
+        picked = await post(client, conversation_id, token, f"slot:{second.start.isoformat()}")
+        assert picked.json()["state"] == "awaiting_owner"
+
+    row = await conversation_row(session_factory, business_id)
+    assert row.requested_slot_start == second.start.replace(tzinfo=None)
+    assert row.superseded_booking is not None
+    assert row.superseded_booking["event_uri"] == OLD_EVENT
+
+    await owner_approve(application, business_id, reference, "approve-two")
+    row = await conversation_row(session_factory, business_id)
+    assert row.state == "approved"
+    assert row.requested_slot_start == second.start.replace(tzinfo=None)
+    assert row.superseded_booking is None
+    assert availability.cancel_calls == [(business_id, OLD_EVENT)]
+
+
+@pytest.mark.asyncio
 async def test_declining_the_new_time_restores_the_original_booking(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

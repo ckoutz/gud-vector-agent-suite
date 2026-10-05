@@ -151,7 +151,19 @@ class IntakeSettings(BaseSettings):
 
     @property
     def decision_links_enabled(self) -> bool:
-        return bool(self.decision_link_secret and self.decision_link_base_url)
+        if not (self.decision_link_secret and self.decision_link_base_url):
+            return False
+        # The links carry actionable tokens, so they are only minted over
+        # https — a deployment typo of http:// must not expose them. Plain
+        # http is still allowed against loopback for local dev and tests.
+        parsed = urlsplit(self.decision_link_base_url)
+        if parsed.scheme == "https":
+            return True
+        return parsed.scheme == "http" and parsed.hostname in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }
 
     def decision_link_origin(self) -> str:
         return self.decision_link_base_url.rstrip("/")

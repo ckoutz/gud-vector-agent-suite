@@ -768,7 +768,10 @@ class IntakeService:
                 conversation.sms_consent,
                 conversation.sms_consent_at or now,
             )
-        superseded = conversation.booking_snapshot()
+        # A pick while a reschedule is already pending re-requests under the
+        # same reference — the approved event already in custody stays in
+        # custody (``booking_snapshot`` only fires for an approved state).
+        superseded = conversation.booking_snapshot() or conversation.superseded_booking
         previous_label: str | None = None
         if superseded is not None:
             previous_label = superseded.slot_label
