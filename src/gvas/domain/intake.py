@@ -182,10 +182,12 @@ class IntakeCollected(IntakeModel):
 
     @property
     def ready_for_slots(self) -> bool:
-        """Contact details and what the customer needs, before scheduling."""
+        """Contact details, including a phone number, and what the customer
+        needs — before scheduling."""
 
         return all(
-            value is not None and value.strip() for value in (self.name, self.email, self.details)
+            value is not None and value.strip()
+            for value in (self.name, self.email, self.phone, self.details)
         )
 
     def is_complete(self, *, address_required: bool) -> bool:

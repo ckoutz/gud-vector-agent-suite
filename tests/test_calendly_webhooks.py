@@ -573,7 +573,7 @@ async def test_slot_pick_without_an_owner_thread_stays_proposing(
     availability.slots = (offered,)
     agent = IntakeAgentFake(
         [
-            collected_turn(name="Jane Doe", email=EMAIL, problem="roof leak"),
+            collected_turn(name="Jane Doe", email=EMAIL, phone="+15555550100", problem="roof leak"),
             collected_turn(address="1 Main St"),
             IntakeTurn(reply="Great, here are openings.", ready_for_slots=True),
         ]

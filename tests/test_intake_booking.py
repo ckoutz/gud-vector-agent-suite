@@ -361,7 +361,7 @@ async def test_conversation_lifecycle_collects_then_proposes_slots(
     agent = IntakeAgentFake(
         [
             collected_turn(name="Jane Doe", problem="ants"),
-            collected_turn(email=EMAIL, address="2 Elm St"),
+            collected_turn(email=EMAIL, phone="+15555550100", address="2 Elm St"),
             IntakeTurn(reply="Here is what is open.", ready_for_slots=True),
         ]
     )
@@ -511,6 +511,39 @@ async def test_per_conversation_message_cap_stops_the_model(
 
 
 @pytest.mark.asyncio
+async def test_no_slots_are_offered_until_a_phone_number_is_collected(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await intake_business(session_factory)
+    availability = AvailabilityFake((slot(datetime.now(UTC)),))
+    agent = IntakeAgentFake(
+        [
+            collected_turn(name="Jane", email=EMAIL, address="2 Elm St", problem="ants"),
+            IntakeTurn(reply="Here is what is open.", ready_for_slots=True),
+        ]
+    )
+    application, _ = intake_app(session_factory, agent=agent, availability=availability)
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        token = created.json()["conversationToken"]
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {token}"}
+        await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "ants"},
+            headers=headers,
+        )
+        reply = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "when?"},
+            headers=headers,
+        )
+    assert reply.status_code == 200
+    assert reply.json()["state"] == "collecting"
+    assert not reply.json()["slots"]
+
+
+@pytest.mark.asyncio
 async def test_unlisted_slot_pick_is_rejected(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -520,7 +553,9 @@ async def test_unlisted_slot_pick_is_rejected(
     availability = AvailabilityFake((offered,))
     agent = IntakeAgentFake(
         [
-            collected_turn(name="Jane", email=EMAIL, address="2 Elm St", problem="ants"),
+            collected_turn(
+                name="Jane", email=EMAIL, phone="+15555550100", address="2 Elm St", problem="ants"
+            ),
             IntakeTurn(reply="ok", ready_for_slots=True),
         ]
     )
@@ -1013,7 +1048,9 @@ async def test_availability_outage_keeps_the_conversation_collecting(
     availability = AvailabilityFake(slot_error=AvailabilityError("calendly down"))
     agent = IntakeAgentFake(
         [
-            collected_turn(name="Jane", email=EMAIL, address="2 Elm St", problem="ants"),
+            collected_turn(
+                name="Jane", email=EMAIL, phone="+15555550100", address="2 Elm St", problem="ants"
+            ),
             IntakeTurn(reply="Here is what is open.", ready_for_slots=True),
         ]
     )
@@ -1099,6 +1136,7 @@ async def test_intake_profile_drives_opening_agent_request_and_owner_notice(
             collected_turn(
                 name="Jane Doe",
                 email=EMAIL,
+                phone="+15555550100",
                 details="A new website",
                 notes="Plumber; wants it live by May",
             ),
@@ -1160,7 +1198,7 @@ async def test_intake_without_profile_keeps_default_opening_and_needs_an_address
     availability = AvailabilityFake((offered,))
     agent = IntakeAgentFake(
         [
-            collected_turn(name="Jane", email=EMAIL, details="ants"),
+            collected_turn(name="Jane", email=EMAIL, phone="+15555550100", details="ants"),
             IntakeTurn(reply="ok", ready_for_slots=True),
             IntakeTurn(
                 reply="ok",
@@ -1241,7 +1279,7 @@ def test_intake_booking_notice_reports_a_missing_address_only_without_a_profile(
 
 
 def test_only_a_business_s_own_questions_waive_the_address() -> None:
-    collected = IntakeCollected(name="Jane", email=EMAIL, details="ants")
+    collected = IntakeCollected(name="Jane", email=EMAIL, phone="+15555550100", details="ants")
     assert collected.summary() is None, "the generic flow is not complete without an address"
     assert IntakeProfile(brief=PROFILE_BRIEF, opening=PROFILE_OPENING).requires_address
     assert IntakeProfile().requires_address
