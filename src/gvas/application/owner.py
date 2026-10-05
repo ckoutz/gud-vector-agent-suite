@@ -29,7 +29,6 @@ from gvas.domain.intake import (
     BookingDecision,
     BookingDecisionAction,
     IntakeConversation,
-    IntakeState,
     sanitize_owner_reason,
 )
 from gvas.domain.owner import (
@@ -207,19 +206,19 @@ class OwnerService:
         business_id = context.business.business_id
         async with self._unit_of_work_factory() as unit_of_work:
             customers = await unit_of_work.customers.list_for_business(business_id)
-            quotes = await unit_of_work.quotes.list_for_business(
-                business_id, limit=QUOTE_LIST_LIMIT
-            )
-        by_customer: dict[object, list[Quote]] = {}
-        for quote in quotes:
-            if quote.customer_id is not None and quote.draft is not None:
-                by_customer.setdefault(quote.customer_id, []).append(quote)
-        return tuple(
-            CustomerSummary(
-                customer=customer, quotes=tuple(by_customer.get(customer.customer_id, ()))
-            )
-            for customer in customers
-        )
+            # Per customer, so lifetime totals don't depend on a business-wide page.
+            summaries: list[CustomerSummary] = []
+            for customer in customers:
+                quotes = await unit_of_work.quotes.list_for_customer(
+                    business_id, customer.customer_id
+                )
+                summaries.append(
+                    CustomerSummary(
+                        customer=customer,
+                        quotes=tuple(quote for quote in quotes if quote.draft is not None),
+                    )
+                )
+        return tuple(summaries)
 
     async def subscriptions(self, context: OwnerContext) -> tuple[QuoteSubscriptionRecord, ...]:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -230,6 +229,12 @@ class OwnerService:
     async def bookings(self, context: OwnerContext) -> tuple[IntakeConversation, ...]:
         async with self._unit_of_work_factory() as unit_of_work:
             return await unit_of_work.intake_conversations.list_booking_requests(
+                context.business.business_id, limit=BOOKING_LIST_LIMIT
+            )
+
+    async def _awaiting_owner(self, context: OwnerContext) -> tuple[IntakeConversation, ...]:
+        async with self._unit_of_work_factory() as unit_of_work:
+            return await unit_of_work.intake_conversations.list_awaiting_owner(
                 context.business.business_id, limit=BOOKING_LIST_LIMIT
             )
 
@@ -280,9 +285,8 @@ class OwnerService:
                 invitee_email=conversation.collected.email,
                 reference=conversation.reference,
             )
-            for conversation in await self.bookings(context)
-            if conversation.state is IntakeState.AWAITING_OWNER
-            and conversation.requested_slot_start is not None
+            for conversation in await self._awaiting_owner(context)
+            if conversation.requested_slot_start is not None
             and start <= conversation.requested_slot_start < end
         )
         # Calendly writes each booking into the owner's own calendar too; show

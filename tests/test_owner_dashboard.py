@@ -212,6 +212,8 @@ async def test_owner_email_signs_in_to_an_owner_session_only_owner_routes_accept
         revoked = await http.delete("/v1/owner/sessions", headers=bearer(owner))
         assert revoked.status_code == 204
         assert (await http.get("/v1/owner/me", headers=bearer(owner))).status_code == 401
+        again = await http.delete("/v1/owner/sessions", headers=bearer(owner))
+        assert again.status_code == 401
 
 
 @pytest.mark.asyncio

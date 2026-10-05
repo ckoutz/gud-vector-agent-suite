@@ -236,7 +236,7 @@ def create_owner_router(
         )
 
     @router.delete("/v1/owner/sessions", dependencies=limited, status_code=204)
-    async def revoke_session(request: Request) -> Response:
+    async def revoke_session(request: Request, _context: OwnerContext = owner) -> Response:
         await service.revoke_session(bearer_token(request))
         return Response(status_code=204)
 

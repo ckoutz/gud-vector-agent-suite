@@ -693,6 +693,12 @@ class IntakeConversationRepository(Protocol):
         most recently updated first."""
         ...
 
+    async def list_awaiting_owner(
+        self, business_id: BusinessId, *, limit: int
+    ) -> tuple[IntakeConversation, ...]:
+        """Requests still waiting for the owner, most recently updated first."""
+        ...
+
 
 class IntakeMessageRepository(Protocol):
     async def add(self, message: IntakeMessage) -> None: ...
