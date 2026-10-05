@@ -14,7 +14,10 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from gvas.domain.customer_linking import enqueue_intake_owner_notice
+from gvas.domain.customer_linking import (
+    enqueue_intake_owner_notice,
+    enqueue_owner_thread_notice,
+)
 from gvas.domain.customers import CustomerRecord, ServiceRequest
 from gvas.domain.enums import DeliveryStatus, RecipientAddressKind, WorkflowRunStatus
 from gvas.domain.identifiers import (
@@ -56,6 +59,7 @@ from gvas.domain.intake import (
     InvalidDecisionLinkError,
     booking_decision,
     booking_decision_link_token,
+    booking_request_email,
     booking_request_notice,
     cancel_request_notice,
     conversation_token_hash,
@@ -65,6 +69,7 @@ from gvas.domain.intake import (
     intake_customer_email_command,
     intake_customer_email_request,
     intake_customer_text_command,
+    intake_owner_email_request,
     new_conversation_token,
     new_reference,
     parse_booking_decision_link_token,
@@ -82,11 +87,19 @@ from gvas.domain.messages import (
     TextPart,
 )
 from gvas.domain.owner_actions import decide_booking
+from gvas.domain.owner_email import (
+    OwnerEmailAction,
+    OwnerEmailRequest,
+    OwnerEmailThread,
+    owner_reply_thread,
+    owner_reply_token,
+)
 from gvas.domain.ports import (
     AvailabilityPort,
     CustomerQuoteDeliveryPort,
     CustomerTextDeliveryPort,
     IntakeAgentPort,
+    OwnerEmailPort,
 )
 from gvas.domain.repositories import BusinessRecord, UnitOfWork
 from gvas.domain.usage import UsageCeilingGuard, UsageKind
@@ -178,6 +191,58 @@ class IntakeReply:
     slots: tuple[AvailableSlot, ...]
 
 
+class OwnerDecisionEmail:
+    """E-mail affordances for an owner decision on one booking request: the
+    signed one-click buttons and the per-request reply address. Each is off
+    until its secret and origin/domain are configured; both are minted only
+    once ``owner_notified_at`` is set on the conversation passed in."""
+
+    def __init__(
+        self,
+        *,
+        secret: str = "",
+        origin: str = "",
+        reply_domain: str = "",
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self._secret = secret
+        self._origin = origin.rstrip("/")
+        self._reply_domain = reply_domain.strip().lower()
+        self._now = now
+
+    def actions(self, conversation: IntakeConversation) -> tuple[OwnerEmailAction, ...]:
+        if not self._secret or not self._origin or conversation.owner_notified_at is None:
+            return ()
+        actions = []
+        for action, verb in (
+            (BookingDecisionAction.APPROVE, "Approve"),
+            (BookingDecisionAction.DECLINE, "Decline"),
+        ):
+            token = booking_decision_link_token(
+                self._secret, conversation=conversation, action=action, now=self._now()
+            )
+            actions.append(
+                OwnerEmailAction(
+                    label=verb,
+                    url=f"{self._origin}{BOOKING_DECISION_PATH}{token}",
+                    primary=action is BookingDecisionAction.APPROVE,
+                )
+            )
+        return tuple(actions)
+
+    def thread(self, conversation: IntakeConversation) -> OwnerEmailThread | None:
+        if not self._secret or not self._reply_domain or conversation.owner_notified_at is None:
+            return None
+        token = owner_reply_token(
+            self._secret,
+            business_id=conversation.business_id,
+            conversation_id=conversation.conversation_id,
+            reference=conversation.reference,
+            request_epoch=int(conversation.owner_notified_at.timestamp()),
+        )
+        return owner_reply_thread(token, self._reply_domain)
+
+
 class IntakeService:
     def __init__(
         self,
@@ -190,16 +255,21 @@ class IntakeService:
         max_user_messages: int = INTAKE_MAX_USER_MESSAGES,
         decision_link_secret: str = "",
         decision_link_base_url: str = "",
+        owner_reply_domain: str = "",
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._agent = agent
+        self._decision_email = OwnerDecisionEmail(
+            secret=decision_link_secret,
+            origin=decision_link_base_url,
+            reply_domain=owner_reply_domain,
+            now=now,
+        )
         self._availability = availability
         self._ceiling = ceiling or UsageCeilingGuard()
         self._max_conversations_per_day = max_conversations_per_day
         self._max_user_messages = max_user_messages
-        self._decision_link_secret = decision_link_secret
-        self._decision_link_origin = decision_link_base_url.rstrip("/")
         self._now = now
 
     async def start_conversation(
@@ -672,27 +742,6 @@ class IntakeService:
         await unit_of_work.intake_conversations.save(adopted)
         return adopted
 
-    def _decision_link_lines(self, conversation: IntakeConversation) -> tuple[str, ...]:
-        """The approve/decline URLs appended to the owner e-mail copy; empty
-        when no signing secret/base URL is configured. Minted only once
-        ``owner_notified_at`` is set on the conversation passed in."""
-
-        if not self._decision_link_secret or not self._decision_link_origin:
-            return ()
-        links = []
-        for action, verb in (
-            (BookingDecisionAction.APPROVE, "Approve"),
-            (BookingDecisionAction.DECLINE, "Decline"),
-        ):
-            token = booking_decision_link_token(
-                self._decision_link_secret,
-                conversation=conversation,
-                action=action,
-                now=self._now(),
-            )
-            links.append(f"{verb}: {self._decision_link_origin}{BOOKING_DECISION_PATH}{token}")
-        return ("Or decide from this e-mail — each link works once:", *links)
-
     async def _offer_slots(
         self,
         unit_of_work: UnitOfWork,
@@ -779,7 +828,11 @@ class IntakeService:
             conversation.state is IntakeState.AWAITING_OWNER
             and conversation.requested_slot_start is not None
         ):
-            previous_label = format_slot_label(conversation.requested_slot_start)
+            # Stored times come back in UTC; show the old one in the same
+            # business-local zone as the newly picked slot.
+            previous_label = format_slot_label(
+                conversation.requested_slot_start.astimezone(slot.start.tzinfo)
+            )
         updated = conversation.with_updates(
             now,
             state=IntakeState.AWAITING_OWNER,
@@ -816,7 +869,14 @@ class IntakeService:
                 previous_label=previous_label,
                 previous_booked=superseded is not None,
             ),
-            email_extra_lines=self._decision_link_lines(updated),
+            email=booking_request_email(
+                updated,
+                profile=business.intake_profile,
+                previous_label=previous_label,
+                previous_booked=superseded is not None,
+            ),
+            email_actions=self._decision_email.actions(updated),
+            email_thread=self._decision_email.thread(updated),
         )
         if not notified:
             # There is no owner thread to deliver the decision request to:
@@ -1050,9 +1110,11 @@ class BookingDecisionHandler:
         self,
         unit_of_work_factory: UnitOfWorkFactory,
         *,
+        mirrored_namespaces: frozenset[str] = frozenset(),
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
+        self._mirrored_namespaces = mirrored_namespaces
         self._now = now
 
     async def handle(self, context: WorkflowContext) -> WorkflowResult:
@@ -1064,7 +1126,26 @@ class BookingDecisionHandler:
             )
         async with self._unit_of_work_factory() as unit_of_work:
             outcome = await decide_booking(unit_of_work, message.business_id, decision, self._now())
+            if outcome.applied and self._mirrored_namespaces:
+                await self._mirror(unit_of_work, message, outcome.text)
         return self._result(message, outcome.text)
+
+    async def _mirror(
+        self, unit_of_work: UnitOfWork, message: NormalizedOwnerMessage, text: str
+    ) -> None:
+        """Decisions taken on a reply-only channel (e-mail) are also posted
+        to the owner thread, like the one-click links do."""
+
+        endpoint = await unit_of_work.conversations.find_endpoint(message.conversation_ref)
+        if endpoint is None or endpoint.source_namespace not in self._mirrored_namespaces:
+            return
+        await enqueue_owner_thread_notice(
+            unit_of_work,
+            message.business_id,
+            correlation_id=f"intake_decided:{message.message_key}",
+            text=text,
+        )
+        await unit_of_work.commit()
 
     @staticmethod
     def _result(message: NormalizedOwnerMessage, text: str) -> WorkflowResult:
@@ -1096,6 +1177,22 @@ class SendIntakeCustomerEmailService:
         )
         if receipt.status is DeliveryStatus.FAILED:
             raise IntakeDeliveryError(receipt.detail or "customer email failed")
+
+
+class SendOwnerEmailService:
+    """Delivers one owner notice e-mail as text + HTML with its reply
+    routing; the layout is rendered before the command is queued."""
+
+    def __init__(self, delivery: OwnerEmailPort) -> None:
+        self._delivery = delivery
+
+    async def send(self, business_id: BusinessId, payload: Mapping[str, object]) -> None:
+        await self.deliver(intake_owner_email_request(business_id, payload))
+
+    async def deliver(self, request: OwnerEmailRequest) -> None:
+        receipt = await self._delivery.send(request)
+        if receipt.status is DeliveryStatus.FAILED:
+            raise IntakeDeliveryError(receipt.detail or "owner email failed")
 
 
 class IntakeTextStatus(StrEnum):
@@ -1178,11 +1275,16 @@ class IntakeBookingEventService:
         *,
         decision_link_secret: str = "",
         decision_link_origin: str = "",
+        owner_reply_domain: str = "",
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
-        self._decision_link_secret = decision_link_secret
-        self._decision_link_origin = decision_link_origin
+        self._decision_email = OwnerDecisionEmail(
+            secret=decision_link_secret,
+            origin=decision_link_origin,
+            reply_domain=owner_reply_domain,
+            now=now,
+        )
         self._now = now
 
     async def handle(self, event: IntakeBookingEvent) -> IntakeBookingEventOutcome:
@@ -1328,7 +1430,8 @@ class IntakeBookingEventService:
                 f"{original}. Reply `approve booking {conversation.reference}` "
                 f"to keep it or `decline booking {conversation.reference} <reason>` to cancel."
             ),
-            email_extra_lines=self._decision_link_lines(updated),
+            email_actions=self._decision_email.actions(updated),
+            email_thread=self._decision_email.thread(updated),
         )
         await unit_of_work.intake_conversations.save(updated)
         return IntakeBookingEventResult.REROUTED
@@ -1401,26 +1504,6 @@ class IntakeBookingEventService:
         await unit_of_work.intake_conversations.save(updated)
         return IntakeBookingEventResult.CANCELED
 
-    def _decision_link_lines(self, conversation: IntakeConversation) -> tuple[str, ...]:
-        """Same e-mail links as the intake chat mints, kept here so a webhook
-        re-route's notice offers them too; empty when links are not configured."""
-
-        if not self._decision_link_secret or not self._decision_link_origin:
-            return ()
-        links = []
-        for action, verb in (
-            (BookingDecisionAction.APPROVE, "Approve"),
-            (BookingDecisionAction.DECLINE, "Decline"),
-        ):
-            token = booking_decision_link_token(
-                self._decision_link_secret,
-                conversation=conversation,
-                action=action,
-                now=self._now(),
-            )
-            links.append(f"{verb}: {self._decision_link_origin}{BOOKING_DECISION_PATH}{token}")
-        return ("Or decide from this e-mail — each link works once:", *links)
-
     async def _notify(
         self,
         unit_of_work: UnitOfWork,
@@ -1428,14 +1511,16 @@ class IntakeBookingEventService:
         event: IntakeBookingEvent,
         *,
         text: str,
-        email_extra_lines: tuple[str, ...] = (),
+        email_actions: tuple[OwnerEmailAction, ...] = (),
+        email_thread: OwnerEmailThread | None = None,
     ) -> None:
         notified = await enqueue_intake_owner_notice(
             unit_of_work,
             conversation.business_id,
             correlation_id=f"intake_booking_event:{event.kind.value}:{event.event_uri}",
             text=text,
-            email_extra_lines=email_extra_lines,
+            email_actions=email_actions,
+            email_thread=email_thread,
         )
         if not notified:
             logger.warning(

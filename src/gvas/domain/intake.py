@@ -30,10 +30,12 @@ from gvas.domain.identifiers import (
     CustomerId,
     IntakeConversationId,
     IntakeMessageId,
+    JsonValue,
     OutboxCommandId,
     WorkflowIntent,
 )
 from gvas.domain.outbox import OutboxCommand
+from gvas.domain.owner_email import OwnerEmailContent, OwnerEmailDetail, OwnerEmailRequest
 
 BOOKING_INTENT = WorkflowIntent("booking_decision")
 INTAKE_CHANNEL_WEB = "web"
@@ -238,17 +240,60 @@ class IntakeCollected(IntakeModel):
         }
 
 
+_NOTE_BREAK = re.compile(r"(?<=[.!?])\s+|\s*;\s*")
+_NOTE_LABEL_MAX_WORDS = 6
+
+
+def _note_facts(text: str) -> list[str]:
+    return [fact for raw in _NOTE_BREAK.split(text) if (fact := raw.strip(" ;"))]
+
+
+def _note_key(fact: str) -> str:
+    return " ".join(re.sub(r"[^\w]+", " ", fact.casefold()).split())
+
+
+def _note_label(fact: str) -> str | None:
+    """``Trade`` for ``Trade: website building`` — a re-reported answer to the
+    same question replaces the earlier one instead of stacking beside it."""
+
+    label, colon, _ = fact.partition(":")
+    if not colon or len(label.split()) > _NOTE_LABEL_MAX_WORDS:
+        return None
+    return _note_key(label) or None
+
+
 def _merged_notes(stored: str | None, reported: str | None) -> str | None:
+    """Fact-level merge: the agent re-reports its whole running summary on
+    every turn (and again on reschedules), so each sentence/``;`` clause is
+    kept once — repeats and contained clauses are dropped, extensions replace
+    what they extend, and a newer answer to the same ``Label:`` wins."""
+
     new = " ".join((reported or "").split())
     if not new:
         return stored
-    if not stored:
-        return new[:INTAKE_NOTES_MAX_CHARS]
-    if new.lower() in (segment.strip().lower() for segment in stored.split(";")):
-        return stored
-    if new.lower().startswith(stored.lower()):
-        return new[:INTAKE_NOTES_MAX_CHARS]
-    return f"{stored}; {new}"[:INTAKE_NOTES_MAX_CHARS]
+    merged: list[str] = []
+    for fact in (*_note_facts(stored or ""), *_note_facts(new)):
+        key = _note_key(fact)
+        if not key:
+            continue
+        label = _note_label(fact)
+        for index, existing in enumerate(merged):
+            existing_key = _note_key(existing)
+            if f" {key} " in f" {existing_key} ":
+                break
+            if f" {existing_key} " in f" {key} " or (
+                label is not None and label == _note_label(existing)
+            ):
+                merged[index] = fact
+                break
+        else:
+            merged.append(fact)
+    text = ""
+    for fact in merged:
+        if text:
+            text += " " if text[-1] in ".!?" else "; "
+        text += fact
+    return text[:INTAKE_NOTES_MAX_CHARS] or stored
 
 
 class AvailableSlot(IntakeModel):
@@ -665,6 +710,67 @@ def booking_request_notice(
     return "\n".join(lines)
 
 
+def booking_request_email(
+    conversation: IntakeConversation,
+    *,
+    business_name: str | None = None,
+    profile: IntakeProfile | None = None,
+    previous_label: str | None = None,
+    previous_booked: bool = True,
+) -> OwnerEmailContent:
+    """The e-mail form of ``booking_request_notice``: same facts, laid out
+    as a details list with the owner-channel commands in the footer."""
+
+    collected = conversation.collected
+    ref = conversation.reference
+    kind = "Updated booking request" if previous_label else "New booking request"
+    name = collected.name or "A customer"
+    details = [OwnerEmailDetail(label="Customer", value=name)]
+    if collected.phone:
+        details.append(OwnerEmailDetail(label="Phone", value=collected.phone))
+    if collected.email:
+        details.append(OwnerEmailDetail(label="E-mail", value=collected.email))
+    if collected.address:
+        details.append(OwnerEmailDetail(label="Address", value=collected.address))
+    elif profile is None or profile.requires_address:
+        details.append(OwnerEmailDetail(label="Address", value="unknown"))
+    details.append(OwnerEmailDetail(label="Request", value=collected.details or "New request"))
+    details.append(
+        OwnerEmailDetail(
+            label="Requested",
+            value=(
+                format_slot_label(conversation.requested_slot_start)
+                if conversation.requested_slot_start is not None
+                else "no time picked"
+            ),
+        )
+    )
+    if previous_label:
+        details.append(
+            OwnerEmailDetail(
+                label="Replaces",
+                value=(
+                    f"{previous_label} — the old booking is canceled only if you approve"
+                    if previous_booked
+                    else f"the earlier request for {previous_label}"
+                ),
+            )
+        )
+    if collected.notes:
+        details.append(OwnerEmailDetail(label="Notes", value=collected.notes))
+    return OwnerEmailContent(
+        heading=f"{kind} #{ref}",
+        details=tuple(details),
+        commands=(
+            f"In your owner channel: `approve booking {ref}` or `decline booking {ref} <reason>`.",
+            "Busy then? `unavailable 8-12` blocks that time and sends the customer "
+            "a link to pick another.",
+        ),
+        business_name=business_name,
+        subject=f"{kind} #{ref} — {name}",
+    )
+
+
 def cancel_request_notice(
     conversation: IntakeConversation, *, business_name: str | None = None
 ) -> str:
@@ -742,13 +848,21 @@ def intake_booking_arrange_command(
 
 
 class IntakeCustomerEmail(IntakeModel):
-    """A plain customer-facing email the worker can send verbatim."""
+    """A plain customer-facing email the worker can send verbatim.
+
+    Owner notices also carry an ``html`` part and, for booking requests,
+    reply routing (``reply_to``) and thread ``references``; customer e-mails
+    leave them unset.
+    """
 
     business_id: BusinessId
     to: str = Field(min_length=3)
     subject: str = Field(min_length=1)
     body: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
+    html: str | None = None
+    reply_to: str | None = None
+    references: tuple[str, ...] = ()
 
 
 def intake_customer_email_command(email: IntakeCustomerEmail) -> OutboxCommand:
@@ -779,12 +893,7 @@ def owner_notice_email_command(email: IntakeCustomerEmail) -> OutboxCommand:
         ),
         business_id=email.business_id,
         command_type=OWNER_NOTICE_EMAIL_COMMAND_TYPE,
-        payload={
-            "to": email.to,
-            "subject": email.subject,
-            "body": email.body,
-            "idempotency_key": email.idempotency_key,
-        },
+        payload=_email_payload(email),
         dedup_key=f"owner_notice_email:{email.idempotency_key}",
     )
 
@@ -795,13 +904,57 @@ def intake_customer_email_request(
     fields = {key: payload.get(key) for key in ("to", "subject", "body", "idempotency_key")}
     if not all(isinstance(value, str) and value for value in fields.values()):
         raise ValueError("intake email command payload is incomplete")
+    html = payload.get("html")
+    reply_to = payload.get("reply_to")
+    references = payload.get("references")
     return IntakeCustomerEmail(
         business_id=business_id,
         to=str(fields["to"]),
         subject=str(fields["subject"]),
         body=str(fields["body"]),
         idempotency_key=str(fields["idempotency_key"]),
+        html=html if isinstance(html, str) and html else None,
+        reply_to=reply_to if isinstance(reply_to, str) and reply_to else None,
+        references=(
+            tuple(item for item in references if isinstance(item, str) and item)
+            if isinstance(references, list)
+            else ()
+        ),
     )
+
+
+def intake_owner_email_request(
+    business_id: BusinessId, payload: Mapping[str, object]
+) -> OwnerEmailRequest:
+    """An ``owner_notice.email`` payload as a multipart owner e-mail send."""
+
+    email = intake_customer_email_request(business_id, payload)
+    return OwnerEmailRequest(
+        business_id=business_id,
+        to=email.to,
+        subject=email.subject,
+        text=email.body,
+        html=email.html,
+        reply_to=email.reply_to,
+        references=email.references,
+        idempotency_key=email.idempotency_key,
+    )
+
+
+def _email_payload(email: IntakeCustomerEmail) -> dict[str, JsonValue]:
+    payload: dict[str, JsonValue] = {
+        "to": email.to,
+        "subject": email.subject,
+        "body": email.body,
+        "idempotency_key": email.idempotency_key,
+    }
+    if email.html:
+        payload["html"] = email.html
+    if email.reply_to:
+        payload["reply_to"] = email.reply_to
+    if email.references:
+        payload["references"] = list(email.references)
+    return payload
 
 
 def intake_booking_cancel_command(

@@ -27,6 +27,11 @@ from gvas.domain.messages import (
 )
 from gvas.domain.object_storage import ObjectCustodyRequest, StoredObject
 from gvas.domain.owner import CalendarEvent
+from gvas.domain.owner_email import OwnerEmailRequest
+from gvas.domain.owner_understanding import (
+    OwnerIntentInterpretation,
+    OwnerIntentInterpretationRequest,
+)
 from gvas.domain.payments import (
     BillingCustomerRequest,
     BillingCustomerResult,
@@ -244,3 +249,19 @@ class ScheduleBlockPort(Protocol):
         """Pin ``day`` to ``intervals``; ``None`` drops the date's own rule so
         the weekly hours apply again."""
         ...
+
+
+class OwnerEmailPort(Protocol):
+    """Sends one owner e-mail (notice or reply): text + HTML, reply routing
+    and thread headers. Idempotent on the request's ``idempotency_key``."""
+
+    async def send(self, request: OwnerEmailRequest) -> DeliveryReceipt: ...
+
+
+class OwnerIntentInterpreterPort(Protocol):
+    """The model fallback for owner messages the trigger grammar does not
+    match: answers one of the offered candidates or ``unclear``."""
+
+    async def interpret(
+        self, request: OwnerIntentInterpretationRequest
+    ) -> OwnerIntentInterpretation: ...

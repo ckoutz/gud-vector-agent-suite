@@ -28,6 +28,7 @@ from gvas.domain.intake import (
     IntakeBookingEvent,
     IntakeTurn,
 )
+from gvas.domain.ports import OwnerEmailPort
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
 from gvas.interfaces.http.app import create_app
 from gvas.interfaces.http.public import create_public_router
@@ -78,6 +79,7 @@ async def drive(
     intake_settings: IntakeSettings | None = None,
     notification_email: str | None = None,
     email: str = EMAIL,
+    owner_email: OwnerEmailPort | None = None,
 ) -> tuple[Application, OwnerReplyFake, BusinessId, str, str, str]:
     """Like ``reach_awaiting_owner`` but returns the token too, and honours
     custom intake settings (decision links)."""
@@ -97,6 +99,7 @@ async def drive(
         agent=agent,
         availability=availability,
         intake_settings=intake_settings,
+        owner_email=owner_email,
     )
     await seed_owner_thread(application, business_id)
     await immediate_worker(application).drain()
