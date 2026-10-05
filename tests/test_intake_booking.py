@@ -1291,6 +1291,15 @@ def test_only_a_business_s_own_questions_waive_the_address() -> None:
     assert with_address.summary() is not None
 
 
+def test_a_known_customer_without_a_phone_can_still_reach_slots() -> None:
+    collected = IntakeCollected(name="Jane", email=EMAIL, details="ants", address="2 Elm St")
+    assert not collected.ready_for_slots
+    assert collected.summary() is None
+    assert collected.is_complete(address_required=True, phone_required=False)
+    summary = collected.summary(phone_required=False)
+    assert summary is not None and summary["phone"] is None
+
+
 async def customer_row(
     session_factory: async_sessionmaker[AsyncSession], business_id: BusinessId
 ) -> CustomerRecord:

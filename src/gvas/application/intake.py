@@ -318,7 +318,10 @@ class IntakeService:
         async with self._unit_of_work_factory() as unit_of_work:
             business = await unit_of_work.businesses.get(conversation.business_id)
         address_required = business is None or business.intake_profile.requires_address
-        return conversation.collected.summary(address_required=address_required)
+        return conversation.collected.summary(
+            address_required=address_required,
+            phone_required=conversation.customer_id is None,
+        )
 
     async def get_view(self, conversation: IntakeConversation) -> tuple[IntakeMessage, ...]:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -474,7 +477,11 @@ class IntakeService:
                 unit_of_work, current, turn.chosen_slot, now, explicit=False
             )
 
-        if turn.ready_for_slots and _ready_for_slots(current.collected, business.intake_profile):
+        if turn.ready_for_slots and _ready_for_slots(
+            current.collected,
+            business.intake_profile,
+            known_customer=current.customer_id is not None,
+        ):
             if current.state is IntakeState.PROPOSING_SLOTS:
                 # A re-offer while slots are on the table: the customer can
                 # still pick, just show them again.
@@ -751,11 +758,15 @@ class ArrangeIntakeBookingService:
             await unit_of_work.commit()
 
 
-def _ready_for_slots(collected: IntakeCollected, profile: IntakeProfile) -> bool:
+def _ready_for_slots(
+    collected: IntakeCollected, profile: IntakeProfile, *, known_customer: bool
+) -> bool:
     """Contact details and what is needed; the generic questions also need
-    the service address."""
+    the service address, and a known customer's record may lack a phone."""
 
-    return collected.is_complete(address_required=profile.requires_address)
+    return collected.is_complete(
+        address_required=profile.requires_address, phone_required=not known_customer
+    )
 
 
 def _booking_about(collected: IntakeCollected, business: BusinessRecord | None) -> str:
