@@ -686,6 +686,13 @@ class IntakeConversationRepository(Protocol):
 
     async def count_created_since(self, business_id: BusinessId, since: datetime) -> int: ...
 
+    async def list_booking_requests(
+        self, business_id: BusinessId, *, limit: int
+    ) -> tuple[IntakeConversation, ...]:
+        """Requests that reached the owner (waiting, approved or declined),
+        most recently updated first."""
+        ...
+
 
 class IntakeMessageRepository(Protocol):
     async def add(self, message: IntakeMessage) -> None: ...

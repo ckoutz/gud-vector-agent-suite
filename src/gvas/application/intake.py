@@ -33,8 +33,6 @@ from gvas.domain.intake import (
     SERVICE_REQUEST_SOURCE_INTAKE,
     AvailabilityError,
     AvailableSlot,
-    BookingDecision,
-    BookingDecisionAction,
     BookingEventKind,
     BookingKind,
     BookingRequest,
@@ -53,8 +51,6 @@ from gvas.domain.intake import (
     conversation_token_hash,
     escalation_notice,
     format_slot_label,
-    intake_booking_arrange_command,
-    intake_booking_cancel_command,
     intake_customer_email_command,
     intake_customer_email_request,
     intake_customer_text_command,
@@ -73,6 +69,7 @@ from gvas.domain.messages import (
     OutboundOwnerMessage,
     TextPart,
 )
+from gvas.domain.owner_actions import decide_booking
 from gvas.domain.ports import (
     AvailabilityPort,
     CustomerQuoteDeliveryPort,
@@ -786,9 +783,8 @@ def _booking_text(message: NormalizedOwnerMessage) -> str:
 class BookingDecisionHandler:
     """``approve booking <ref>`` / ``decline booking <ref> [reason]``.
 
-    Tenant-scoped by the business of the owner's message; deciding the same
-    reference twice is a no-op with a clear reply; an unknown reference gets
-    one clear reply.
+    Tenant-scoped by the business of the owner's message; the transition
+    itself is shared with the owner dashboard (``decide_booking``).
     """
 
     intent = BOOKING_INTENT
@@ -809,23 +805,9 @@ class BookingDecisionHandler:
             return self._result(
                 message, "Reply `approve booking <id>` or `decline booking <id> <reason>`."
             )
-        reference = decision.reference
-        now = self._now()
         async with self._unit_of_work_factory() as unit_of_work:
-            conversation = await unit_of_work.intake_conversations.lock_by_reference(
-                message.business_id, reference
-            )
-            if conversation is None:
-                return self._result(message, f"I can't find booking {reference}.")
-            if conversation.state is IntakeState.APPROVED:
-                return self._result(message, f"Booking {reference} is already approved.")
-            if conversation.state is IntakeState.DECLINED:
-                return self._result(message, f"Booking {reference} was already declined.")
-            if conversation.state is not IntakeState.AWAITING_OWNER:
-                return self._result(message, f"Booking {reference} isn't waiting on a decision.")
-            if decision.action is BookingDecisionAction.APPROVE:
-                return await self._approve(unit_of_work, message, conversation, now)
-            return await self._decline(unit_of_work, message, conversation, decision, now)
+            outcome = await decide_booking(unit_of_work, message.business_id, decision, self._now())
+        return self._result(message, outcome.text)
 
     @staticmethod
     def _result(message: NormalizedOwnerMessage, text: str) -> WorkflowResult:
@@ -833,96 +815,6 @@ class BookingDecisionHandler:
             status=WorkflowRunStatus.SUCCEEDED,
             replies=(_decision_reply(message, text),),
         )
-
-    async def _approve(
-        self,
-        unit_of_work: UnitOfWork,
-        message: NormalizedOwnerMessage,
-        conversation: IntakeConversation,
-        now: datetime,
-    ) -> WorkflowResult:
-        if (
-            conversation.requested_slot_start is not None
-            and conversation.requested_slot_start <= now
-        ):
-            return self._result(
-                message,
-                f"Booking {conversation.reference}'s requested time has already "
-                "passed — decline it or line up a new time with the customer.",
-            )
-        updated = conversation.with_updates(now, state=IntakeState.APPROVED, decision_at=now)
-        await unit_of_work.intake_conversations.save(updated)
-        command = intake_booking_arrange_command(updated)
-        await unit_of_work.outbox.enqueue(command)
-        await unit_of_work.commit()
-        name = updated.collected.name or "the customer"
-        slot = (
-            format_slot_label(updated.requested_slot_start)
-            if updated.requested_slot_start is not None
-            else "their requested time"
-        )
-        return self._result(
-            message, f"Approved booking {updated.reference} — arranging {slot} for {name}."
-        )
-
-    async def _decline(
-        self,
-        unit_of_work: UnitOfWork,
-        message: NormalizedOwnerMessage,
-        conversation: IntakeConversation,
-        decision: BookingDecision,
-        now: datetime,
-    ) -> WorkflowResult:
-        updated = conversation.with_updates(
-            now,
-            state=IntakeState.DECLINED,
-            decision_at=now,
-            decision_reason=decision.reason,
-        )
-        await unit_of_work.intake_conversations.save(updated)
-        business = await unit_of_work.businesses.get(message.business_id)
-        email = updated.collected.email
-        notified = "the customer has been notified"
-        if email:
-            booking_link = business.calendly_url if business is not None else None
-            body = _decline_body(updated, booking_link)
-            await unit_of_work.outbox.enqueue(
-                intake_customer_email_command(
-                    IntakeCustomerEmail(
-                        business_id=message.business_id,
-                        to=email,
-                        subject="About your requested appointment",
-                        body=body,
-                        idempotency_key=f"intake_decline:{conversation.conversation_id}",
-                    )
-                )
-            )
-        else:
-            notified = "no customer email was collected, so nothing was sent"
-        if updated.booked_event_uri:
-            await unit_of_work.outbox.enqueue(intake_booking_cancel_command(updated))
-            notified = f"{notified}, and the Calendly event is being canceled"
-        await unit_of_work.commit()
-        return WorkflowResult(
-            status=WorkflowRunStatus.SUCCEEDED,
-            replies=(
-                _decision_reply(message, f"Declined booking {updated.reference}; {notified}."),
-            ),
-        )
-
-
-def _decline_body(conversation: IntakeConversation, booking_link: str | None) -> str:
-    lines = [
-        "Thanks for reaching out. The owner reviewed your request and can't "
-        "take it on at the requested time.",
-    ]
-    if conversation.decision_reason:
-        lines.append(f"Reason: {conversation.decision_reason}")
-    if booking_link:
-        lines.append(f"If another time works, you can pick one directly: {booking_link}")
-    else:
-        lines.append("If another time works, reply here and we'll sort it out.")
-    return "\n".join(lines)
 
 
 class SendIntakeCustomerEmailService:

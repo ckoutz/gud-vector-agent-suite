@@ -101,6 +101,8 @@ class SqlBusinessRepository:
                 opening=row.intake_opening,
             ),
             notification_email=row.notification_email,
+            owner_email=row.owner_email,
+            calendar_feed_url=row.calendar_feed_url,
         )
 
     async def get(self, business_id: BusinessId) -> BusinessRecord | None:
@@ -150,6 +152,8 @@ class SqlBusinessRepository:
         intake_questions: str | None = None,
         intake_opening: str | None = None,
         notification_email: str | None = None,
+        owner_email: str | None = None,
+        calendar_feed_url: str | None = None,
         now: datetime,
     ) -> BusinessRecord:
         row = await self.session.scalar(select(Business).where(Business.id == business_id))
@@ -166,13 +170,17 @@ class SqlBusinessRepository:
         if public_key is not None:
             row.public_key = public_key
         if intake_brief is not None:
-            row.intake_brief = intake_brief
+            row.intake_brief = intake_brief or None
         if intake_questions is not None:
-            row.intake_questions = intake_questions
+            row.intake_questions = intake_questions or None
         if intake_opening is not None:
-            row.intake_opening = intake_opening
+            row.intake_opening = intake_opening or None
         if notification_email is not None:
             row.notification_email = notification_email or None
+        if owner_email is not None:
+            row.owner_email = owner_email
+        if calendar_feed_url is not None:
+            row.calendar_feed_url = calendar_feed_url or None
         row.updated_at = now
         try:
             async with self.session.begin_nested():
@@ -827,6 +835,15 @@ class SqlQuoteRepository:
                 QuoteRecord.customer_id == customer_id,
             )
             .order_by(QuoteRecord.created_at.desc())
+        )
+        return tuple(self._quote(row) for row in rows)
+
+    async def list_for_business(self, business_id: BusinessId, *, limit: int) -> tuple[Quote, ...]:
+        rows = await self.session.scalars(
+            select(QuoteRecord)
+            .where(QuoteRecord.business_id == business_id)
+            .order_by(QuoteRecord.created_at.desc())
+            .limit(limit)
         )
         return tuple(self._quote(row) for row in rows)
 

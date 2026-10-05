@@ -195,6 +195,16 @@ class SqlQuoteSubscriptionRepository:
         )
         return tuple(self._record(row) for row in rows)
 
+    async def list_for_business(
+        self, business_id: BusinessId
+    ) -> tuple[QuoteSubscriptionRecord, ...]:
+        rows = await self.session.scalars(
+            select(QuoteSubscription)
+            .where(QuoteSubscription.business_id == business_id)
+            .order_by(QuoteSubscription.created_at.desc())
+        )
+        return tuple(self._record(row) for row in rows)
+
     async def create(self, record: QuoteSubscriptionRecord) -> None:
         row = QuoteSubscription(
             id=record.subscription_id,

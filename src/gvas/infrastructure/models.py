@@ -42,6 +42,10 @@ class Business(Base):
     intake_opening: Mapped[str | None] = mapped_column(Text)
     # Owner inbox copied on website-originated owner notices.
     notification_email: Mapped[str | None] = mapped_column(String(254))
+    # The address that signs in to the owner dashboard, and the owner's
+    # private calendar subscription link (a credential; never sent to a site).
+    owner_email: Mapped[str | None] = mapped_column(String(320))
+    calendar_feed_url: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -344,6 +348,36 @@ class PortalSessionRecord(Base):
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
     customer_id: Mapped[UUID] = mapped_column(nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OwnerLoginTokenRecord(Base):
+    """One owner magic link; only the SHA-256 digest of the token is stored."""
+
+    __tablename__ = "owner_login_tokens"
+    __table_args__ = (Index("ix_owner_login_tokens_business_id", "business_id"),)
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OwnerSessionRecord(Base):
+    __tablename__ = "owner_sessions"
+    __table_args__ = (Index("ix_owner_sessions_business_id", "business_id"),)
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -285,6 +285,12 @@ undoes the other, and owner failure notices stay sanitized.
   in addition to the owner channel thread. Decisions (`approve booking …`)
   are still taken in the channel; `--clear-notification-email` turns it off.
   Failed copies raise an `owner_notice.email` dead-letter notice in the channel.
+- **Owner dashboard login**: `gvas-configure-business --business-id <uuid>
+  --owner-email owner@example.com` lets that address sign in on the portal
+  login page and land on the owner dashboard (migration 0020). Without it
+  the business has no owner login. The dashboard's Calendly bookings use the
+  existing `GVAS_CALENDLY_*` settings; the owner's own calendar link is
+  pasted in dashboard Settings, not configured here.
 - **Stripe** (`GVAS_STRIPE_SECRET_KEY`, `GVAS_STRIPE_WEBHOOK_SECRET`) is an
   optional pair: both set enables `accept` (Checkout Sessions via
   `api.stripe.com`, `Idempotency-Key` = the quote's delivery key) and the

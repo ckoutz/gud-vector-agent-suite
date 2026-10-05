@@ -31,6 +31,7 @@ from gvas.application.intake import (
     SendIntakeCustomerTextService,
 )
 from gvas.application.outbox_service import OutboxService
+from gvas.application.owner import OwnerService
 from gvas.application.owner_reply_delivery import DeliverOwnerReplyService
 from gvas.application.plan_custody import (
     CopyPlanSetIntoCustodyService,
@@ -70,6 +71,8 @@ from gvas.domain.ports import (
     AttachmentAccessPort,
     AvailabilityPort,
     BillingAccountPort,
+    BookedEventsPort,
+    CalendarFeedPort,
     ChecklistEvidencePort,
     CustomerQuoteDeliveryPort,
     CustomerTextDeliveryPort,
@@ -139,6 +142,10 @@ class ApplicationPorts:
     # The ledger the metered adapters write to; the ceiling guard reads the same
     # one. Defaults to the SQL ledger on the application's sessions.
     usage_ledger: UsageLedgerPort | None = None
+    # Owner dashboard calendar: Calendly bookings and the owner's own
+    # calendar feed. Either may be absent; the dashboard shows what it has.
+    booked_events: BookedEventsPort | None = None
+    calendar_feed: CalendarFeedPort | None = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +177,7 @@ class Application:
     report_artifacts: ReportArtifactAccess
     public_quotes: PublicQuoteService
     portal: PortalService
+    owner: OwnerService
     intake: IntakeService | None
     intake_booking_events: IntakeBookingEventService
     failure_notice_service: NotifyExhaustedCommandService
@@ -269,6 +277,12 @@ def build_application(
         billing_accounts=ports.billing_accounts,
     )
     portal = PortalService(unit_of_work_factory, billing_accounts=ports.billing_accounts, now=now)
+    owner = OwnerService(
+        unit_of_work_factory,
+        booked_events=ports.booked_events,
+        calendar_feed=ports.calendar_feed,
+        now=now,
+    )
     router = WorkflowRouter(
         [
             quote_handler,
@@ -407,6 +421,7 @@ def build_application(
         report_artifacts=report_artifacts,
         public_quotes=public_quotes,
         portal=portal,
+        owner=owner,
         intake=intake_service,
         intake_booking_events=IntakeBookingEventService(unit_of_work_factory, now=now),
         failure_notice_service=failure_notices,

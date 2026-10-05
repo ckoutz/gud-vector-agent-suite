@@ -1,0 +1,344 @@
+"""Owner dashboard routes.
+
+Every route carries ``Authorization: Bearer <sessionToken>`` from an owner
+session (issued by ``POST /v1/portal/sessions`` for the business's owner
+e-mail) and fails with the same generic 401 for any other credential —
+including a customer portal session. All data is the session's business only.
+The owner's calendar link is write-only: responses carry its host, never the
+link.
+"""
+
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, ConfigDict, Field
+
+from gvas.application.owner import (
+    CustomerSummary,
+    OwnerAuthenticationError,
+    OwnerConflictError,
+    OwnerContext,
+    OwnerInputError,
+    OwnerNotFoundError,
+    OwnerService,
+    ServiceRequestView,
+    SettingsUpdate,
+)
+from gvas.domain.enums import QuoteStatus
+from gvas.domain.intake import IntakeConversation
+from gvas.domain.owner import CalendarEvent, calendar_feed_host
+from gvas.domain.payments import QuoteSubscriptionRecord
+from gvas.domain.quotes import Quote, public_quote_id
+from gvas.domain.repositories import BusinessRecord
+from gvas.interfaces.http.portal import GENERIC_UNAUTHORIZED, bearer_token
+from gvas.interfaces.http.public import PerIpRateLimiter, client_ip
+
+
+class DeclineBookingBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class SettingsBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    displayName: str | None = Field(default=None, max_length=500)  # noqa: N815
+    calendlyUrl: str | None = Field(default=None, max_length=2048)  # noqa: N815
+    intakeBrief: str | None = Field(default=None, max_length=5000)  # noqa: N815
+    intakeQuestions: str | None = Field(default=None, max_length=5000)  # noqa: N815
+    intakeOpening: str | None = Field(default=None, max_length=5000)  # noqa: N815
+    notificationEmail: str | None = Field(default=None, max_length=320)  # noqa: N815
+    calendarFeedUrl: str | None = Field(default=None, max_length=4096)  # noqa: N815
+
+
+def _iso(value: datetime | None) -> str | None:
+    return None if value is None else value.isoformat()
+
+
+def owner_quote_payload(quote: Quote) -> dict[str, object]:
+    draft = quote.draft
+    recipient = draft.recipient if draft is not None else None
+    return {
+        "id": public_quote_id(quote.quote_id),
+        "status": quote.status.value,
+        "customerStatus": quote.customer_status.value if quote.customer_status else None,
+        "needsApproval": quote.status is QuoteStatus.AWAITING_APPROVAL,
+        "customer": {
+            "name": recipient.display_name if recipient is not None else None,
+            "email": recipient.address if recipient is not None else None,
+            "phone": recipient.phone if recipient is not None else None,
+            "serviceAddress": recipient.service_address if recipient is not None else None,
+        },
+        "lineItems": [
+            {
+                "description": item.description,
+                "quantity": item.quantity,
+                "unitPriceCents": item.unit_price_minor,
+            }
+            for item in (draft.line_items if draft is not None else ())
+        ],
+        "totalCents": draft.total_minor if draft is not None else 0,
+        "currency": draft.currency if draft is not None else None,
+        "billing": draft.billing.value if draft is not None else "one_time",
+        "interval": (
+            draft.interval.value if draft is not None and draft.interval is not None else None
+        ),
+        "note": draft.owner_note if draft is not None else None,
+        "createdAt": _iso(quote.created_at),
+        "approvedAt": _iso(quote.approved_at),
+        "updatedAt": _iso(quote.updated_at),
+    }
+
+
+def owner_customer_payload(summary: CustomerSummary) -> dict[str, object]:
+    customer = summary.customer
+    quotes = summary.quotes
+    paid = [
+        quote
+        for quote in quotes
+        if quote.customer_status is not None and quote.customer_status.value == "paid"
+    ]
+    return {
+        "email": customer.email,
+        "name": customer.display_name,
+        "phone": customer.phone,
+        "smsConsent": customer.sms_consent,
+        "createdAt": _iso(customer.created_at),
+        "quoteCount": len(quotes),
+        "paidCents": sum(quote.draft.total_minor for quote in paid if quote.draft is not None),
+        "lastQuoteAt": _iso(max((quote.created_at for quote in quotes), default=None)),
+        "quoteIds": [public_quote_id(quote.quote_id) for quote in quotes],
+    }
+
+
+def owner_subscription_payload(record: QuoteSubscriptionRecord) -> dict[str, object]:
+    return {
+        "id": str(record.subscription_id),
+        "quoteId": public_quote_id(record.quote_id),
+        "status": record.status,
+        "interval": record.interval.value,
+        "amountCents": record.amount_minor,
+        "currency": record.currency,
+        "currentPeriodEnd": _iso(record.current_period_end),
+        "cancelAtPeriodEnd": record.cancel_at_period_end,
+        "createdAt": _iso(record.created_at),
+    }
+
+
+def owner_booking_payload(conversation: IntakeConversation) -> dict[str, object]:
+    collected = conversation.collected
+    return {
+        "reference": conversation.reference,
+        "state": conversation.state.value,
+        "needsDecision": conversation.state.value == "awaiting_owner",
+        "customer": {
+            "name": collected.name,
+            "email": collected.email,
+            "phone": collected.phone,
+            "address": collected.address,
+        },
+        "details": collected.details,
+        "urgency": collected.urgency,
+        "requestedStart": _iso(conversation.requested_slot_start),
+        "requestedEnd": _iso(conversation.requested_slot_end),
+        "booked": conversation.booked_event_uri is not None,
+        "decisionAt": _iso(conversation.decision_at),
+        "decisionReason": conversation.decision_reason,
+        "createdAt": _iso(conversation.created_at),
+        "updatedAt": _iso(conversation.updated_at),
+    }
+
+
+def owner_request_payload(view: ServiceRequestView) -> dict[str, object]:
+    request = view.request
+    customer = view.customer
+    return {
+        "id": str(request.request_id),
+        "message": request.message,
+        "preferredDates": request.preferred_dates,
+        "status": request.status,
+        "source": request.source,
+        "createdAt": _iso(request.created_at),
+        "customer": {
+            "name": customer.display_name if customer is not None else None,
+            "email": customer.email if customer is not None else None,
+        },
+    }
+
+
+def calendar_event_payload(event: CalendarEvent) -> dict[str, object]:
+    return {
+        "source": event.source.value,
+        "title": event.title,
+        "start": _iso(event.start),
+        "end": _iso(event.end),
+        "allDay": event.all_day,
+        "location": event.location,
+        "inviteeName": event.invitee_name,
+        "inviteeEmail": event.invitee_email,
+        "reference": event.reference,
+    }
+
+
+def settings_payload(business: BusinessRecord) -> dict[str, object]:
+    profile = business.intake_profile
+    return {
+        "displayName": business.display_name or business.name,
+        "siteUrl": business.site_url,
+        "calendlyUrl": business.calendly_url,
+        "intakeBrief": profile.brief,
+        "intakeQuestions": profile.questions,
+        "intakeOpening": profile.opening,
+        "notificationEmail": business.notification_email,
+        "ownerEmail": business.owner_email,
+        "calendarFeed": {
+            "connected": bool(business.calendar_feed_url),
+            "host": calendar_feed_host(business.calendar_feed_url),
+        },
+        "connections": {"website": bool(business.site_url and business.public_key)},
+    }
+
+
+def create_owner_router(
+    service: OwnerService, *, rate_limiter: PerIpRateLimiter | None = None
+) -> APIRouter:
+    router = APIRouter()
+    limiter = rate_limiter or PerIpRateLimiter(per_minute=120, burst=30)
+
+    async def rate_limit(request: Request) -> None:
+        if not limiter.allow(client_ip(request)):
+            raise HTTPException(status_code=429, detail="rate limited")
+
+    async def authenticated(request: Request) -> OwnerContext:
+        token = bearer_token(request)
+        try:
+            return await service.authenticate(token)
+        except OwnerAuthenticationError as error:
+            raise HTTPException(status_code=401, detail=GENERIC_UNAUTHORIZED) from error
+
+    limited = [Depends(rate_limit)]
+    owner = Depends(authenticated)
+
+    @router.get("/v1/owner/me", dependencies=limited)
+    async def me(context: OwnerContext = owner) -> JSONResponse:
+        return JSONResponse(
+            {
+                "role": "owner",
+                "owner": {"email": context.session.email},
+                "business": {
+                    "displayName": context.business.display_name or context.business.name,
+                    "siteUrl": context.business.site_url,
+                    "calendlyUrl": context.business.calendly_url,
+                },
+            }
+        )
+
+    @router.delete("/v1/owner/sessions", dependencies=limited, status_code=204)
+    async def revoke_session(request: Request) -> Response:
+        await service.revoke_session(bearer_token(request))
+        return Response(status_code=204)
+
+    @router.get("/v1/owner/quotes", dependencies=limited)
+    async def quotes(context: OwnerContext = owner) -> JSONResponse:
+        records = await service.quotes(context)
+        return JSONResponse({"quotes": [owner_quote_payload(quote) for quote in records]})
+
+    @router.post("/v1/owner/quotes/{quote_id}/approve", dependencies=limited)
+    async def approve_quote(quote_id: str, context: OwnerContext = owner) -> JSONResponse:
+        return await _decide_quote(context, quote_id, approve=True)
+
+    @router.post("/v1/owner/quotes/{quote_id}/reject", dependencies=limited)
+    async def reject_quote(quote_id: str, context: OwnerContext = owner) -> JSONResponse:
+        return await _decide_quote(context, quote_id, approve=False)
+
+    async def _decide_quote(context: OwnerContext, quote_id: str, *, approve: bool) -> JSONResponse:
+        try:
+            quote = await service.decide_quote(context, quote_id, approve=approve)
+        except OwnerNotFoundError:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        except OwnerConflictError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        return JSONResponse({"quote": owner_quote_payload(quote)})
+
+    @router.get("/v1/owner/customers", dependencies=limited)
+    async def customers(context: OwnerContext = owner) -> JSONResponse:
+        records = await service.customers(context)
+        return JSONResponse({"customers": [owner_customer_payload(item) for item in records]})
+
+    @router.get("/v1/owner/subscriptions", dependencies=limited)
+    async def subscriptions(context: OwnerContext = owner) -> JSONResponse:
+        records = await service.subscriptions(context)
+        return JSONResponse(
+            {"subscriptions": [owner_subscription_payload(record) for record in records]}
+        )
+
+    @router.get("/v1/owner/bookings", dependencies=limited)
+    async def bookings(context: OwnerContext = owner) -> JSONResponse:
+        records = await service.bookings(context)
+        return JSONResponse({"bookings": [owner_booking_payload(item) for item in records]})
+
+    @router.post("/v1/owner/bookings/{reference}/approve", dependencies=limited)
+    async def approve_booking(reference: str, context: OwnerContext = owner) -> JSONResponse:
+        outcome = await service.decide_booking(context, reference, approve=True)
+        return JSONResponse({"applied": outcome.applied, "message": outcome.text})
+
+    @router.post("/v1/owner/bookings/{reference}/decline", dependencies=limited)
+    async def decline_booking(
+        reference: str, body: DeclineBookingBody, context: OwnerContext = owner
+    ) -> JSONResponse:
+        outcome = await service.decide_booking(
+            context, reference, approve=False, reason=body.reason
+        )
+        return JSONResponse({"applied": outcome.applied, "message": outcome.text})
+
+    @router.get("/v1/owner/requests", dependencies=limited)
+    async def service_requests(context: OwnerContext = owner) -> JSONResponse:
+        records = await service.service_requests(context)
+        return JSONResponse({"requests": [owner_request_payload(item) for item in records]})
+
+    @router.get("/v1/owner/calendar", dependencies=limited)
+    async def calendar(
+        start: datetime = Query(...),  # noqa: B008
+        end: datetime = Query(...),  # noqa: B008
+        context: OwnerContext = owner,
+    ) -> JSONResponse:
+        try:
+            view = await service.calendar(context, start, end)
+        except OwnerInputError as error:
+            return JSONResponse({"detail": str(error)}, status_code=422)
+        return JSONResponse(
+            {
+                "events": [calendar_event_payload(event) for event in view.events],
+                "problems": list(view.problems),
+            }
+        )
+
+    @router.get("/v1/owner/settings", dependencies=limited)
+    async def get_settings(context: OwnerContext = owner) -> JSONResponse:
+        return JSONResponse({"settings": settings_payload(context.business)})
+
+    @router.patch("/v1/owner/settings", dependencies=limited)
+    async def update_settings(body: SettingsBody, context: OwnerContext = owner) -> JSONResponse:
+        try:
+            record = await service.update_settings(
+                context,
+                SettingsUpdate(
+                    display_name=body.displayName,
+                    calendly_url=body.calendlyUrl,
+                    intake_brief=body.intakeBrief,
+                    intake_questions=body.intakeQuestions,
+                    intake_opening=body.intakeOpening,
+                    notification_email=body.notificationEmail,
+                    calendar_feed_url=body.calendarFeedUrl,
+                ),
+            )
+        except OwnerInputError as error:
+            return JSONResponse({"detail": str(error)}, status_code=422)
+        return JSONResponse({"settings": settings_payload(record)})
+
+    return router
+
+
+__all__ = ["create_owner_router"]

@@ -12,6 +12,9 @@ The ``--intake-*`` options set the website booking agent's profile: a brief
 describing the business and what the agent books, the questions to ask beyond
 name/email/phone, and the first message a visitor reads.
 
+``--owner-email`` names who signs in to the owner dashboard: that address
+gets an owner link from the same portal login page customers use.
+
     gvas-configure-business --business-id <uuid> --site-url https://gudvector.com \
         --display-name "Güd Vector" --calendly-url https://calendly.com/gudvector \
         --intake-brief "..." --intake-questions "..." --intake-opening "..."
@@ -66,6 +69,7 @@ class ConfigureBusinessRequest:
     intake_questions: str | None = None
     intake_opening: str | None = None
     notification_email: str | None = None
+    owner_email: str | None = None
 
 
 def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
@@ -119,11 +123,18 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         if normalized is None:
             raise ConfigureBusinessInputError("--notification-email must be an e-mail address")
         notification_email = normalized
+    owner_email = _optional(getattr(arguments, "owner_email", None))
+    if owner_email is not None:
+        normalized_owner = normalize_email_address(owner_email)
+        if normalized_owner is None:
+            raise ConfigureBusinessInputError("--owner-email must be an e-mail address")
+        owner_email = normalized_owner
     if all(
         value is None
         for value in (
             site_url,
             notification_email,
+            owner_email,
             _optional(arguments.display_name),
             calendly_url,
             _optional(arguments.stripe_account_id),
@@ -150,6 +161,7 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         intake_questions=intake_questions,
         intake_opening=intake_opening,
         notification_email=notification_email,
+        owner_email=owner_email,
     )
 
 
@@ -193,6 +205,7 @@ async def run_configure(request: ConfigureBusinessRequest) -> BusinessRecord:
                 intake_questions=request.intake_questions,
                 intake_opening=request.intake_opening,
                 notification_email=request.notification_email,
+                owner_email=request.owner_email,
                 now=datetime.now(UTC),
             )
             await unit_of_work.commit()
@@ -227,6 +240,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--notification-email",
         help="owner inbox that gets a copy of every website booking/escalation/payment notice",
     )
+    parser.add_argument(
+        "--owner-email",
+        help="the address that signs in to the owner dashboard through the portal login",
+    )
     try:
         request = build_request(parser.parse_args(argv))
         business = asyncio.run(run_configure(request))
@@ -237,7 +254,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"display_name {business.display_name} calendly_url {business.calendly_url} "
         f"public_key {business.public_key} "
         f"intake_profile {'custom' if business.intake_profile.is_configured else 'default'} "
-        f"notification_email {business.notification_email}"
+        f"notification_email {business.notification_email} "
+        f"owner_email {business.owner_email}"
     )
     return 0
 

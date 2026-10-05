@@ -52,8 +52,10 @@ from gvas.domain.ports import (
     QuoteDraftingPort,
 )
 from gvas.domain.usage import UsageCeilingGuard, UsageCeilings
+from gvas.infrastructure.calendar import IcsCalendarFeed
 from gvas.infrastructure.calendly.api import CalendlyAppointmentLookup
 from gvas.infrastructure.calendly.availability import CalendlyAvailability
+from gvas.infrastructure.calendly.calendar import CalendlyBookedEvents
 from gvas.infrastructure.calendly.composition import build_calendly_webhook_router
 from gvas.infrastructure.calendly.config import (
     CalendlyInstallationError,
@@ -116,6 +118,7 @@ from gvas.infrastructure.telnyx.installations import (
 )
 from gvas.infrastructure.usage_ledger import SqlUsageLedger
 from gvas.interfaces.http.app import create_app
+from gvas.interfaces.http.owner import create_owner_router
 from gvas.interfaces.http.portal import create_portal_router
 from gvas.interfaces.http.public import PerIpRateLimiter, create_public_router
 from gvas.interfaces.logging_setup import configure_logging
@@ -409,6 +412,9 @@ def build_production_ports(
     availability = (
         CalendlyAvailability(settings.calendly, client) if settings.calendly.is_configured else None
     )
+    booked_events = (
+        CalendlyBookedEvents(settings.calendly, client) if settings.calendly.is_configured else None
+    )
     intake_agent = (
         OpenAIIntakeAgent(settings.openai, client, usage_ledger=usage_ledger)
         if settings.openai.is_configured
@@ -430,6 +436,8 @@ def build_production_ports(
         quote_drafting=quote_drafting,
         appointment_lookup=appointment_lookup,
         availability=availability,
+        booked_events=booked_events,
+        calendar_feed=IcsCalendarFeed(client),
         intake_agent=intake_agent,
         customer_email=resend_quotes,
         quote_delivery=quote_delivery,
@@ -501,6 +509,13 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
             application.portal,
             rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
             intake=application.intake,
+            owner=application.owner,
+        )
+    )
+    routers.append(
+        create_owner_router(
+            application.owner,
+            rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
         )
     )
     return ProductionRuntime(

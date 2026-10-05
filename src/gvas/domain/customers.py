@@ -208,6 +208,10 @@ class CustomerRepository(Protocol):
 
     async def find_by_email(self, business_id: BusinessId, email: str) -> CustomerRecord | None: ...
 
+    async def list_for_business(self, business_id: BusinessId) -> tuple[CustomerRecord, ...]:
+        """Newest first."""
+        ...
+
     async def upsert(
         self,
         business_id: BusinessId,
@@ -256,3 +260,9 @@ class PortalSessionRepository(Protocol):
 
 class ServiceRequestRepository(Protocol):
     async def add(self, request: ServiceRequest) -> None: ...
+
+    async def list_for_business(
+        self, business_id: BusinessId, *, limit: int
+    ) -> tuple[ServiceRequest, ...]:
+        """Newest first."""
+        ...

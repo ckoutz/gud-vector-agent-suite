@@ -25,6 +25,7 @@ from gvas.domain.messages import (
     TranscriptResult,
 )
 from gvas.domain.object_storage import ObjectCustodyRequest, StoredObject
+from gvas.domain.owner import CalendarEvent
 from gvas.domain.payments import (
     BillingCustomerRequest,
     BillingCustomerResult,
@@ -196,3 +197,25 @@ class AvailabilityPort(Protocol):
         provider failures raise ``AvailabilityError``.
         """
         ...
+
+
+class BookedEventsPort(Protocol):
+    """The bookings customers scheduled (Calendly), for the owner dashboard.
+
+    Errors raise ``OwnerCalendarError`` with an owner-safe message.
+    """
+
+    def serves(self, business_id: BusinessId) -> bool: ...
+
+    async def upcoming(
+        self, business_id: BusinessId, start: datetime, end: datetime
+    ) -> tuple[CalendarEvent, ...]: ...
+
+
+class CalendarFeedPort(Protocol):
+    """The owner's own calendar (Google, Apple, Outlook, ...) read through its
+    private subscription link. Errors raise ``OwnerCalendarError``."""
+
+    async def events(
+        self, feed_url: str, start: datetime, end: datetime
+    ) -> tuple[CalendarEvent, ...]: ...

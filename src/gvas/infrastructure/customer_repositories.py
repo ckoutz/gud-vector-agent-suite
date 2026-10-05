@@ -13,9 +13,12 @@ from gvas.domain.customers import (
     ServiceRequest,
 )
 from gvas.domain.identifiers import BusinessId, CustomerId, ServiceRequestId
+from gvas.domain.owner import OwnerLoginToken, OwnerSession
 from gvas.domain.quotes import normalize_customer_email
 from gvas.infrastructure.models import (
     Customer,
+    OwnerLoginTokenRecord,
+    OwnerSessionRecord,
     PortalLoginTokenRecord,
     PortalSessionRecord,
     ServiceRequestRecord,
@@ -61,6 +64,14 @@ class SqlCustomerRepository:
     async def find_by_email(self, business_id: BusinessId, email: str) -> CustomerRecord | None:
         row = await self._row_by_email(business_id, normalize_customer_email(email))
         return None if row is None else self._record(row)
+
+    async def list_for_business(self, business_id: BusinessId) -> tuple[CustomerRecord, ...]:
+        rows = await self.session.scalars(
+            select(Customer)
+            .where(Customer.business_id == business_id)
+            .order_by(Customer.created_at.desc())
+        )
+        return tuple(self._record(row) for row in rows)
 
     async def _row_by_email(self, business_id: BusinessId, email: str) -> Customer | None:
         row: Customer | None = await self.session.scalar(
@@ -245,3 +256,115 @@ class SqlServiceRequestRepository:
             )
         )
         await self.session.flush()
+
+    async def list_for_business(
+        self, business_id: BusinessId, *, limit: int
+    ) -> tuple[ServiceRequest, ...]:
+        rows = await self.session.scalars(
+            select(ServiceRequestRecord)
+            .where(ServiceRequestRecord.business_id == business_id)
+            .order_by(ServiceRequestRecord.created_at.desc())
+            .limit(limit)
+        )
+        return tuple(
+            ServiceRequest(
+                request_id=ServiceRequestId(row.id),
+                business_id=BusinessId(row.business_id),
+                customer_id=CustomerId(row.customer_id),
+                message=row.message,
+                preferred_dates=row.preferred_dates,
+                status=row.status,
+                source=row.source,
+                created_at=_aware(row.created_at),
+            )
+            for row in rows
+        )
+
+
+class SqlOwnerLoginTokenRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def add(self, token: OwnerLoginToken) -> None:
+        self.session.add(
+            OwnerLoginTokenRecord(
+                token_hash=token.token_hash,
+                business_id=token.business_id,
+                email=token.email,
+                expires_at=token.expires_at,
+                used_at=token.used_at,
+                created_at=token.created_at,
+            )
+        )
+        await self.session.flush()
+
+    async def find_by_hash(self, token_hash: str) -> OwnerLoginToken | None:
+        row = await self.session.scalar(
+            select(OwnerLoginTokenRecord).where(OwnerLoginTokenRecord.token_hash == token_hash)
+        )
+        if row is None:
+            return None
+        return OwnerLoginToken(
+            token_hash=row.token_hash,
+            business_id=BusinessId(row.business_id),
+            email=row.email,
+            expires_at=_aware(row.expires_at),
+            used_at=_aware_or_none(row.used_at),
+            created_at=_aware(row.created_at),
+        )
+
+    async def mark_used(self, token_hash: str, now: datetime) -> bool:
+        result = await self.session.execute(
+            update(OwnerLoginTokenRecord)
+            .where(
+                OwnerLoginTokenRecord.token_hash == token_hash,
+                OwnerLoginTokenRecord.used_at.is_(None),
+            )
+            .values(used_at=now)
+        )
+        return _rowcount(result) == 1
+
+
+class SqlOwnerSessionRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def add(self, session: OwnerSession) -> None:
+        self.session.add(
+            OwnerSessionRecord(
+                token_hash=session.token_hash,
+                business_id=session.business_id,
+                email=session.email,
+                expires_at=session.expires_at,
+                revoked_at=session.revoked_at,
+                created_at=session.created_at,
+            )
+        )
+        await self.session.flush()
+
+    async def find_by_hash(self, token_hash: str) -> OwnerSession | None:
+        row = await self.session.scalar(
+            select(OwnerSessionRecord).where(OwnerSessionRecord.token_hash == token_hash)
+        )
+        if row is None:
+            return None
+        return OwnerSession(
+            token_hash=row.token_hash,
+            business_id=BusinessId(row.business_id),
+            email=row.email,
+            expires_at=_aware(row.expires_at),
+            revoked_at=_aware_or_none(row.revoked_at),
+            created_at=_aware(row.created_at),
+        )
+
+    async def revoke(self, token_hash: str, now: datetime) -> bool:
+        result = await self.session.execute(
+            update(OwnerSessionRecord)
+            .where(
+                OwnerSessionRecord.token_hash == token_hash,
+                OwnerSessionRecord.revoked_at.is_(None),
+                OwnerSessionRecord.expires_at > now,
+            )
+            .values(revoked_at=now)
+        )
+        return _rowcount(result) == 1

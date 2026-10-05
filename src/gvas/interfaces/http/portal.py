@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from gvas.application.intake import IntakeLimitError, IntakeService
+from gvas.application.owner import OwnerAuthenticationError, OwnerService
 from gvas.application.portal import (
     BillingPortalUnavailableError,
     PortalAuthenticationError,
@@ -135,6 +136,7 @@ def create_portal_router(
     rate_limiter: PerIpRateLimiter | None = None,
     login_rate_limiter: PerIpRateLimiter | None = None,
     intake: IntakeService | None = None,
+    owner: OwnerService | None = None,
 ) -> APIRouter:
     router = APIRouter()
     limiter = rate_limiter or PerIpRateLimiter(per_minute=120, burst=30)
@@ -167,6 +169,28 @@ def create_portal_router(
 
     @router.post("/v1/portal/sessions", dependencies=limited)
     async def create_session(body: SessionRequest) -> JSONResponse:
+        # One sign-in link format serves both roles; an owner link opens an
+        # owner session, which only the /v1/owner routes accept.
+        if owner is not None:
+            try:
+                owner_session = await owner.exchange_login_token(body.token)
+            except OwnerAuthenticationError:
+                return JSONResponse({"detail": GENERIC_UNAUTHORIZED}, status_code=401)
+            if owner_session is not None:
+                owner_token, owner_context = owner_session
+                return JSONResponse(
+                    {
+                        "sessionToken": owner_token,
+                        "role": "owner",
+                        "owner": {"email": owner_context.session.email},
+                        "business": {
+                            "displayName": owner_context.business.display_name
+                            or owner_context.business.name,
+                            "siteUrl": owner_context.business.site_url,
+                        },
+                    },
+                    status_code=200,
+                )
         try:
             session_token, context = await service.exchange_login_token(body.token)
         except PortalAuthenticationError:
@@ -174,6 +198,7 @@ def create_portal_router(
         return JSONResponse(
             {
                 "sessionToken": session_token,
+                "role": "customer",
                 "customer": customer_payload(context, with_phone=False),
                 "business": business_payload(context, with_calendly=False),
             },

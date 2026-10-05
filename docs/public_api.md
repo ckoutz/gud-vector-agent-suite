@@ -178,10 +178,17 @@ Exchanges the login token (once) for a session:
 ```json
 {
   "sessionToken": "…",
+  "role": "customer",
   "customer": {"displayName": "Jane Doe", "email": "jane@example.com"},
   "business": {"displayName": "Güd Vector", "siteUrl": "https://gudvector.com"}
 }
 ```
+
+When the link was sent to the business's owner e-mail (see the owner
+dashboard API below) the response is instead
+`{"sessionToken", "role": "owner", "owner": {"email"}, "business"}` and the
+token is an owner session: it is accepted only by `/v1/owner/*`, never by
+the customer routes below. The frontend routes on `role`.
 
 Keep `sessionToken` client-side (it is shown exactly once) and send it as
 `Authorization: Bearer <sessionToken>` on every route below.
@@ -284,6 +291,46 @@ the customer's most recent quote was approved.
 
 Errors: `422` message missing or too long · `401` · `429`.
 
+
+# Owner dashboard API — frontend contract
+
+A business's owner signs in on the same portal login page as customers. When
+the submitted address equals the business's `owner_email` (set with
+`gvas-configure-business --owner-email`), the e-mailed link opens an owner
+session (`role: "owner"` from `POST /v1/portal/sessions`). Owner tokens use
+the same hashing, single-use 15-minute links and 30-day sessions as customer
+tokens, live in their own tables, and are bound to one business. A session
+stops working as soon as the business's owner e-mail changes. Every route
+below takes `Authorization: Bearer <sessionToken>`, answers the generic
+`401 {"detail": "unauthorized"}` for anything else (including a customer
+session), and only ever reads or changes the session's business.
+
+| Route | What it does |
+|---|---|
+| `GET /v1/owner/me` | Owner e-mail and business display name, site and booking link |
+| `DELETE /v1/owner/sessions` | Revokes the session (`204`) |
+| `GET /v1/owner/quotes` | Latest 200 quotes: status, `customerStatus` (viewed/accepted/paid/declined), `needsApproval`, customer, line items, `totalCents`, billing |
+| `POST /v1/owner/quotes/{id}/approve` | Same transition as `approve` by text: links the customer and queues delivery. `404` unknown, `409` not awaiting approval |
+| `POST /v1/owner/quotes/{id}/reject` | Same as `reject` by text; nothing is sent |
+| `GET /v1/owner/customers` | Portal customers with contact details, SMS consent, quote ids and paid total |
+| `GET /v1/owner/subscriptions` | Recurring quotes: Stripe status, interval, amount, `currentPeriodEnd` |
+| `GET /v1/owner/bookings` | Website booking requests (latest 100); `needsDecision` while awaiting the owner |
+| `POST /v1/owner/bookings/{ref}/approve` | Same as `approve booking <ref>`: `{"applied", "message"}` with the text the owner channel would get |
+| `POST /v1/owner/bookings/{ref}/decline` | Body `{"reason"?}`; same as `decline booking <ref> [reason]` |
+| `GET /v1/owner/requests` | Portal service requests (latest 100) |
+| `GET /v1/owner/calendar?start=…&end=…` | Calendly bookings, pending booking requests and the owner's own calendar feed merged (max 62 days). `{"events", "problems"}`; a failing source adds a plain-language problem instead of failing the call |
+| `GET /v1/owner/settings` / `PATCH /v1/owner/settings` | Display name, booking link, intake brief/questions/opening, notification e-mail and the calendar feed. `""` clears a field; `422` on invalid input |
+
+**Calendar feed.** Calendly stays the booking backend (connect Google,
+Outlook/Microsoft 365, iCloud or Exchange in Calendly so bookings land in the
+owner's calendar and clash checks use it). For the dashboard view the owner
+may paste their calendar's private iCal link (`https://` or `webcal://`).
+GVAS only reads it: public hosts on port 443 only, every redirect re-checked,
+private/loopback addresses refused after DNS, 5 MB and 500-event caps,
+recurrences expanded, cancelled events skipped. The link is a credential: it
+is never returned (settings show only `connected` and `host`), never logged
+and kept out of record reprs. Calendly events already copied into the feed
+are shown once.
 
 # Website booking intake API — chat widget contract
 

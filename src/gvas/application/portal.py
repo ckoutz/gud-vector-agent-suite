@@ -33,6 +33,7 @@ from gvas.domain.customers import (
     portal_token_matches,
 )
 from gvas.domain.identifiers import ServiceRequestId
+from gvas.domain.owner_actions import issue_owner_login
 from gvas.domain.payments import BillingPortalRequest, QuoteSubscriptionRecord
 from gvas.domain.ports import BillingAccountPort
 from gvas.domain.quotes import Quote, QuoteConcurrencyError, normalize_customer_email
@@ -85,6 +86,12 @@ class PortalService:
         async with self._unit_of_work_factory() as unit_of_work:
             business = await unit_of_work.businesses.get_by_public_key(public_key)
             if business is None or not business.site_url:
+                await unit_of_work.commit()
+                return
+            if business.owner_email and normalize_customer_email(business.owner_email) == address:
+                # The owner signs in on the same page; their link opens the
+                # owner dashboard. The 202 answer is identical either way.
+                await issue_owner_login(unit_of_work, business, address, now)
                 await unit_of_work.commit()
                 return
             customer = await unit_of_work.customers.find_by_email(business.business_id, address)
