@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from gvas.domain.enums import DeliveryStatus, OutboxStatus, WorkflowRunStatus
+from gvas.domain.enums import DeliveryStatus, OutboxStatus, QuoteStatus, WorkflowRunStatus
 from gvas.domain.identifiers import (
     BusinessId,
     ConversationId,
@@ -838,12 +838,14 @@ class SqlQuoteRepository:
         )
         return tuple(self._quote(row) for row in rows)
 
-    async def list_for_business(self, business_id: BusinessId, *, limit: int) -> tuple[Quote, ...]:
+    async def list_for_business(
+        self, business_id: BusinessId, *, limit: int, status: QuoteStatus | None = None
+    ) -> tuple[Quote, ...]:
+        query = select(QuoteRecord).where(QuoteRecord.business_id == business_id)
+        if status is not None:
+            query = query.where(QuoteRecord.status == status.value)
         rows = await self.session.scalars(
-            select(QuoteRecord)
-            .where(QuoteRecord.business_id == business_id)
-            .order_by(QuoteRecord.created_at.desc())
-            .limit(limit)
+            query.order_by(QuoteRecord.created_at.desc()).limit(limit)
         )
         return tuple(self._quote(row) for row in rows)
 

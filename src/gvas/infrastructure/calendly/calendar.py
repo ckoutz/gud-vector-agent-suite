@@ -7,7 +7,7 @@ failures surface as one fixed ``OwnerCalendarError`` message.
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 
 UNAVAILABLE = "Calendly bookings couldn't be loaded right now."
 MAX_EVENTS = 200
+#: Calendly filters on start time; look back this far so a booking already
+#: under way when the window opens is still returned.
+BOOKING_LOOKBACK = timedelta(hours=24)
 MAX_PAGES = 5
 INVITEE_CONCURRENCY = 5
 
@@ -80,7 +83,12 @@ class CalendlyBookedEvents:
         user_uri = self._users.get(business_id)
         if user_uri is None:
             return ()
-        scheduled = [event for event in await self._events(user_uri, start, end)][:MAX_EVENTS]
+        fetched = await self._events(user_uri, start - BOOKING_LOOKBACK, end)
+        scheduled = [
+            event
+            for event in fetched
+            if (event.end_time or event.start_time + timedelta(minutes=1)) > start
+        ][:MAX_EVENTS]
         gate = asyncio.Semaphore(INVITEE_CONCURRENCY)
 
         async def project(event: _ScheduledEvent) -> CalendarEvent:

@@ -309,8 +309,12 @@ class OwnerService:
     async def decide_quote(self, context: OwnerContext, quote_id: str, *, approve: bool) -> Quote:
         now = self._now()
         async with self._unit_of_work_factory() as unit_of_work:
+            # Only quotes still waiting can be decided, so search those alone:
+            # an old pending quote stays reachable however many newer ones exist.
             quotes = await unit_of_work.quotes.list_for_business(
-                context.business.business_id, limit=QUOTE_LIST_LIMIT
+                context.business.business_id,
+                limit=QUOTE_LIST_LIMIT,
+                status=QuoteStatus.AWAITING_APPROVAL,
             )
             quote = next(
                 (
@@ -321,9 +325,14 @@ class OwnerService:
                 None,
             )
             if quote is None:
+                if any(
+                    public_quote_id(candidate.quote_id) == quote_id
+                    for candidate in await unit_of_work.quotes.list_for_business(
+                        context.business.business_id, limit=QUOTE_LIST_LIMIT
+                    )
+                ):
+                    raise OwnerConflictError("This quote isn't waiting for your OK.")
                 raise OwnerNotFoundError("quote not found")
-            if quote.status is not QuoteStatus.AWAITING_APPROVAL:
-                raise OwnerConflictError("This quote isn't waiting for your OK.")
             key = MessageKey(f"dashboard:{uuid4()}")
             try:
                 if approve:

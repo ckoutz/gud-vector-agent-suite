@@ -603,8 +603,10 @@ class QuoteRepository(Protocol):
         self, business_id: BusinessId, customer_id: CustomerId
     ) -> tuple[Quote, ...]: ...
 
-    async def list_for_business(self, business_id: BusinessId, *, limit: int) -> tuple[Quote, ...]:
-        """Newest first."""
+    async def list_for_business(
+        self, business_id: BusinessId, *, limit: int, status: QuoteStatus | None = None
+    ) -> tuple[Quote, ...]:
+        """Newest first, optionally only quotes in ``status``."""
         ...
 
     async def list_unlinked_for_email(
