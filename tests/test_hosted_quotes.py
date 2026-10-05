@@ -911,6 +911,7 @@ def test_configure_rejects_unusable_public_keys_and_booking_links() -> None:
             "intake_brief": None,
             "intake_questions": None,
             "intake_opening": None,
+            "notification_email": None,
         }
         base.update(overrides)
         return Namespace(**base)
@@ -918,6 +919,11 @@ def test_configure_rejects_unusable_public_keys_and_booking_links() -> None:
     request = build_request(arguments())
     assert request.public_key == "gvb_ok-1.~_x"
     assert request.calendly_url == CALENDLY_URL
+    assert build_request(arguments(notification_email=" Info@Example.com ")).notification_email == (
+        "info@example.com"
+    )
+    with pytest.raises(ConfigureBusinessInputError):
+        build_request(arguments(notification_email="not-an-address"))
     # A booking link is a URL with a path, not an origin.
     assert build_request(arguments(calendly_url="https://calendly.com/x?foo=1"))
     for bad_key in ("has/slash", "has space", "x" * 300, "-leading-dash"):
