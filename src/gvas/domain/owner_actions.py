@@ -1,8 +1,9 @@
 """Owner decisions shared by every surface the owner acts from.
 
-``approve booking <ref>`` in the owner channel, and the Approve button on the
-dashboard, run the same transition here, so the customer sees the same
-outcome whichever one the owner used.
+``approve booking <ref>`` in the owner channel, the Approve button on the
+owner dashboard, and the one-click links in the notification e-mail all run
+the same transition here, so the customer sees the same outcome whichever
+one the owner used.
 """
 
 from datetime import datetime
@@ -23,6 +24,7 @@ from gvas.domain.intake import (
     IntakeConversation,
     IntakeCustomerEmail,
     IntakeState,
+    SupersededBooking,
     format_slot_label,
     intake_booking_arrange_command,
     intake_booking_cancel_command,
@@ -46,17 +48,28 @@ async def decide_booking(
     business_id: BusinessId,
     decision: BookingDecision,
     now: datetime,
+    *,
+    request_epoch: int | None = None,
 ) -> BookingDecisionOutcome:
     """Approve or decline one website booking request of ``business_id``.
 
     Deciding the same reference twice is a no-op with a clear reply; an
-    unknown reference gets one clear reply. Commits only when applied.
+    unknown reference gets one clear reply. ``request_epoch`` is set by the
+    e-mail decision links: it must equal the stamp the current request was
+    notified at, so a link written for a superseded request cannot act on
+    its replacement. Commits only when applied.
     """
 
     reference = decision.reference
     conversation = await unit_of_work.intake_conversations.lock_by_reference(business_id, reference)
     if conversation is None:
         return BookingDecisionOutcome(f"I can't find booking {reference}.", applied=False)
+    if request_epoch is not None and not _request_stamp_matches(conversation, request_epoch):
+        return BookingDecisionOutcome(
+            f"Booking {reference} was updated since this link was sent — "
+            "use the newest booking e-mail's link.",
+            applied=False,
+        )
     if conversation.state is IntakeState.APPROVED:
         return BookingDecisionOutcome(f"Booking {reference} is already approved.", applied=False)
     if conversation.state is IntakeState.DECLINED:
@@ -70,6 +83,11 @@ async def decide_booking(
     return await _decline_booking(unit_of_work, business_id, conversation, decision, now)
 
 
+def _request_stamp_matches(conversation: IntakeConversation, request_epoch: int) -> bool:
+    stamp = conversation.owner_notified_at
+    return stamp is not None and int(stamp.timestamp()) == request_epoch
+
+
 async def _approve_booking(
     unit_of_work: UnitOfWork, conversation: IntakeConversation, now: datetime
 ) -> BookingDecisionOutcome:
@@ -79,8 +97,20 @@ async def _approve_booking(
             "passed — decline it or line up a new time with the customer.",
             applied=False,
         )
-    updated = conversation.with_updates(now, state=IntakeState.APPROVED, decision_at=now)
+    superseded = conversation.superseded_booking
+    updated = conversation.with_updates(
+        now,
+        state=IntakeState.APPROVED,
+        decision_at=now,
+        superseded_booking=None,
+        reschedule_offered_at=None,
+    )
     await unit_of_work.intake_conversations.save(updated)
+    if superseded is not None and superseded.event_uri:
+        # The new time wins: only now is the booking it replaced cancelled.
+        await unit_of_work.outbox.enqueue(
+            intake_booking_cancel_command(updated, superseded.event_uri)
+        )
     await unit_of_work.outbox.enqueue(intake_booking_arrange_command(updated))
     await unit_of_work.commit()
     name = updated.collected.name or "the customer"
@@ -89,9 +119,11 @@ async def _approve_booking(
         if updated.requested_slot_start is not None
         else "their requested time"
     )
-    return BookingDecisionOutcome(
-        f"Approved booking {updated.reference} — arranging {slot} for {name}.", applied=True
-    )
+    text = f"Approved booking {updated.reference} — arranging {slot} for {name}."
+    if superseded is not None:
+        previous = f" The old booking for {superseded.slot_label} is being canceled."
+        text = f"{text}{previous}" if superseded.event_uri else f"{text} The old request is closed."
+    return BookingDecisionOutcome(text, applied=True)
 
 
 async def _decline_booking(
@@ -101,6 +133,11 @@ async def _decline_booking(
     decision: BookingDecision,
     now: datetime,
 ) -> BookingDecisionOutcome:
+    superseded = conversation.superseded_booking
+    if superseded is not None:
+        return await _decline_reschedule(
+            unit_of_work, business_id, conversation, decision, superseded, now
+        )
     updated = conversation.with_updates(
         now,
         state=IntakeState.DECLINED,
@@ -132,6 +169,68 @@ async def _decline_booking(
     await unit_of_work.commit()
     return BookingDecisionOutcome(
         f"Declined booking {updated.reference}; {notified}.", applied=True
+    )
+
+
+async def _decline_reschedule(
+    unit_of_work: UnitOfWork,
+    business_id: BusinessId,
+    conversation: IntakeConversation,
+    decision: BookingDecision,
+    superseded: SupersededBooking,
+    now: datetime,
+) -> BookingDecisionOutcome:
+    """Declining a request to *move* a booking keeps the original one: the
+    snapshot is put back in force and the customer hears their time stands."""
+
+    updated = conversation.with_updates(
+        now,
+        state=IntakeState.APPROVED,
+        requested_slot_start=superseded.slot_start,
+        requested_slot_end=superseded.slot_end,
+        booked_event_uri=superseded.event_uri,
+        booking_kind=superseded.booking_kind,
+        booking_link=superseded.booking_link,
+        booking_attempted_at=superseded.booking_attempted_at,
+        booking_event_type_uri=superseded.booking_event_type_uri,
+        superseded_booking=None,
+        reschedule_offered_at=None,
+        decision_at=now,
+        decision_reason=decision.reason,
+    )
+    await unit_of_work.intake_conversations.save(updated)
+    business = await unit_of_work.businesses.get(business_id)
+    email = updated.collected.email
+    notified = "the customer has been notified"
+    kept = superseded.slot_label
+    if email:
+        business_name = (
+            "" if business is None else (business.display_name or business.name)
+        ) or "the business"
+        await unit_of_work.outbox.enqueue(
+            intake_customer_email_command(
+                IntakeCustomerEmail(
+                    business_id=business_id,
+                    to=email,
+                    subject="Your appointment stands",
+                    body=(
+                        f"Thanks for your patience — the owner couldn't take the "
+                        f"new time. Your {business_name} appointment stays at "
+                        f"{kept}. If you need a different time, reply here and "
+                        "we'll sort it out."
+                    ),
+                    idempotency_key=(
+                        f"intake_restore:{conversation.conversation_id}:{int(now.timestamp())}"
+                    ),
+                )
+            )
+        )
+    else:
+        notified = "no customer email was collected, so nothing was sent"
+    await unit_of_work.commit()
+    return BookingDecisionOutcome(
+        f"Declined booking {updated.reference} — the original time {kept} stands; {notified}.",
+        applied=True,
     )
 
 

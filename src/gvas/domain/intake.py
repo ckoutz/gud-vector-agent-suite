@@ -11,6 +11,10 @@ Nothing here books anything: state moves to ``awaiting_owner`` when the
 customer picks a slot and only owner decisions change it from there.
 """
 
+import base64
+import hashlib
+import hmac
+import json
 import re
 from collections.abc import Mapping
 from datetime import date, datetime, timedelta
@@ -51,6 +55,10 @@ OWNER_NOTICE_EMAIL_COMMAND_TYPE = "owner_notice.email"
 OWNER_NOTICE_EMAIL_COMMAND_NAMESPACE = UUID("c6e2f4a8-1d3b-4f7e-9a5c-0b8d2e6f4a13")
 INTAKE_BOOKING_CANCEL_COMMAND_TYPE = "intake_booking.cancel"
 INTAKE_BOOKING_CANCEL_COMMAND_NAMESPACE = UUID("7e4b2a91-3c58-4d1e-b6f9-0a2d5c8e4f17")
+# Public one-click owner decision links hang off this path: the signed token
+# names the request and the action. Must match the route mounted in
+# interfaces/http/public.py.
+BOOKING_DECISION_PATH = "/v1/intake/booking-decisions/"
 
 DECLINE_REASON_MAX_CHARS = 200
 INTAKE_BRIEF_MAX_CHARS = 1000
@@ -93,7 +101,11 @@ class IntakeMessageRole(StrEnum):
     OWNER = "owner"
 
 
-TERMINAL_INTAKE_STATES = frozenset({IntakeState.APPROVED, IntakeState.DECLINED, IntakeState.CLOSED})
+# ``approved`` is deliberately not terminal: the chat stays open so the
+# customer can ask questions or move their call; declined and closed end it.
+TERMINAL_INTAKE_STATES = frozenset({IntakeState.DECLINED, IntakeState.CLOSED})
+# States in which the visitor has a call they can ask about, move or cancel.
+LIVE_BOOKING_STATES = frozenset({IntakeState.AWAITING_OWNER, IntakeState.APPROVED})
 
 
 def _aware(value: datetime) -> datetime:
@@ -258,6 +270,29 @@ class IntakeMessage(IntakeModel):
     _aware_created = field_validator("created_at")(_aware)
 
 
+class SupersededBooking(IntakeModel):
+    """The booking a pending reschedule request replaces.
+
+    It stays on the provider's calendar while the owner decides: approving
+    the new time cancels it, declining puts it back in force. Only one can
+    exist — a conversation holds at most one booking at a time.
+    """
+
+    slot_start: datetime
+    slot_end: datetime | None = None
+    event_uri: str | None = None
+    booking_kind: str | None = None
+    booking_link: str | None = None
+    booking_attempted_at: datetime | None = None
+    booking_event_type_uri: str | None = None
+
+    _aware_superseded_start = field_validator("slot_start")(_aware)
+
+    @property
+    def slot_label(self) -> str:
+        return format_slot_label(self.slot_start)
+
+
 class IntakeConversation(IntakeModel):
     conversation_id: IntakeConversationId
     business_id: BusinessId
@@ -278,6 +313,13 @@ class IntakeConversation(IntakeModel):
     # The provider event URI a webhook confirmed exists for this request.
     # Doubles as the processed-event marker so redelivered webhooks no-op.
     booked_event_uri: str | None = None
+    # The booking a pending reschedule request replaces: kept until the owner
+    # decides, then cancelled (approve) or restored (decline).
+    superseded_booking: SupersededBooking | None = None
+    # Set while the customer is choosing a new time for an existing booking:
+    # ``proposed_slots`` are on the table without the conversation leaving
+    # its booked state, so the booking stands if they never pick.
+    reschedule_offered_at: datetime | None = None
     # The provider event type the arrange step booked on; webhooks for other
     # event types are not this request and are ignored.
     booking_event_type_uri: str | None = None
@@ -302,6 +344,32 @@ class IntakeConversation(IntakeModel):
     def is_live(self, now: datetime) -> bool:
         return now < self.expires_at and self.state not in TERMINAL_INTAKE_STATES
 
+    @property
+    def has_live_booking(self) -> bool:
+        """A booking request is with the owner, or an approved one stands."""
+
+        return self.state in LIVE_BOOKING_STATES
+
+    @property
+    def is_choosing_new_time(self) -> bool:
+        return self.reschedule_offered_at is not None and self.has_live_booking
+
+    def booking_snapshot(self) -> SupersededBooking | None:
+        """What an approved booking would need restored if a reschedule of it
+        is declined; ``None`` when nothing is on the calendar yet."""
+
+        if self.requested_slot_start is None or self.state is not IntakeState.APPROVED:
+            return None
+        return SupersededBooking(
+            slot_start=self.requested_slot_start,
+            slot_end=self.requested_slot_end,
+            event_uri=self.booked_event_uri,
+            booking_kind=self.booking_kind,
+            booking_link=self.booking_link,
+            booking_attempted_at=self.booking_attempted_at,
+            booking_event_type_uri=self.booking_event_type_uri,
+        )
+
     def find_proposed_slot(self, start: datetime) -> AvailableSlot | None:
         for slot in self.proposed_slots:
             if slot.start == start:
@@ -316,6 +384,101 @@ class IntakeConversation(IntakeModel):
 class BookingDecisionAction(StrEnum):
     APPROVE = "approve"
     DECLINE = "decline"
+
+
+# --- One-click owner decision links -------------------------------------------
+#
+# The owner notification e-mail carries a signed ``Approve`` / ``Decline`` URL
+# per booking request. The token is HMAC-signed, names one conversation and one
+# action, expires after a week, and is stamped with the request's
+# ``owner_notified_at`` so a reschedule (which issues a fresh notice and stamp)
+# invalidates every older link — single-use is therefore implicit: a decided
+# request is no longer ``awaiting_owner`` and a superseded request no longer
+# matches the stamp.
+
+DECISION_LINK_TTL = timedelta(days=7)
+_DECISION_LINK_SIG_CHARS = 43  # ~172 bits of the hex digest — plenty
+
+
+class BookingDecisionLinkError(ValueError):
+    """A decision link could not be honoured; the message is page-safe."""
+
+
+class InvalidDecisionLinkError(BookingDecisionLinkError):
+    """Malformed or wrongly signed token."""
+
+
+class ExpiredDecisionLinkError(BookingDecisionLinkError):
+    """Past ``DECISION_LINK_TTL``."""
+
+
+class BookingDecisionLink(IntakeModel):
+    business_id: BusinessId
+    conversation_id: IntakeConversationId
+    reference: str
+    action: BookingDecisionAction
+    # Epoch seconds of the request's ``owner_notified_at`` this link belongs to.
+    request_epoch: int
+    expires_epoch: int
+
+    def matches_request(self, conversation: IntakeConversation) -> bool:
+        return (
+            conversation.conversation_id == self.conversation_id
+            and conversation.owner_notified_at is not None
+            and int(conversation.owner_notified_at.timestamp()) == self.request_epoch
+        )
+
+
+def booking_decision_link_token(
+    secret: str,
+    *,
+    conversation: IntakeConversation,
+    action: BookingDecisionAction,
+    now: datetime,
+) -> str:
+    """The signed token embedded in an owner e-mail decision link."""
+
+    if conversation.owner_notified_at is None:
+        raise ValueError("a decision link needs a notified request")
+    payload = {
+        "a": action.value,
+        "b": str(conversation.business_id),
+        "c": str(conversation.conversation_id),
+        "r": conversation.reference,
+        "n": int(conversation.owner_notified_at.timestamp()),
+        "e": int((now + DECISION_LINK_TTL).timestamp()),
+    }
+    body = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+    signature = hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256)
+    return f"{body}.{signature.hexdigest()[:_DECISION_LINK_SIG_CHARS]}"
+
+
+def parse_booking_decision_link_token(
+    secret: str, token: str, *, now: datetime
+) -> BookingDecisionLink:
+    body, sep, signature = token.rpartition(".")
+    if not sep or not body:
+        raise InvalidDecisionLinkError("malformed link")
+    expected = hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256)
+    if not hmac.compare_digest(signature, expected.hexdigest()[:_DECISION_LINK_SIG_CHARS]):
+        raise InvalidDecisionLinkError("bad link signature")
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(body.encode("ascii")))
+        link = BookingDecisionLink(
+            business_id=BusinessId(UUID(str(payload["b"]))),
+            conversation_id=IntakeConversationId(UUID(str(payload["c"]))),
+            reference=str(payload["r"]),
+            action=BookingDecisionAction(payload["a"]),
+            request_epoch=int(payload["n"]),
+            expires_epoch=int(payload["e"]),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise InvalidDecisionLinkError("malformed link") from error
+    if now.timestamp() >= link.expires_epoch:
+        raise ExpiredDecisionLinkError("the link has expired")
+    return link
 
 
 class BookingDecision(IntakeModel):
@@ -457,11 +620,15 @@ def booking_request_notice(
     *,
     business_name: str | None = None,
     profile: IntakeProfile | None = None,
+    previous_label: str | None = None,
+    previous_booked: bool = True,
 ) -> str:
     """The owner notice posted when a customer picks a slot.
 
     Businesses that list their own intake questions may not book at an
     address, so a missing one is left out instead of reported as unknown.
+    ``previous_label`` marks a reschedule: the notice reads as an update and
+    names the time the new request replaces.
     """
 
     collected = conversation.collected
@@ -477,9 +644,15 @@ def booking_request_notice(
         else "no time picked"
     )
     ref = conversation.reference
+    kind = "Updated booking request" if previous_label else "Booking request"
     lines = [
-        f"Booking request #{ref} — {', '.join(who)}. {details}. Requested {requested}.",
+        f"{kind} #{ref} — {', '.join(who)}. {details}. Requested {requested}.",
     ]
+    if previous_label:
+        if previous_booked:
+            lines.append(f"Replaces {previous_label} — cancel the old booking only on approve.")
+        else:
+            lines.append(f"Replaces the earlier request for {previous_label}.")
     if collected.notes:
         lines.append(f"Notes: {collected.notes}")
     lines.append(f"Reply `approve booking {ref}` or `decline booking {ref} <reason>`.")
@@ -487,6 +660,30 @@ def booking_request_notice(
         "Busy then? Reply like `unavailable 8-12` to block that time and send the "
         "customer a link to pick another."
     )
+    if business_name:
+        lines.append(f"Business: {business_name}.")
+    return "\n".join(lines)
+
+
+def cancel_request_notice(
+    conversation: IntakeConversation, *, business_name: str | None = None
+) -> str:
+    """The owner notice when the customer cancels their own call.
+
+    Their own booking is theirs to drop, so this reports a fact rather than
+    asking for a decision.
+    """
+
+    collected = conversation.collected
+    who = collected.name or "A customer"
+    when = (
+        format_slot_label(conversation.requested_slot_start)
+        if conversation.requested_slot_start is not None
+        else "their requested time"
+    )
+    lines = [f"Booking #{conversation.reference} — {who} canceled {when}."]
+    if collected.email:
+        lines.append(f"Contact: {collected.email}")
     if business_name:
         lines.append(f"Business: {business_name}.")
     return "\n".join(lines)
@@ -609,14 +806,17 @@ def intake_customer_email_request(
 
 def intake_booking_cancel_command(
     conversation: IntakeConversation,
+    event_uri: str | None = None,
 ) -> OutboxCommand:
     """Worker command that cancels the calendar event recorded on the request.
 
     Deduped per event URI: a declined re-routed booking cancels exactly the
     event the customer created, and a later different event cancels separately.
+    ``event_uri`` lets a reschedule cancel a superseded event, which is no
+    longer the conversation's recorded one.
     """
 
-    event_uri = conversation.booked_event_uri or ""
+    event_uri = event_uri if event_uri is not None else (conversation.booked_event_uri or "")
     command_id = OutboxCommandId(
         uuid5(
             INTAKE_BOOKING_CANCEL_COMMAND_NAMESPACE,
@@ -726,6 +926,22 @@ class IntakeMessageRepository(Protocol):
     ) -> int: ...
 
 
+class ExistingBookingStatus(StrEnum):
+    """How far the customer's existing call has progressed."""
+
+    REQUESTED = "requested"
+    CONFIRMED = "confirmed"
+
+
+class ExistingBooking(IntakeModel):
+    """A call the customer already has — from this chat or an earlier one
+    under the same e-mail — so the agent can discuss, move or cancel it
+    instead of starting over."""
+
+    status: ExistingBookingStatus
+    slot_label: str
+
+
 class IntakeTurnRequest(IntakeModel):
     """One agent step: the transcript, collected state and (when proposing) the
     slots the customer may pick from."""
@@ -739,6 +955,10 @@ class IntakeTurnRequest(IntakeModel):
     # Portal-linked customers already identified themselves; the agent skips
     # name/email/phone questions and only asks about the new service.
     known_customer: bool = False
+    # Set once the customer has a requested or confirmed call: the agent then
+    # answers questions, moves the booking or cancels it instead of collecting
+    # a fresh request.
+    existing_booking: ExistingBooking | None = None
     # The business's intake profile; ``None`` means the agent's generic
     # default.
     brief: str | None = Field(default=None, max_length=INTAKE_BRIEF_MAX_CHARS)
@@ -751,6 +971,10 @@ class IntakeTurn(IntakeModel):
     ready_for_slots: bool = False
     chosen_slot: datetime | None = None
     needs_human: bool = False
+    # Booked-mode intents: the customer wants the existing call moved or
+    # cancelled. Only honoured while an existing booking is in scope.
+    wants_reschedule: bool = False
+    wants_cancel: bool = False
     # Short transcript summary for the escalation notice.
     summary: str = ""
 

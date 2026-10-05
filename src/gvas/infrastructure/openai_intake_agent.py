@@ -65,8 +65,15 @@ Rules (these take precedence over the business description and questions):
   `chosen_slot` to its ISO `start` once they commit ("the second one",
   "Tuesday at 9"). Set it to null until they do, and while the list is empty.
 - Set `ready_for_slots` to true once you have at least the name, email, phone
-  and details, plus the answers to the questions above that the customer is able
-  to give — and the customer has indicated they want to book a time.
+  and details, plus the answers to the questions above that the customer is
+  able to give — and the customer has indicated they want to book a time.
+- When `existing_booking` is set, the customer already has a call on the
+  books — keep answering questions about the business as usual. If they want
+  to move or change it, set `wants_reschedule`; if they want to cancel it,
+  set `wants_cancel`. While it is set, do not set `ready_for_slots` and only
+  set `chosen_slot` from the offered list. If they only ask about their call
+  ("what time is it?", "did they confirm?"), answer from `existing_booking`
+  and leave both flags false.
 - If the customer is an existing customer (`known_customer` is true), their
   name, email and phone are already collected — do not ask for them again;
   ask about the new service.
@@ -101,6 +108,8 @@ RESPONSE_SCHEMA: Final[dict[str, Any]] = {
         "collected",
         "ready_for_slots",
         "chosen_slot",
+        "wants_reschedule",
+        "wants_cancel",
         "needs_human",
         "summary",
     ],
@@ -132,6 +141,8 @@ RESPONSE_SCHEMA: Final[dict[str, Any]] = {
         },
         "ready_for_slots": {"type": "boolean"},
         "chosen_slot": {"type": ["string", "null"]},
+        "wants_reschedule": {"type": "boolean"},
+        "wants_cancel": {"type": "boolean"},
         "needs_human": {"type": "boolean"},
         "summary": {"type": "string"},
     },
@@ -158,6 +169,8 @@ class _ReportedTurn(BaseModel):
     collected: _ReportedCollected = Field(default_factory=_ReportedCollected)
     ready_for_slots: bool = False
     chosen_slot: str | None = None
+    wants_reschedule: bool = False
+    wants_cancel: bool = False
     needs_human: bool = False
     summary: str = ""
 
@@ -243,6 +256,14 @@ def _user_content(request: IntakeTurnRequest) -> str:
             "business_brief": _squash(request.brief or "") or DEFAULT_BRIEF,
             "intake_questions": _squash(request.questions or "") or DEFAULT_QUESTIONS,
             "known_customer": request.known_customer,
+            "existing_booking": (
+                None
+                if request.existing_booking is None
+                else {
+                    "status": request.existing_booking.status.value,
+                    "slot": request.existing_booking.slot_label,
+                }
+            ),
             "collected_so_far": request.collected.as_stored(),
             "offered_slots": [
                 {"start": slot.start.isoformat(), "end": slot.end.isoformat()}
@@ -292,6 +313,8 @@ def _turn(response: httpx.Response) -> IntakeTurn:
         ),
         ready_for_slots=reported.ready_for_slots,
         chosen_slot=chosen_slot,
+        wants_reschedule=reported.wants_reschedule,
+        wants_cancel=reported.wants_cancel,
         needs_human=reported.needs_human,
         summary=_squash(reported.summary)[:MAX_SUMMARY_CHARS],
     )

@@ -10,21 +10,25 @@ Rate limiting is a per-client-IP token bucket held in process; behind a proxy
 the client ip is the rightmost ``X-Forwarded-For`` value when present.
 """
 
+import html
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, params
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.datastructures import MutableHeaders
 from starlette.responses import PlainTextResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from gvas.application.intake import (
+    DecisionLinkPage,
+    DecisionLinkView,
     IntakeAuthenticationError,
     IntakeClosedError,
+    IntakeDecisionLinkService,
     IntakeError,
     IntakeLimitError,
     IntakeNotFoundError,
@@ -41,6 +45,7 @@ from gvas.application.public_quotes import (
 from gvas.domain.identifiers import IntakeConversationId
 from gvas.domain.intake import (
     INTAKE_MESSAGE_MAX_CHARS,
+    BookingDecisionAction,
     IntakeConversation,
     IntakeMessage,
     IntakeState,
@@ -76,12 +81,33 @@ class IntakeMessageBody(BaseModel):
 def _slot_payloads(
     conversation: IntakeConversation,
 ) -> list[dict[str, str]] | None:
-    if conversation.state is not IntakeState.PROPOSING_SLOTS:
+    if (
+        conversation.state is not IntakeState.PROPOSING_SLOTS
+        and not conversation.is_choosing_new_time
+    ):
         return None
     return [
         {"start": slot.start.isoformat(), "end": slot.end.isoformat()}
         for slot in conversation.proposed_slots
     ]
+
+
+def _booking_payload(conversation: IntakeConversation) -> dict[str, object] | None:
+    """The visitor's live booking, when they have one — the widget shows it
+    up top so a reopened chat names the call they already have."""
+
+    if not conversation.has_live_booking or conversation.requested_slot_start is None:
+        return None
+    return {
+        "start": conversation.requested_slot_start.isoformat(),
+        "end": (
+            conversation.requested_slot_end.isoformat()
+            if conversation.requested_slot_end is not None
+            else None
+        ),
+        "status": ("confirmed" if conversation.state is IntakeState.APPROVED else "requested"),
+        "reference": conversation.reference,
+    }
 
 
 def intake_start_payload(start: IntakeStart) -> dict[str, object]:
@@ -107,6 +133,7 @@ def intake_reply_payload(
         "slots": _slot_payloads(conversation),
         "summary": summary,
         "bookingKind": conversation.booking_kind,
+        "booking": _booking_payload(conversation),
         "smsConsent": conversation.sms_consent,
     }
 
@@ -132,6 +159,7 @@ def intake_view_payload(
         # customer's confirmation link is still outstanding, else null — the
         # widget shows booked vs awaiting-confirmation distinctly.
         "bookingKind": conversation.booking_kind,
+        "booking": _booking_payload(conversation),
         "smsConsent": conversation.sms_consent,
     }
 
@@ -268,6 +296,7 @@ def create_public_router(
     webhook_verifier: StripeWebhookVerifier | None = None,
     rate_limiter: PerIpRateLimiter | None = None,
     intake: IntakeService | None = None,
+    decision_links: IntakeDecisionLinkService | None = None,
 ) -> APIRouter:
     """The customer surface: quote view/accept/decline, booking link, webhook,
     and — when an intake service is mounted — the website booking chat."""
@@ -324,6 +353,8 @@ def create_public_router(
 
     if intake is not None:
         _mount_intake(router, intake, limited)
+    if decision_links is not None:
+        _mount_decision_links(router, decision_links, limited)
 
     @router.post("/webhooks/stripe")
     async def stripe_webhook(request: Request) -> JSONResponse:
@@ -424,3 +455,45 @@ def _mount_intake(router: APIRouter, intake: IntakeService, limited: list[params
         messages = await intake.get_view(conversation)
         summary = await intake.summary(conversation)
         return JSONResponse(intake_view_payload(conversation, messages, summary), status_code=200)
+
+
+def _decision_page(view: DecisionLinkView) -> HTMLResponse:
+    """Minimal plain page for e-mail clicks: a confirm form on GET, a result
+    line after POST. No branding needed — the owner reached it from e-mail."""
+
+    title = html.escape(view.title)
+    body = html.escape(view.body)
+    form = ""
+    if view.page is DecisionLinkPage.CONFIRM:
+        verb = "Approve" if view.action is BookingDecisionAction.APPROVE else "Decline"
+        form = f'<form method="post"><button type="submit">{html.escape(verb)}</button></form>'
+    markup = (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<title>{title}</title>"
+        "<style>body{font-family:system-ui,sans-serif;max-width:34rem;margin:4rem auto;"
+        "padding:0 1rem;color:#222}button{font-size:1rem;padding:.6rem 1.2rem}</style>"
+        "</head><body>"
+        f"<h1>{title}</h1><p>{body}</p>{form}"
+        "</body></html>"
+    )
+    return HTMLResponse(markup)
+
+
+def _mount_decision_links(
+    router: APIRouter,
+    decision_links: IntakeDecisionLinkService,
+    limited: list[params.Depends],
+) -> None:
+    """The one-click links in the owner booking-request e-mail.
+
+    GET renders a confirmation so a mail client's prefetch never decides;
+    POST applies the shared ``decide_booking`` transition.
+    """
+
+    @router.get("/v1/intake/booking-decisions/{token}", dependencies=limited)
+    async def view_booking_decision(token: str) -> HTMLResponse:
+        return _decision_page(await decision_links.preview(token))
+
+    @router.post("/v1/intake/booking-decisions/{token}", dependencies=limited)
+    async def apply_booking_decision(token: str) -> HTMLResponse:
+        return _decision_page(await decision_links.decide(token))

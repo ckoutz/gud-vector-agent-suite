@@ -27,6 +27,7 @@ from gvas.application.intake import (
     BookingDecisionHandler,
     CancelIntakeBookingService,
     IntakeBookingEventService,
+    IntakeDecisionLinkService,
     IntakeService,
     SendIntakeCustomerEmailService,
     SendIntakeCustomerTextService,
@@ -185,6 +186,8 @@ class Application:
     owner: OwnerService
     intake: IntakeService | None
     intake_booking_events: IntakeBookingEventService
+    # Wired only when the intake decision-link secret and base URL are set.
+    intake_decision_links: IntakeDecisionLinkService | None
     failure_notice_service: NotifyExhaustedCommandService
     usage_ledger: UsageLedgerPort
     usage_ceilings: UsageCeilings
@@ -274,9 +277,20 @@ def build_application(
             ceiling=ceiling_guard,
             max_conversations_per_day=resolved_intake_settings.max_conversations_per_day,
             max_user_messages=resolved_intake_settings.max_messages_per_conversation,
+            decision_link_secret=resolved_intake_settings.decision_link_secret,
+            decision_link_base_url=resolved_intake_settings.decision_link_base_url,
             now=now,
         )
         if ports.intake_agent is not None
+        else None
+    )
+    intake_decision_links = (
+        IntakeDecisionLinkService(
+            unit_of_work_factory,
+            secret=resolved_intake_settings.decision_link_secret,
+            now=now,
+        )
+        if resolved_intake_settings.decision_links_enabled
         else None
     )
     public_quotes = PublicQuoteService(
@@ -432,7 +446,13 @@ def build_application(
         portal=portal,
         owner=owner,
         intake=intake_service,
-        intake_booking_events=IntakeBookingEventService(unit_of_work_factory, now=now),
+        intake_booking_events=IntakeBookingEventService(
+            unit_of_work_factory,
+            decision_link_secret=resolved_intake_settings.decision_link_secret,
+            decision_link_origin=resolved_intake_settings.decision_link_origin(),
+            now=now,
+        ),
+        intake_decision_links=intake_decision_links,
         failure_notice_service=failure_notices,
         usage_ledger=usage_ledger,
         usage_ceilings=usage_ceilings,

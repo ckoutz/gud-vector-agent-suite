@@ -142,6 +142,31 @@ class IntakeSettings(BaseSettings):
     # Customer messages one conversation accepts before the agent stops
     # answering; 0 = unlimited.
     max_messages_per_conversation: int = Field(default=30, ge=0)
+    # One-click owner approve/decline links in the notification e-mail. Both
+    # are needed: the secret signs the token and the base URL is this
+    # service's public origin, which the links are built from. Leave unset to
+    # e-mail notices without links (the owner channel command still works).
+    decision_link_secret: str = ""
+    decision_link_base_url: str = ""
+
+    @property
+    def decision_links_enabled(self) -> bool:
+        if not (self.decision_link_secret and self.decision_link_base_url):
+            return False
+        # The links carry actionable tokens, so they are only minted over
+        # https — a deployment typo of http:// must not expose them. Plain
+        # http is still allowed against loopback for local dev and tests.
+        parsed = urlsplit(self.decision_link_base_url)
+        if parsed.scheme == "https":
+            return True
+        return parsed.scheme == "http" and parsed.hostname in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        }
+
+    def decision_link_origin(self) -> str:
+        return self.decision_link_base_url.rstrip("/")
 
 
 class ResendSettings(BaseSettings):

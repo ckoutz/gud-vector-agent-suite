@@ -16,6 +16,7 @@ from gvas.domain.intake import (
     IntakeMessage,
     IntakeMessageRole,
     IntakeState,
+    SupersededBooking,
 )
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
 from gvas.infrastructure.intake_models import IntakeMessage as IntakeMessageRow
@@ -27,6 +28,15 @@ def _aware(value: datetime) -> datetime:
 
 def _aware_or_none(value: datetime | None) -> datetime | None:
     return None if value is None else _aware(value)
+
+
+def _superseded(stored: dict[str, JsonValue] | None) -> SupersededBooking | None:
+    return None if not stored else SupersededBooking.model_validate(stored)
+
+
+def _stored_superseded(conversation: IntakeConversation) -> dict[str, object] | None:
+    booking = conversation.superseded_booking
+    return None if booking is None else booking.model_dump(mode="json")
 
 
 def _slots(rows: list[JsonValue] | None) -> tuple[AvailableSlot, ...]:
@@ -60,6 +70,8 @@ class SqlIntakeConversationRepository:
             booking_link=row.booking_link,
             booking_attempted_at=_aware_or_none(row.booking_attempted_at),
             booked_event_uri=row.booked_event_uri,
+            superseded_booking=_superseded(row.superseded_booking),
+            reschedule_offered_at=_aware_or_none(row.reschedule_offered_at),
             booking_event_type_uri=row.booking_event_type_uri,
             decision_reason=row.decision_reason,
             decision_at=_aware_or_none(row.decision_at),
@@ -92,6 +104,8 @@ class SqlIntakeConversationRepository:
                 booking_link=conversation.booking_link,
                 booking_attempted_at=conversation.booking_attempted_at,
                 booked_event_uri=conversation.booked_event_uri,
+                superseded_booking=_stored_superseded(conversation),
+                reschedule_offered_at=conversation.reschedule_offered_at,
                 booking_event_type_uri=conversation.booking_event_type_uri,
                 decision_reason=conversation.decision_reason,
                 decision_at=conversation.decision_at,
@@ -192,6 +206,8 @@ class SqlIntakeConversationRepository:
                 booking_link=conversation.booking_link,
                 booking_attempted_at=conversation.booking_attempted_at,
                 booked_event_uri=conversation.booked_event_uri,
+                superseded_booking=_stored_superseded(conversation),
+                reschedule_offered_at=conversation.reschedule_offered_at,
                 booking_event_type_uri=conversation.booking_event_type_uri,
                 decision_reason=conversation.decision_reason,
                 decision_at=conversation.decision_at,
