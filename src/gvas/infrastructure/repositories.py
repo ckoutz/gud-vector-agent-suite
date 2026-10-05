@@ -172,7 +172,7 @@ class SqlBusinessRepository:
         if intake_opening is not None:
             row.intake_opening = intake_opening
         if notification_email is not None:
-            row.notification_email = notification_email
+            row.notification_email = notification_email or None
         row.updated_at = now
         try:
             async with self.session.begin_nested():

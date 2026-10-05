@@ -900,8 +900,8 @@ async def test_accept_losing_a_concurrent_write_answers_409(
 
 
 def test_configure_rejects_unusable_public_keys_and_booking_links() -> None:
-    def arguments(**overrides: str | None) -> Namespace:
-        base: dict[str, str | None] = {
+    def arguments(**overrides: str | bool | None) -> Namespace:
+        base: dict[str, str | bool | None] = {
             "business_id": str(uuid4()),
             "site_url": None,
             "display_name": None,
@@ -912,6 +912,7 @@ def test_configure_rejects_unusable_public_keys_and_booking_links() -> None:
             "intake_questions": None,
             "intake_opening": None,
             "notification_email": None,
+            "clear_notification_email": False,
         }
         base.update(overrides)
         return Namespace(**base)
@@ -924,6 +925,7 @@ def test_configure_rejects_unusable_public_keys_and_booking_links() -> None:
     )
     with pytest.raises(ConfigureBusinessInputError):
         build_request(arguments(notification_email="not-an-address"))
+    assert build_request(arguments(clear_notification_email=True)).notification_email == ""
     # A booking link is a URL with a path, not an origin.
     assert build_request(arguments(calendly_url="https://calendly.com/x?foo=1"))
     for bad_key in ("has/slash", "has space", "x" * 300, "-leading-dash"):

@@ -47,6 +47,8 @@ INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE = "intake_customer.email"
 INTAKE_CUSTOMER_EMAIL_COMMAND_NAMESPACE = UUID("3a9d1c5f-7e24-4b18-9c36-2e5f8a1d4b60")
 INTAKE_CUSTOMER_TEXT_COMMAND_TYPE = "intake_customer.text"
 INTAKE_CUSTOMER_TEXT_COMMAND_NAMESPACE = UUID("5f2b8d1a-9c47-4e63-b1d5-8a3f6c2e9d15")
+OWNER_NOTICE_EMAIL_COMMAND_TYPE = "owner_notice.email"
+OWNER_NOTICE_EMAIL_COMMAND_NAMESPACE = UUID("c6e2f4a8-1d3b-4f7e-9a5c-0b8d2e6f4a13")
 INTAKE_BOOKING_CANCEL_COMMAND_TYPE = "intake_booking.cancel"
 INTAKE_BOOKING_CANCEL_COMMAND_NAMESPACE = UUID("7e4b2a91-3c58-4d1e-b6f9-0a2d5c8e4f17")
 
@@ -553,6 +555,26 @@ def intake_customer_email_command(email: IntakeCustomerEmail) -> OutboxCommand:
             "idempotency_key": email.idempotency_key,
         },
         dedup_key=f"intake_email:{email.idempotency_key}",
+    )
+
+
+def owner_notice_email_command(email: IntakeCustomerEmail) -> OutboxCommand:
+    """The same verbatim e-mail send, typed so a failure reads as a missed
+    owner copy rather than a missed customer e-mail."""
+
+    return OutboxCommand(
+        command_id=OutboxCommandId(
+            uuid5(OWNER_NOTICE_EMAIL_COMMAND_NAMESPACE, email.idempotency_key)
+        ),
+        business_id=email.business_id,
+        command_type=OWNER_NOTICE_EMAIL_COMMAND_TYPE,
+        payload={
+            "to": email.to,
+            "subject": email.subject,
+            "body": email.body,
+            "idempotency_key": email.idempotency_key,
+        },
+        dedup_key=f"owner_notice_email:{email.idempotency_key}",
     )
 
 

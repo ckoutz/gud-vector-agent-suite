@@ -283,7 +283,8 @@ undoes the other, and owner failure notices stay sanitized.
   copy of every website-originated owner notice — booking requests,
   escalations, portal service requests, quote accepted/paid — to that inbox,
   in addition to the owner channel thread. Decisions (`approve booking …`)
-  are still taken in the channel.
+  are still taken in the channel; `--clear-notification-email` turns it off.
+  Failed copies raise an `owner_notice.email` dead-letter notice in the channel.
 - **Stripe** (`GVAS_STRIPE_SECRET_KEY`, `GVAS_STRIPE_WEBHOOK_SECRET`) is an
   optional pair: both set enables `accept` (Checkout Sessions via
   `api.stripe.com`, `Idempotency-Key` = the quote's delivery key) and the

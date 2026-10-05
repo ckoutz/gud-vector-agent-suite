@@ -39,6 +39,7 @@ from gvas.domain.intake import (
     INTAKE_BOOKING_ARRANGE_COMMAND_TYPE,
     INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
     INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
+    OWNER_NOTICE_EMAIL_COMMAND_TYPE,
     PRICE_GUARD_REPLY,
     AvailabilityError,
     AvailableSlot,
@@ -594,7 +595,7 @@ async def test_slot_pick_notifies_owner_with_decision_commands(
     assert f"approve booking {reference}" in notice
     assert f"decline booking {reference}" in notice
     assert availability.book_calls == []
-    assert await commands_of(session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE) == []
+    assert await commands_of(session_factory, business_id, OWNER_NOTICE_EMAIL_COMMAND_TYPE) == []
 
 
 @pytest.mark.asyncio
@@ -605,8 +606,9 @@ async def test_booking_request_is_copied_to_the_notification_email(
         session_factory, availability=AvailabilityFake(), notification_email="owner@example.com"
     )
     assert texts_of(owner, "Booking request")
-    copies = await commands_of(session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE)
+    copies = await commands_of(session_factory, business_id, OWNER_NOTICE_EMAIL_COMMAND_TYPE)
     assert len(copies) == 1
+    assert await commands_of(session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE) == []
     payload = copies[0].payload
     subject, body = payload["subject"], payload["body"]
     assert isinstance(subject, str) and isinstance(body, str)

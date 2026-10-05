@@ -108,7 +108,13 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         arguments.intake_opening, "--intake-opening", INTAKE_OPENING_MAX_CHARS
     )
     notification_email = _optional(arguments.notification_email)
-    if notification_email is not None:
+    if getattr(arguments, "clear_notification_email", False):
+        if notification_email is not None:
+            raise ConfigureBusinessInputError(
+                "--clear-notification-email cannot be combined with --notification-email"
+            )
+        notification_email = ""
+    elif notification_email is not None:
         normalized = normalize_email_address(notification_email)
         if normalized is None:
             raise ConfigureBusinessInputError("--notification-email must be an e-mail address")
@@ -212,6 +218,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--intake-questions", help="what the agent finds out beyond name, email and phone"
     )
     parser.add_argument("--intake-opening", help="the agent's first message to a visitor")
+    parser.add_argument(
+        "--clear-notification-email",
+        action="store_true",
+        help="stop e-mailing copies of website notices",
+    )
     parser.add_argument(
         "--notification-email",
         help="owner inbox that gets a copy of every website booking/escalation/payment notice",
