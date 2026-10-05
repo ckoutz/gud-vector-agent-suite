@@ -5,16 +5,16 @@ decides: ``superseded_booking`` holds what it was (cancelled on approve,
 restored on decline) and ``reschedule_offered_at`` marks that new times are
 on the table while the booking still stands.
 
-Revision ID: 0021_intake_reschedule_custody
-Revises: 0019_business_notification_email
+Revision ID: 0022_intake_reschedule_custody
+Revises: 0021_calendar_blocks
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "0021_intake_reschedule_custody"
-down_revision = "0020_owner_dashboard"
+revision = "0022_intake_reschedule_custody"
+down_revision = "0021_calendar_blocks"
 branch_labels = None
 depends_on = None
 

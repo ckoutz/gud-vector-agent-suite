@@ -269,7 +269,7 @@ exactly one booking stays live per conversation:
   the first booking's cancel works — which is why the flow also works on a
   free Calendly plan: the new request's single-use scheduling link is minted
   on approve exactly like the original's.
-- **Migration**: `0021_intake_reschedule_custody` adds the nullable
+- **Migration**: `0022_intake_reschedule_custody` adds the nullable
   `superseded_booking` JSON and `reschedule_offered_at` columns to
   `intake_conversations` (`down_revision` `0019`; another open change takes
   `0020` — merge whichever lands second onto it).
