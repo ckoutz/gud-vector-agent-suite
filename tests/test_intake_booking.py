@@ -608,9 +608,11 @@ async def test_booking_request_is_copied_to_the_notification_email(
     copies = await commands_of(session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE)
     assert len(copies) == 1
     payload = copies[0].payload
+    subject, body = payload["subject"], payload["body"]
+    assert isinstance(subject, str) and isinstance(body, str)
     assert payload["to"] == "owner@example.com"
-    assert payload["subject"].startswith("[Test Co] Booking request")
-    assert f"approve booking {reference}" in payload["body"]
+    assert subject.startswith("[Test Co] Booking request")
+    assert f"approve booking {reference}" in body
 
 
 @pytest.mark.asyncio
