@@ -60,6 +60,7 @@ from gvas.domain.intake import (
     INTAKE_BOOKING_CANCEL_COMMAND_TYPE,
     INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
     INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
+    OWNER_NOTICE_EMAIL_COMMAND_TYPE,
 )
 from gvas.domain.outbox import (
     OWNER_MESSAGE_PROCESS_COMMAND_TYPE,
@@ -198,7 +199,10 @@ class OutboxCommandDispatcher:
             return await self._arrange_intake_booking(command)
         if command.command_type == INTAKE_BOOKING_CANCEL_COMMAND_TYPE:
             return await self._cancel_intake_booking(command)
-        if command.command_type == INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE:
+        if command.command_type in (
+            INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
+            OWNER_NOTICE_EMAIL_COMMAND_TYPE,
+        ):
             return await self._send_intake_email(command)
         if command.command_type == INTAKE_CUSTOMER_TEXT_COMMAND_TYPE:
             return await self._send_intake_text(command)

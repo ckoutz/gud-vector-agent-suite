@@ -10,7 +10,7 @@ from datetime import datetime
 
 from gvas.domain.customers import CustomerRecord
 from gvas.domain.identifiers import BusinessId
-from gvas.domain.intake import IntakeCustomerEmail, intake_customer_email_command
+from gvas.domain.intake import IntakeCustomerEmail, owner_notice_email_command
 from gvas.domain.messages import OutboundOwnerMessage, TextPart
 from gvas.domain.outbox import owner_reply_command
 from gvas.domain.quotes import Quote
@@ -69,12 +69,14 @@ async def enqueue_intake_owner_notice(
     no inbound message to anchor to.
     """
 
+    source = await unit_of_work.inbound_messages.find_latest_for_business(business_id)
+    if source is None:
+        # Callers treat a missing thread as "not notified" and roll the
+        # action back, so no copy goes out either.
+        return False
     await enqueue_owner_email_copy(
         unit_of_work, business_id, correlation_id=correlation_id, text=text
     )
-    source = await unit_of_work.inbound_messages.find_latest_for_business(business_id)
-    if source is None:
-        return False
     existing = await unit_of_work.outbound_messages.find_by_correlation(
         business_id, source.conversation_id, correlation_id
     )
@@ -115,7 +117,7 @@ async def enqueue_owner_email_copy(
         body=f"{text}\n\n{OWNER_EMAIL_FOOTER}",
         idempotency_key=f"owner_copy:{business_id}:{correlation_id}",
     )
-    await unit_of_work.outbox.enqueue(intake_customer_email_command(email))
+    await unit_of_work.outbox.enqueue(owner_notice_email_command(email))
     return True
 
 

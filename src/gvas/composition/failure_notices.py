@@ -32,6 +32,7 @@ from gvas.domain.intake import (
     INTAKE_BOOKING_CANCEL_COMMAND_TYPE,
     INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
     INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
+    OWNER_NOTICE_EMAIL_COMMAND_TYPE,
 )
 from gvas.domain.messages import ConversationRef, OutboundOwnerMessage, TextPart
 from gvas.domain.outbox import (
@@ -150,6 +151,10 @@ FAILURE_GUIDANCE: Final[dict[str, tuple[str, str]]] = {
     INTAKE_CUSTOMER_TEXT_COMMAND_TYPE: (
         "A text to a website-booking customer could not be sent.",
         "Text the customer yourself.",
+    ),
+    OWNER_NOTICE_EMAIL_COMMAND_TYPE: (
+        "The e-mail copy of a website notice could not be sent to the notification inbox.",
+        "The notice above in this channel is still the one to act on.",
     ),
     INTAKE_BOOKING_CANCEL_COMMAND_TYPE: (
         "The calendar event on a declined website booking could not be canceled.",
