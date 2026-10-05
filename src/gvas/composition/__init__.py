@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from gvas.application.calendar_blocks import CalendarBlockHandler
 from gvas.application.channel_policy import (
     ChannelScopedIntentResolver,
     ChannelUnsupportedMessageHandler,
@@ -83,6 +84,7 @@ from gvas.domain.ports import (
     PaymentCheckoutPort,
     PortalLoginEmailPort,
     QuoteDraftingPort,
+    ScheduleBlockPort,
     TranscriptionPort,
 )
 from gvas.domain.reporting import ReportEmailPort, ReportGenerationPort
@@ -146,6 +148,9 @@ class ApplicationPorts:
     # calendar feed. Either may be absent; the dashboard shows what it has.
     booked_events: BookedEventsPort | None = None
     calendar_feed: CalendarFeedPort | None = None
+    # Owner-requested blocks of time (``unavailable 8-12``) on the booking
+    # calendar; absent means the owner is told blocking isn't set up.
+    schedule_blocks: ScheduleBlockPort | None = None
 
 
 @dataclass(frozen=True)
@@ -257,6 +262,9 @@ def build_application(
         appointment_lookup=ports.appointment_lookup,
     )
     booking_handler = BookingDecisionHandler(unit_of_work_factory, now=now)
+    calendar_block_handler = CalendarBlockHandler(
+        unit_of_work_factory, ports.schedule_blocks, now=now
+    )
     resolved_intake_settings = intake_settings or IntakeSettings()
     intake_service = (
         IntakeService(
@@ -287,6 +295,7 @@ def build_application(
         [
             quote_handler,
             booking_handler,
+            calendar_block_handler,
             field_note_handler,
             WorkflowConflictHandler(),
             UnmatchedMessageHandler(),

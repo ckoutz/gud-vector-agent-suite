@@ -13,13 +13,14 @@ never leave this module.
 
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from gvas.domain.calendar_blocks import MINUTES_PER_DAY, DayHours, Interval
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import (
     DEFAULT_SLOT_MINUTES,
@@ -90,6 +91,33 @@ class _SchedulingLink(_Model):
 
 class _SchedulingLinkResponse(_Model):
     resource: _SchedulingLink | None = None
+
+
+class _Interval(_Model):
+    model_config = ConfigDict(frozen=True, extra="ignore", populate_by_name=True)
+
+    start: str = Field(alias="from")
+    end: str = Field(alias="to")
+
+
+class _Rule(_Model):
+    type: str
+    wday: str | None = None
+    date: str | None = None
+    intervals: list[_Interval] = Field(default_factory=list)
+
+
+class _ScheduleRule(_Model):
+    timezone: str
+    rules: list[_Rule] = Field(default_factory=list)
+
+
+class _EventTypeSchedule(_Model):
+    availability_rule: _ScheduleRule
+
+
+class _EventTypeSchedulesResponse(_Model):
+    collection: list[_EventTypeSchedule]
 
 
 class CalendlyAvailability:
@@ -346,6 +374,82 @@ class CalendlyAvailability:
             raise _unreadable(ValueError("empty scheduling link"))
         return url
 
+    async def schedule_timezone(self, business_id: BusinessId) -> str | None:
+        _uri, schedule = await self._schedule(business_id)
+        return schedule.timezone
+
+    async def day_hours(self, business_id: BusinessId, day: date) -> DayHours:
+        _uri, schedule = await self._schedule(business_id)
+        for rule in schedule.rules:
+            if rule.type == "date" and rule.date == day.isoformat():
+                return DayHours(intervals=_rule_intervals(rule), overridden=True)
+        weekday = day.strftime("%A").lower()
+        for rule in schedule.rules:
+            if rule.type == "wday" and rule.wday == weekday:
+                return DayHours(intervals=_rule_intervals(rule), overridden=False)
+        return DayHours(intervals=(), overridden=False)
+
+    async def set_day_hours(
+        self, business_id: BusinessId, day: date, intervals: tuple[Interval, ...] | None
+    ) -> None:
+        """Rewrites the booking event type's rules with ``day`` pinned.
+
+        Calendly replaces every rule on PATCH, so the current set is read and
+        written back with only this date's rule changed."""
+
+        event_type_uri, schedule = await self._schedule(business_id)
+        rules: list[dict[str, object]] = [
+            _rule_payload(rule)
+            for rule in schedule.rules
+            if not (rule.type == "date" and rule.date == day.isoformat())
+        ]
+        if intervals is not None:
+            rules.append(
+                {
+                    "type": "date",
+                    "date": day.isoformat(),
+                    "intervals": [
+                        {"from": _clock(low), "to": _clock(high)} for low, high in intervals
+                    ],
+                }
+            )
+        await self._patch(
+            "/event_type_availability_schedules",
+            {"event_type": event_type_uri},
+            {"availability_rule": {"timezone": schedule.timezone, "rules": rules}},
+        )
+
+    async def _schedule(self, business_id: BusinessId) -> tuple[str, _ScheduleRule]:
+        spec = await self._event_type(business_id)
+        if spec is None:
+            raise AvailabilityError("no calendly event type is configured")
+        payload = await self._get("/event_type_availability_schedules", {"event_type": spec[0]})
+        try:
+            listed = _EventTypeSchedulesResponse.model_validate(payload)
+        except ValidationError as error:
+            raise _unreadable(error) from error
+        if not listed.collection:
+            raise _unreadable(ValueError("event type has no availability schedule"))
+        return spec[0], listed.collection[0].availability_rule
+
+    async def _patch(
+        self, path: str, params: dict[str, str | int], body: dict[str, object]
+    ) -> None:
+        try:
+            response = await self._client.patch(
+                f"{self._settings.api_base_url}{path}",
+                params=params,
+                json=body,
+                headers={"Authorization": f"Bearer {self._settings.token}"},
+                timeout=self._settings.api_timeout_seconds,
+            )
+        except httpx.HTTPError as error:
+            logger.warning("calendly request failed: %s", type(error).__name__)
+            raise AvailabilityError("calendly was unreachable") from error
+        if response.status_code >= 400:
+            logger.warning("calendly returned http %s for %s", response.status_code, path)
+            raise AvailabilityError(f"calendly returned http {response.status_code}")
+
     async def _get(self, path: str, params: dict[str, str | int]) -> object:
         try:
             response = await self._client.get(
@@ -419,3 +523,34 @@ def _prefilled_link(booking_url: str, request: BookingRequest, timezone: str | N
         params["utm_content"] = request.reference
     separator = "&" if "?" in booking_url else "?"
     return f"{booking_url}{separator}{urlencode(params)}"
+
+
+def _minutes(clock: str) -> int:
+    hours, _, minutes = clock.partition(":")
+    return int(hours) * 60 + int(minutes or 0)
+
+
+def _clock(minute: int) -> str:
+    """Calendly intervals end by ``23:59`` at the latest."""
+
+    minute = min(minute, MINUTES_PER_DAY - 1)
+    return f"{minute // 60:02d}:{minute % 60:02d}"
+
+
+def _rule_intervals(rule: _Rule) -> tuple[Interval, ...]:
+    return tuple(
+        (_minutes(interval.start), min(_minutes(interval.end), MINUTES_PER_DAY))
+        for interval in rule.intervals
+    )
+
+
+def _rule_payload(rule: _Rule) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "type": rule.type,
+        "intervals": [{"from": item.start, "to": item.end} for item in rule.intervals],
+    }
+    if rule.wday is not None:
+        payload["wday"] = rule.wday
+    if rule.date is not None:
+        payload["date"] = rule.date
+    return payload

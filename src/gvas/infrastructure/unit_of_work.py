@@ -1,5 +1,6 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.domain.calendar_blocks import CalendarBlockRepository
 from gvas.domain.completeness_repositories import (
     ChecklistDefinitionRepository,
     CompletenessUnitOfWork,
@@ -35,6 +36,7 @@ from gvas.domain.template_repositories import (
     ReportTemplateDefinitionRepository,
     TemplateSetRepository,
 )
+from gvas.infrastructure.calendar_block_repositories import SqlCalendarBlockRepository
 from gvas.infrastructure.completeness_repositories import (
     SqlChecklistDefinitionRepository,
     SqlFieldNoteReviewRepository,
@@ -94,6 +96,7 @@ class SqlUnitOfWork:
     intake_messages: IntakeMessageRepository
     owner_login_tokens: OwnerLoginTokenRepository
     owner_sessions: OwnerSessionRepository
+    calendar_blocks: CalendarBlockRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -120,6 +123,7 @@ class SqlUnitOfWork:
         self.intake_messages = SqlIntakeMessageRepository(self._session)
         self.owner_login_tokens = SqlOwnerLoginTokenRepository(self._session)
         self.owner_sessions = SqlOwnerSessionRepository(self._session)
+        self.calendar_blocks = SqlCalendarBlockRepository(self._session)
         return self
 
     async def __aexit__(

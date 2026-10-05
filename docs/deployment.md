@@ -204,6 +204,18 @@ event type and a start within a day of the requested slot — anything else
 (an unrelated appointment the same customer happens to book) is acknowledged
 and dropped, as are unbound Calendly users and other event types.
 
+The owner can also block time by text (Slack or SMS): `unavailable 8-12`,
+`busy tue 1-4`, `block 10/7 9-11 booking <ref>`. Gus reads it back ("Block Tue
+Oct 6, 8:00 AM–12:00 PM … ? Reply yes or no") and changes nothing until `yes`
+(proposals expire after 30 minutes). On `yes` the booking event type's rules
+are rewritten with that date pinned to its hours minus the block
+(`GET`/`PATCH /event_type_availability_schedules`, scope `availability:write`),
+so neither the chat nor the Calendly link offers the time; a waiting request
+whose time falls inside the block is declined and the customer is emailed the
+booking link. `unblock <day>` restores the date's previous hours. The first
+write gives the event type its own copy of the weekly hours, so later edits to
+the user's shared schedule in Calendly no longer reach that event type.
+
 The subscription is created once per environment, out-of-band:
 
 ```sh
