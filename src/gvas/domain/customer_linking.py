@@ -31,14 +31,14 @@ async def enqueue_quote_owner_notice(
     ``correlation_id`` was queued before (the notice is idempotent).
     """
 
-    await enqueue_owner_email_copy(
-        unit_of_work, quote.business_id, correlation_id=correlation_id, text=text
-    )
     source = await unit_of_work.inbound_messages.find_by_key(
         quote.business_id, quote.conversation_id, quote.source_message_key
     )
     if source is None:
         return False
+    await enqueue_owner_email_copy(
+        unit_of_work, quote.business_id, correlation_id=correlation_id, text=text
+    )
     existing = await unit_of_work.outbound_messages.find_by_correlation(
         quote.business_id, quote.conversation_id, correlation_id
     )

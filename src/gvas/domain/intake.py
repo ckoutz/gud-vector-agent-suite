@@ -182,28 +182,38 @@ class IntakeCollected(IntakeModel):
 
     @property
     def ready_for_slots(self) -> bool:
-        """Contact details and what the customer needs, before scheduling."""
+        """Contact details, including a phone number, and what the customer
+        needs — before scheduling."""
 
-        return all(
-            value is not None and value.strip() for value in (self.name, self.email, self.details)
-        )
+        return self._has(self.name, self.email, self.phone, self.details)
 
-    def is_complete(self, *, address_required: bool) -> bool:
-        if not self.ready_for_slots:
+    def is_complete(self, *, address_required: bool, phone_required: bool = True) -> bool:
+        """``phone_required`` is waived for known customers, whose record may
+        legitimately hold no phone number."""
+
+        if not self._has(self.name, self.email, self.details):
             return False
-        return not address_required or bool(self.address and self.address.strip())
+        if phone_required and not self._has(self.phone):
+            return False
+        return not address_required or self._has(self.address)
+
+    @staticmethod
+    def _has(*values: str | None) -> bool:
+        return all(value is not None and value.strip() for value in values)
 
     def as_stored(self) -> dict[str, object]:
         return self.model_dump(mode="json", by_alias=True)
 
-    def summary(self, *, address_required: bool = True) -> dict[str, object] | None:
+    def summary(
+        self, *, address_required: bool = True, phone_required: bool = True
+    ) -> dict[str, object] | None:
         """The public summary projection: only once the request is complete.
 
         ``problem`` mirrors ``details`` for widgets built against the
         original shape.
         """
 
-        if not self.is_complete(address_required=address_required):
+        if not self.is_complete(address_required=address_required, phone_required=phone_required):
             return None
         return {
             "name": self.name,
