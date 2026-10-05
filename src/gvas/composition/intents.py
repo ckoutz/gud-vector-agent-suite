@@ -2,6 +2,12 @@ from typing import Protocol
 
 from gvas.application.field_notes import FieldNoteIntentContribution, FieldNoteUnitOfWorkFactory
 from gvas.application.quotes import QuoteIntentSelector, normalized_text
+from gvas.domain.calendar_blocks import (
+    CALENDAR_BLOCK_INTENT,
+    block_confirmation,
+    unavailable_request,
+    unblock_request,
+)
 from gvas.domain.field_note_repositories import AmbiguousFieldNoteMessageError
 from gvas.domain.field_notes import (
     FIELD_NOTE_INTENT,
@@ -57,6 +63,8 @@ class DeterministicIntentResolver:
         # quote, and a booking command must still reach its own handler.
         if booking_decision(normalized_text(message)) is not None:
             return IntentResolution(intent=BOOKING_INTENT, confidence=1)
+        if await self._is_calendar_block(message):
+            return IntentResolution(intent=CALENDAR_BLOCK_INTENT, confidence=1)
         quote_resolution = await self._resolve_quote(message)
         if has_field_note_trigger(message):
             if quote_resolution is not None:
@@ -74,6 +82,19 @@ class DeterministicIntentResolver:
         if field_note_intent is not None:
             return IntentResolution(intent=field_note_intent, confidence=1)
         return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
+
+    async def _is_calendar_block(self, message: NormalizedOwnerMessage) -> bool:
+        """``unavailable 8-12`` / ``unblock tue`` always; ``yes``/``no`` only while
+        a block is waiting on the owner, so other workflows keep their replies."""
+
+        text = normalized_text(message)
+        if unavailable_request(text) is not None or unblock_request(text) is not None:
+            return True
+        if block_confirmation(text) is None:
+            return False
+        async with self._message_unit_of_work_factory() as unit_of_work:
+            waiting = await unit_of_work.calendar_blocks.latest_proposed(message.business_id)
+        return waiting is not None
 
     async def _resolve_quote(self, message: NormalizedOwnerMessage) -> IntentResolution | None:
         async with self._field_note_unit_of_work_factory() as unit_of_work:

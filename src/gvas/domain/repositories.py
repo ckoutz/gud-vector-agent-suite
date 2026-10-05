@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from gvas.domain.calendar_blocks import CalendarBlockRepository
 from gvas.domain.customers import (
     CustomerRepository,
     PortalLoginTokenRepository,
@@ -343,6 +344,7 @@ class UnitOfWork(Protocol):
     intake_messages: IntakeMessageRepository
     owner_login_tokens: OwnerLoginTokenRepository
     owner_sessions: OwnerSessionRepository
+    calendar_blocks: CalendarBlockRepository
 
     async def __aenter__(self) -> "UnitOfWork": ...
 

@@ -483,6 +483,10 @@ def booking_request_notice(
     if collected.notes:
         lines.append(f"Notes: {collected.notes}")
     lines.append(f"Reply `approve booking {ref}` or `decline booking {ref} <reason>`.")
+    lines.append(
+        "Busy then? Reply like `unavailable 8-12` to block that time and send the "
+        "customer a link to pick another."
+    )
     if business_name:
         lines.append(f"Business: {business_name}.")
     return "\n".join(lines)

@@ -1,7 +1,8 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
 
 from gvas.domain.appointments import AppointmentLookupPort as AppointmentLookupPort
+from gvas.domain.calendar_blocks import DayHours, Interval
 from gvas.domain.customers import PortalLoginEmailRequest
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import (
@@ -219,3 +220,27 @@ class CalendarFeedPort(Protocol):
     async def events(
         self, feed_url: str, start: datetime, end: datetime
     ) -> tuple[CalendarEvent, ...]: ...
+
+
+class ScheduleBlockPort(Protocol):
+    """Hours on the booking calendar itself, one date at a time.
+
+    Changing a date here changes what every booking page offers, the website
+    chat and the business's own booking link alike. Errors raise
+    ``AvailabilityError`` with a sanitized message.
+    """
+
+    def serves(self, business_id: BusinessId) -> bool: ...
+
+    async def schedule_timezone(self, business_id: BusinessId) -> str | None:
+        """The IANA zone the calendar's hours are written in."""
+        ...
+
+    async def day_hours(self, business_id: BusinessId, day: date) -> DayHours: ...
+
+    async def set_day_hours(
+        self, business_id: BusinessId, day: date, intervals: tuple[Interval, ...] | None
+    ) -> None:
+        """Pin ``day`` to ``intervals``; ``None`` drops the date's own rule so
+        the weekly hours apply again."""
+        ...

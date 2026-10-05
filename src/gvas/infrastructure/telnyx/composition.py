@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.application.channel_policy import ChannelWorkflowPolicy
 from gvas.application.ingestion import IngestOwnerMessageService
+from gvas.domain.calendar_blocks import CALENDAR_BLOCK_INTENT
 from gvas.domain.intake import BOOKING_INTENT
 from gvas.domain.quotes import QUOTE_INTENT, QUOTE_TRIGGER_PREFIX
 from gvas.infrastructure.telnyx.config import TelnyxSettings
@@ -36,8 +37,9 @@ def sms_quotes_only_policy(field_notes_channel: str) -> ChannelWorkflowPolicy:
 
     return ChannelWorkflowPolicy(
         source_namespace=TELNYX_SOURCE_NAMESPACE,
-        # Booking decisions ride SMS so the owner can approve from a text.
-        allowed_intents=frozenset({QUOTE_INTENT, BOOKING_INTENT}),
+        # Booking decisions and time blocks ride SMS so the owner can answer
+        # a booking request from a text.
+        allowed_intents=frozenset({QUOTE_INTENT, BOOKING_INTENT, CALENDAR_BLOCK_INTENT}),
         unsupported_reply=(
             f"{SMS_QUOTES_ONLY_REPLY_PREFIX} Field notes belong in {field_notes_channel}."
         ),

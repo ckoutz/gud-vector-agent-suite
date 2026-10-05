@@ -437,6 +437,7 @@ def build_production_ports(
         appointment_lookup=appointment_lookup,
         availability=availability,
         booked_events=booked_events,
+        schedule_blocks=availability,
         calendar_feed=IcsCalendarFeed(client),
         intake_agent=intake_agent,
         customer_email=resend_quotes,
