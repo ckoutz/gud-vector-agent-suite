@@ -137,7 +137,7 @@ class CalendarBlockHandler:
                 if booking is not None
                 and booking.state is IntakeState.AWAITING_OWNER
                 and booked_at is not None
-                and overlaps(block, booked_at)
+                and overlaps(block, booked_at, booking.requested_slot_end)
                 else None
             )
             if answered is not None:
@@ -167,11 +167,19 @@ class CalendarBlockHandler:
                     "That request expired, so nothing was blocked. "
                     "Send it again if you still need the time."
                 )
-            hours = await schedule.day_hours(business_id, block.day)
+            hours = block.previous
+            if hours is None:
+                # Recorded before Calendly is touched: a retry after a write
+                # that landed but never committed reuses the original hours
+                # instead of reading back the already-narrowed ones.
+                hours = await schedule.day_hours(business_id, block.day)
+                block = block.with_updates(previous=hours)
+                await unit_of_work.calendar_blocks.save(block)
+                await unit_of_work.commit()
             remaining = subtract_interval(hours.intervals, block.start_minute, block.end_minute)
             await schedule.set_day_hours(business_id, block.day, remaining)
             await unit_of_work.calendar_blocks.save(
-                block.with_updates(state=CalendarBlockState.APPLIED, previous=hours, decided_at=now)
+                block.with_updates(state=CalendarBlockState.APPLIED, decided_at=now)
             )
             reply = f"Blocked {format_block(block)}, so no one can book it."
             if block.reference is not None:

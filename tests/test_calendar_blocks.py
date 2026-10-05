@@ -28,7 +28,7 @@ from gvas.domain.calendar_blocks import (
     unblock_request,
 )
 from gvas.domain.identifiers import BusinessId
-from gvas.domain.intake import INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE
+from gvas.domain.intake import INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE, AvailabilityError
 from gvas.infrastructure.calendar_block_models import CalendarBlockRecord
 from gvas.infrastructure.calendly.availability import CalendlyAvailability
 from gvas.infrastructure.calendly.config import CalendlySettings
@@ -53,6 +53,7 @@ class ScheduleFake(AvailabilityFake):
         super().__init__()
         self.overrides: dict[date, tuple[Interval, ...]] = {}
         self.set_calls: list[tuple[date, tuple[Interval, ...] | None]] = []
+        self.fail_after_write = False
 
     def serves(self, business_id: BusinessId) -> bool:
         return True
@@ -73,6 +74,9 @@ class ScheduleFake(AvailabilityFake):
             self.overrides.pop(day, None)
         else:
             self.overrides[day] = intervals
+        if self.fail_after_write:
+            self.fail_after_write = False
+            raise AvailabilityError("calendly returned http 502")
 
 
 def block_app(
@@ -234,6 +238,49 @@ async def test_a_block_away_from_the_requested_time_keeps_the_request(
 
     assert len(schedule.set_calls) == 1
     assert (await conversation_row(session_factory, business_id)).state == "awaiting_owner"
+
+
+@pytest.mark.asyncio
+async def test_a_block_covering_only_the_end_of_the_request_still_answers_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    schedule = ScheduleFake()
+    _, _, business_id, _ = await reach_awaiting_owner(session_factory, availability=schedule)
+    row = await conversation_row(session_factory, business_id)
+    assert row.requested_slot_start is not None
+    assert row.requested_slot_end is not None
+    end = row.requested_slot_end.astimezone(UTC)
+    assert end - row.requested_slot_start.astimezone(UTC) > timedelta(minutes=1)
+    application, owner = block_app(session_factory, schedule)
+    first = (end - timedelta(minutes=1)).strftime("%H:%M")
+    last = (end + timedelta(hours=1)).strftime("%H:%M")
+
+    await say(application, business_id, f"busy {first} to {last}", "busy-1")
+
+    [question] = texts_of(owner, "Block ")
+    assert "Jane Doe" in question
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_a_lost_write_restores_the_original_hours(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    schedule = ScheduleFake()
+    _, _, business_id, _ = await reach_awaiting_owner(session_factory, availability=schedule)
+    row = await conversation_row(session_factory, business_id)
+    assert row.requested_slot_start is not None
+    day = row.requested_slot_start.astimezone(UTC).date()
+    application, owner = block_app(session_factory, schedule)
+
+    await say(application, business_id, "busy 8-12", "busy-1")
+    schedule.fail_after_write = True
+    await say(application, business_id, "yes", "busy-yes-1")
+    assert texts_of(owner, "I couldn't reach the calendar")
+    await say(application, business_id, "yes", "busy-yes-2")
+
+    assert schedule.set_calls == [(day, ((720, 1020),)), (day, ((720, 1020),))]
+    await say(application, business_id, f"unblock {day.month}/{day.day}", "unblock-1")
+    assert schedule.set_calls[-1] == (day, None)
 
 
 @pytest.mark.asyncio

@@ -211,11 +211,14 @@ def subtract_interval(
     return tuple(remaining)
 
 
-def overlaps(block: CalendarBlock, start: datetime) -> bool:
-    """Whether a booking starting at ``start`` (calendar wall clock) falls in ``block``."""
+def overlaps(block: CalendarBlock, start: datetime, end: datetime | None) -> bool:
+    """Whether a booking from ``start`` to ``end`` (calendar wall clock) touches ``block``."""
 
-    minute = start.hour * 60 + start.minute
-    return start.date() == block.day and block.start_minute <= minute < block.end_minute
+    if start.date() != block.day:
+        return False
+    first = start.hour * 60 + start.minute
+    last = first if end is None else first + max(int((end - start).total_seconds() // 60), 0)
+    return first < block.end_minute and max(last, first + 1) > block.start_minute
 
 
 def format_minute(minute: int) -> str:
