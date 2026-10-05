@@ -250,6 +250,8 @@ class ConversationRepository(Protocol):
 
     async def find_endpoint(self, reference: ConversationRef) -> ChannelEndpointRef | None: ...
 
+    async def find_routing(self, reference: ConversationRef) -> RoutingData | None: ...
+
 
 class InboundMessageRepository(Protocol):
     """Inbound links must reference the message business and endpoint."""

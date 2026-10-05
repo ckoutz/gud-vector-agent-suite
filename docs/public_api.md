@@ -514,9 +514,10 @@ retries). The reply is then:
 - **deduplicated** on `svix-id` (first writer wins in the provider-event
   ledger; replays answer `{"status": "duplicate"}`);
 - **scoped** to one business by the signed `owner+<token>@<reply domain>`
-  recipient, falling back to the token in `In-Reply-To`/`References`;
+  recipient, falling back to the token in `In-Reply-To`/`References`; mail
+  without a verifying token is rejected, even from the owner;
 - **authorized**: the sender must be that business's `notification_email` or
-  `owner_email` and pass SPF/DKIM without a DMARC fail — otherwise
+  `owner_email` with a DMARC pass (aligned SPF/DKIM) — otherwise
   `{"status": "rejected"}` and no reply is sent;
 - **stripped** of the quoted original and signature, then queued as an owner
   message (`{"status": "accepted"}`).

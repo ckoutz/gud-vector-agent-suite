@@ -249,10 +249,15 @@ async def test_unclear_reply_asks_and_never_acts(
 async def test_other_senders_and_forged_events_are_dropped(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    application, notices, _s, business_id, _ref, _o = await booking_notice(
+    application, notices, _s, business_id, reference, _o = await booking_notice(
         session_factory, AvailabilityFake()
     )
     emails = ReceivedEmailsFake()
+    emails.add(
+        "rcv-8",
+        **{"from": OWNER, "to": ["info@example.test"], "text": f"approve booking {reference}"},
+    )
+    assert (await deliver(application, emails, "rcv-8", "msg_8")).json()["status"] == "rejected"
     emails.add(
         "rcv-4", **{"from": "mallory@evil.example", "to": [notices[0].reply_to], "text": "yes"}
     )
@@ -311,3 +316,40 @@ async def test_reply_to_an_older_request_epoch_is_refused(
         if isinstance(part, TextPart)
     ]
     assert texts and "changed since" in texts[0]
+
+
+@pytest.mark.asyncio
+async def test_request_replaced_after_the_stale_check_is_still_refused(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    availability = AvailabilityFake()
+    application, notices, _s, business_id, reference, _o = await booking_notice(
+        session_factory, availability
+    )
+    assert notices[0].reply_to is not None and application.owner_email_replies is not None
+    current = parse_owner_reply_token(notices[0].reply_to.split("+", 1)[1].split("@", 1)[0])
+    assert current is not None
+    row = await conversation_row(session_factory, business_id)
+    older = owner_reply_thread(
+        owner_reply_token(
+            LINK_SIGNING_KEY,
+            business_id=business_id,
+            conversation_id=IntakeConversationId(row.id),
+            reference=reference,
+            request_epoch=current.request_epoch - 3600,
+        ),
+        REPLY_DOMAIN,
+    )
+
+    async def not_stale(*_args: object) -> bool:
+        return False
+
+    # The customer reschedules between the reply check and the decision.
+    monkeypatch.setattr(application.owner_email_replies, "_is_stale", not_stale)
+    emails = ReceivedEmailsFake()
+    emails.add("rcv-9", **{"from": OWNER, "to": [older.reply_to], "text": "approve"})
+    assert (await deliver(application, emails, "rcv-9", "msg_9")).json()["status"] == "accepted"
+    await drain(application)
+    row = await conversation_row(session_factory, business_id)
+    assert row.state == "awaiting_owner"
+    assert availability.book_calls == []

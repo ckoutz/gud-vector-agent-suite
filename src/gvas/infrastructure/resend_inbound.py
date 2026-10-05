@@ -32,6 +32,11 @@ SVIX_SIGNATURE_HEADER: Final = "svix-signature"
 _WHSEC: Final = "whsec_"
 _TAG = re.compile(r"<[^>]+>")
 _BLOCK_TAG = re.compile(r"<\s*(?:br|/p|/div|/li|/tr|/h\d)\b[^>]*>", re.IGNORECASE)
+_QUOTE_START = re.compile(
+    r"<blockquote\b|<div\b[^>]*\bclass=\"[^\"]*\bgmail_quote\b"
+    r"|<div\b[^>]*\bid=\"(?:divRplyFwdMsg|appendonsend)\"",
+    re.IGNORECASE,
+)
 _HIDDEN = re.compile(r"<(script|style|head)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
 
 
@@ -182,16 +187,16 @@ def _header_values(value: object) -> list[str]:
 
 
 def _authenticated(received: ResendReceivedEmail) -> bool:
-    """The receiving server's verdict (not forgeable headers): DMARC must not
-    fail and SPF or DKIM must pass for the From domain."""
+    """The receiving server's verdict (not forgeable headers). Only a DMARC
+    pass proves SPF or DKIM aligned with the From domain; a bare SPF/DKIM
+    pass may be for any domain."""
 
     result = received.authentication
-    if result is None or result.dmarc == "fail":
-        return False
-    return "pass" in (result.spf, result.dkim)
+    return result is not None and result.dmarc == "pass"
 
 
 def _html_text(markup: str) -> str:
-    text = _HIDDEN.sub("", markup)
+    quote = _QUOTE_START.search(markup)
+    text = _HIDDEN.sub("", markup if quote is None else markup[: quote.start()])
     text = _BLOCK_TAG.sub("\n", text)
     return html.unescape(_TAG.sub("", text))

@@ -1125,10 +1125,31 @@ class BookingDecisionHandler:
                 message, "Reply `approve booking <id>` or `decline booking <id> <reason>`."
             )
         async with self._unit_of_work_factory() as unit_of_work:
-            outcome = await decide_booking(unit_of_work, message.business_id, decision, self._now())
+            outcome = await decide_booking(
+                unit_of_work,
+                message.business_id,
+                decision,
+                self._now(),
+                request_epoch=await self._request_epoch(unit_of_work, message),
+            )
             if outcome.applied and self._mirrored_namespaces:
                 await self._mirror(unit_of_work, message, outcome.text)
         return self._result(message, outcome.text)
+
+    async def _request_epoch(
+        self, unit_of_work: UnitOfWork, message: NormalizedOwnerMessage
+    ) -> int | None:
+        """A reply to a notice e-mail carries the stamp of the request it
+        answers; ``decide_booking`` refuses it once the request was replaced."""
+
+        if not self._mirrored_namespaces:
+            return None
+        endpoint = await unit_of_work.conversations.find_endpoint(message.conversation_ref)
+        if endpoint is None or endpoint.source_namespace not in self._mirrored_namespaces:
+            return None
+        routing = await unit_of_work.conversations.find_routing(message.conversation_ref)
+        epoch = None if routing is None else routing.get("request_epoch")
+        return epoch if isinstance(epoch, int) else None
 
     async def _mirror(
         self, unit_of_work: UnitOfWork, message: NormalizedOwnerMessage, text: str

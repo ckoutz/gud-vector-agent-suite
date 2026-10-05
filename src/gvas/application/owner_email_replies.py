@@ -139,18 +139,14 @@ class OwnerEmailReplyService:
                 logger.info("owner e-mail dropped: sender is not an owner address")
                 await unit_of_work.rollback()
                 return OwnerEmailReplyStatus.REJECTED
+            # Only replies bound to a signed notice are heard: a tokenless
+            # mail, even from the owner address, cannot act.
             match = await self._match(unit_of_work, businesses, tokens)
-            if tokens and match is None:
-                logger.info("owner e-mail dropped: reply token does not verify")
+            if match is None:
+                logger.info("owner e-mail dropped: no verified reply token")
                 await unit_of_work.rollback()
                 return OwnerEmailReplyStatus.REJECTED
-            if match is None and len(businesses) != 1:
-                logger.info("owner e-mail dropped: sender owns several businesses, no token")
-                await unit_of_work.rollback()
-                return OwnerEmailReplyStatus.REJECTED
-            business = match[0] if match is not None else businesses[0]
-            conversation = match[1] if match is not None else None
-            token = match[2] if match is not None else None
+            business, conversation, token = match
             if not text:
                 await unit_of_work.rollback()
                 return OwnerEmailReplyStatus.IGNORED
@@ -168,9 +164,9 @@ class OwnerEmailReplyService:
                 references=email.references,
                 text=text,
                 received_at=email.received_at,
-                booking_reference=conversation.reference if conversation else None,
-                conversation_id=conversation.conversation_id if conversation else None,
-                request_epoch=token.request_epoch if token else None,
+                booking_reference=conversation.reference,
+                conversation_id=conversation.conversation_id,
+                request_epoch=token.request_epoch,
             )
             await unit_of_work.outbox.enqueue(
                 owner_email_reply_command(business.business_id, reply)
@@ -327,6 +323,7 @@ class OwnerEmailReplyService:
             "in_reply_to": reply.message_id,
             "references": list(references),
             "reply_to": reply_to,
+            "request_epoch": reply.request_epoch,
         }
         return InboundOwnerMessage(
             message=NormalizedOwnerMessage(

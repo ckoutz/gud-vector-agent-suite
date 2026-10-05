@@ -265,7 +265,7 @@ def _note_label(fact: str) -> str | None:
 def _merged_notes(stored: str | None, reported: str | None) -> str | None:
     """Fact-level merge: the agent re-reports its whole running summary on
     every turn (and again on reschedules), so each sentence/``;`` clause is
-    kept once — repeats and contained clauses are dropped, extensions replace
+    kept once — repeats and clauses that begin an existing one are dropped, extensions replace
     what they extend, and a newer answer to the same ``Label:`` wins."""
 
     new = " ".join((reported or "").split())
@@ -279,9 +279,10 @@ def _merged_notes(stored: str | None, reported: str | None) -> str | None:
         label = _note_label(fact)
         for index, existing in enumerate(merged):
             existing_key = _note_key(existing)
-            if f" {key} " in f" {existing_key} ":
+            # Prefix (not substring) containment, so "No leak" never swallows "Leak".
+            if existing_key == key or existing_key.startswith(f"{key} "):
                 break
-            if f" {existing_key} " in f" {key} " or (
+            if key.startswith(f"{existing_key} ") or (
                 label is not None and label == _note_label(existing)
             ):
                 merged[index] = fact

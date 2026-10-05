@@ -182,7 +182,8 @@ class OwnerMessageUnderstanding:
                 command_text=text,
                 source=OwnerUnderstandingSource.GRAMMAR,
             )
-        if block_confirmation(text) is not None:
+        # A reply in a booking thread answers that booking, never a pending block.
+        if context.booking_reference is None and block_confirmation(text) is not None:
             async with self._unit_of_work_factory() as unit_of_work:
                 waiting = await unit_of_work.calendar_blocks.latest_proposed(business_id)
             if waiting is not None:

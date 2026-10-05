@@ -1254,8 +1254,11 @@ def test_intake_notes_accumulate_without_repeating() -> None:
     assert extended.merge(IntakeCollected(notes="Uses Jobber")).notes == (
         "Plumber, 3 vans; Uses Jobber"
     )
-    # A clause already contained in what is stored is a repeat, not a fact.
-    assert extended.merge(IntakeCollected(notes="vans")).notes == "Plumber, 3 vans"
+    assert extended.merge(IntakeCollected(notes="vans")).notes == "Plumber, 3 vans; vans"
+    corrected = IntakeCollected(notes="No water damage").merge(
+        IntakeCollected(notes="Water damage")
+    )
+    assert corrected.notes == "No water damage; Water damage"
 
 
 def test_intake_notes_do_not_repeat_the_running_summary_on_reschedule() -> None:

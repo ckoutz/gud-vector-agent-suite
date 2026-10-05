@@ -338,6 +338,18 @@ class SqlConversationRepository:
             external_endpoint_id=endpoint.external_endpoint_id,
         )
 
+    async def find_routing(self, reference: ConversationRef) -> RoutingData | None:
+        routing = await self.session.scalar(
+            select(Conversation.routing)
+            .where(
+                Conversation.business_id == reference.business_id,
+                Conversation.external_conversation_id == reference.external_conversation_id,
+            )
+            .order_by(Conversation.id)
+            .limit(1)
+        )
+        return None if routing is None else dict(routing)
+
 
 class SqlInboundMessageRepository:
     def __init__(self, session: AsyncSession) -> None:

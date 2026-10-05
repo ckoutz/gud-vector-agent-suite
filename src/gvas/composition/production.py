@@ -496,7 +496,11 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
         session_factory=session_factory,
         lease_ttl=timedelta(seconds=resolved.worker.lease_seconds),
         ceilings=resolved.usage_ceilings(),
-        intake_settings=resolved.intake,
+        intake_settings=(
+            resolved.intake
+            if resolved.resend.receiving_configured
+            else resolved.intake.model_copy(update={"owner_reply_domain": ""})
+        ),
     )
     routers = [build_slack_event_router(application.ingest_service, resolved.slack)]
     if resolved.telnyx.is_configured:

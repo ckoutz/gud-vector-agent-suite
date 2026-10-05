@@ -324,11 +324,14 @@ ids — so the owner can simply answer the e-mail:
 - Every decision runs `decide_booking`, exactly as Slack, the dashboard and
   the links do; GVAS e-mails a short confirmation and posts the usual
   owner-thread update. Nothing ever books without the owner.
-- Only mail from the business's `notification_email` or `owner_email` that
-  passes SPF/DKIM (and not a DMARC fail) is heard; anything else is dropped
-  silently.
+- Only replies to a signed notice (token in the reply address or the
+  thread headers), from the business's `notification_email` or
+  `owner_email`, with a DMARC pass, are heard; anything else is dropped
+  silently. `gudvector.com` publishes `v=DMARC1; p=none;`, which is enough
+  for Gmail/Workspace mail from `info@gudvector.com` to pass.
 
-Leave any of the three unset to keep e-mails one-way (the HTML layout still
+Notices only get the Reply-To address when the webhook is mounted. Leave any
+of the three unset to keep e-mails one-way (the HTML layout still
 applies).
 
 #### One-time setup (owner)

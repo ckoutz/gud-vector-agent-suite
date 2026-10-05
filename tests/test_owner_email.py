@@ -189,6 +189,7 @@ def test_received_email_is_normalized_with_authentication_verdict() -> None:
     assert email.sender_authenticated
     assert email.references == ("<r@resend>", "<t@reply>")
     assert email.text.startswith("Yes")
+    assert "old" not in email.text
     spoofed = received.model_copy(
         update={"authentication": received.authentication.model_copy(update={"dmarc": "fail"})}
         if received.authentication
@@ -196,3 +197,10 @@ def test_received_email_is_normalized_with_authentication_verdict() -> None:
     )
     spoofed_email = normalize_received_email(spoofed, event_id="msg_2", now=NOW)
     assert spoofed_email is not None and not spoofed_email.sender_authenticated
+    unaligned = received.model_copy(
+        update={"authentication": received.authentication.model_copy(update={"dmarc": "none"})}
+        if received.authentication
+        else {}
+    )
+    unaligned_email = normalize_received_email(unaligned, event_id="msg_3", now=NOW)
+    assert unaligned_email is not None and not unaligned_email.sender_authenticated
