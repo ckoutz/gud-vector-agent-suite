@@ -202,6 +202,11 @@ class BusinessRepository(Protocol):
 
     async def get_by_public_key(self, public_key: str) -> BusinessRecord | None: ...
 
+    async def find_by_owner_address(self, address: str) -> tuple[BusinessRecord, ...]:
+        """Businesses whose ``notification_email`` or ``owner_email`` is
+        ``address`` (case-insensitive) — who may answer owner e-mails."""
+        ...
+
     async def list_site_urls(self) -> tuple[str, ...]:
         """Every configured ``site_url``; feeds the public API's CORS set."""
         ...
@@ -244,6 +249,8 @@ class ConversationRepository(Protocol):
     ) -> ConversationId: ...
 
     async def find_endpoint(self, reference: ConversationRef) -> ChannelEndpointRef | None: ...
+
+    async def find_routing(self, reference: ConversationRef) -> RoutingData | None: ...
 
 
 class InboundMessageRepository(Protocol):

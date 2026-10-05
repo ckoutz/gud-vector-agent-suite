@@ -13,8 +13,10 @@ from gvas.application.intake import (
     CancelIntakeBookingService,
     SendIntakeCustomerEmailService,
     SendIntakeCustomerTextService,
+    SendOwnerEmailService,
 )
 from gvas.application.outbox_service import OutboxService
+from gvas.application.owner_email_replies import OwnerEmailReplyService
 from gvas.application.owner_reply_delivery import (
     DeliverOwnerReplyService,
     OwnerReplyDeliveryStatus,
@@ -68,6 +70,7 @@ from gvas.domain.outbox import (
     OutboxCommand,
     OutboxRecord,
 )
+from gvas.domain.owner_email import OWNER_EMAIL_REPLY_COMMAND_TYPE
 from gvas.domain.plans import PLAN_SET_COPY_COMMAND_TYPE, PlanSetUploadId
 from gvas.domain.ports import PortalLoginEmailPort
 from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE, QUOTE_TEXT_COMMAND_TYPE
@@ -148,7 +151,11 @@ class OutboxCommandDispatcher:
         intake_email: SendIntakeCustomerEmailService | None = None,
         intake_text: SendIntakeCustomerTextService | None = None,
         intake_booking_cancel: CancelIntakeBookingService | None = None,
+        owner_email: SendOwnerEmailService | None = None,
+        owner_email_replies: OwnerEmailReplyService | None = None,
     ) -> None:
+        self._owner_email = owner_email
+        self._owner_email_replies = owner_email_replies
         self._quote_text = quote_text
         self._portal_login_email = portal_login_email
         self._intake_booking = intake_booking
@@ -199,11 +206,15 @@ class OutboxCommandDispatcher:
             return await self._arrange_intake_booking(command)
         if command.command_type == INTAKE_BOOKING_CANCEL_COMMAND_TYPE:
             return await self._cancel_intake_booking(command)
+        if command.command_type == OWNER_NOTICE_EMAIL_COMMAND_TYPE and self._owner_email:
+            return await self._send_owner_email(command)
         if command.command_type in (
             INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
             OWNER_NOTICE_EMAIL_COMMAND_TYPE,
         ):
             return await self._send_intake_email(command)
+        if command.command_type == OWNER_EMAIL_REPLY_COMMAND_TYPE:
+            return await self._process_owner_email_reply(command)
         if command.command_type == INTAKE_CUSTOMER_TEXT_COMMAND_TYPE:
             return await self._send_intake_text(command)
         raise UnknownCommandTypeError(f"no handler is registered for {command.command_type}")
@@ -282,6 +293,17 @@ class OutboxCommandDispatcher:
             raise UnknownCommandTypeError("intake booking cancel is not wired")
         await self._intake_booking_cancel.cancel(command.business_id, _text(command, "event_uri"))
         return DispatchOutcome(command.command_type, "canceled")
+
+    async def _send_owner_email(self, command: OutboxCommand) -> DispatchOutcome:
+        assert self._owner_email is not None
+        await self._owner_email.send(command.business_id, command.payload)
+        return DispatchOutcome(command.command_type, "sent")
+
+    async def _process_owner_email_reply(self, command: OutboxCommand) -> DispatchOutcome:
+        if self._owner_email_replies is None:
+            raise UnknownCommandTypeError("owner e-mail replies are not wired")
+        status = await self._owner_email_replies.process(command.business_id, command.payload)
+        return DispatchOutcome(command.command_type, status.value)
 
     async def _send_intake_email(self, command: OutboxCommand) -> DispatchOutcome:
         if self._intake_email is None:

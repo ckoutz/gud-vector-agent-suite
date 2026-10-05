@@ -34,6 +34,7 @@ waiting on the owner and are not built until answered.
 | Owner dashboard backend: `--owner-email` makes the portal login issue an owner session (separate tables, migration 0020) for `/v1/owner/*` — quotes, customers, subscriptions, booking requests, service requests, settings, and Approve/Decline for quotes and bookings through the same domain transitions as text approvals; a merged calendar of Calendly bookings, pending requests and the owner's read-only private iCal feed (SSRF-guarded, never returned or logged) | this PR |
 | Customer SMS consent: intake requests carry `smsConsent`, stored on the conversation and copied to the customer on the booking request (migration 0018); every customer text (booking confirmation/approval, quote link) is sent only when the customer record says `sms_consent = true`, checked at enqueue and again at send; owner SMS unchanged | this PR |
 | Booked-mode intake: a conversation with a live booking (`awaiting_owner`/`approved`) stays open — the agent still answers from the intake brief with the price guard on, "reschedule" re-offers real slots and files a new request under the same reference (the previous approved event sits in `superseded_booking` custody — cancelled only on approve of the new time, restored on decline), and "cancel my call" closes it with an owner notice + `intake_booking.cancel`. One live booking per conversation keeps scheduling un-spammable. Returning visitors are recognised by the stored conversation id, else by collected e-mail (approved bookings are adopted into the new chat, pending ones refuse reschedule until the owner decides) — never by IP. Owner notification e-mails carry signed one-click approve/decline links (`/v1/intake/booking-decisions/<token>`, HMAC per request+action, 7-day expiry, single-use via the request stamp, GET=confirm page / POST=decide through the same `decide_booking` transition as the channel command); migration 0021 | this PR |
+| Owner notification e-mails: one multipart text+HTML renderer for every owner notice (heading, details, Approve/Decline buttons, muted command footer); discovery notes merged fact-by-fact so reschedules never repeat them; reply-to-decide over Resend receiving (`POST /v1/webhooks/resend`, Svix-verified, svix-id first-writer-wins, signed `owner+<token>@reply.gudvector.com` Reply-To with request stamp, sender = notification/owner e-mail only) feeding the channel-agnostic owner understanding step; decisions through `decide_booking`, confirmation by e-mail plus the usual owner-thread update | this PR |
 
 Follow-ups from the hosted-quote backend (not built): Stripe Connect so each
 business collects into its own account (`businesses.stripe_account_id` is
@@ -48,6 +49,26 @@ Booking path shipped: the Calendly adapter tries direct invitee creation
 (`POST /invitees`, Scheduling API, paid plans) first and falls back to a
 single-use `scheduling_links` URL (`max_event_count=1`) prefilled with the
 customer's name, email and chosen date when the API rejects the write.
+
+## Channel-agnostic owner understanding
+
+`application/owner_understanding.py` (`OwnerMessageUnderstanding`) takes
+normalized owner text plus what the message is about (`OwnerMessageContext`:
+today the booking reference from the thread) and returns one resolved owner
+intent — the same workflow intents and command text the Slack resolver in
+`composition/intents.py` routes — or *unclear* with the question to ask. The
+existing trigger grammar is the fast path; the review model is the fallback
+and may only pick an offered intent or `unclear`. Unclear never acts, and
+anything with side effects outside GVAS keeps asking first. Today only the
+e-mail adapter uses it. To adopt it:
+
+- **Slack**: carry thread context (the notice a reply answers) into
+  `OwnerMessageContext` and call the step before the deterministic resolver,
+  so "yes" under a booking notice works like it does by e-mail.
+- **SMS (Telnyx)**: same, with context from the last notice sent to the owner
+  number; widen `TELNYX` channel policy only for intents the step resolves.
+- **Both**: extend the candidate list beyond booking approve/decline (quote
+  approve/send, calendar blocks) as each workflow gains a context type.
 
 ## In progress
 

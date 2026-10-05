@@ -61,6 +61,7 @@ from gvas.domain.messages import (
     CustomerTextRequest,
     DeliveryReceipt,
 )
+from gvas.domain.ports import OwnerEmailPort
 from gvas.infrastructure.customer_repositories import SqlCustomerRepository
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
 from gvas.infrastructure.intake_repositories import SqlIntakeConversationRepository
@@ -195,6 +196,7 @@ def intake_app(
     customer_email: CustomerDeliveryFake | None = None,
     customer_text: CustomerTextFake | None = None,
     intake_settings: IntakeSettings | None = None,
+    owner_email: OwnerEmailPort | None = None,
 ) -> tuple[Application, OwnerReplyFake]:
     owner = owner_replies or OwnerReplyFake()
     ports = deterministic_ports(owner, TranscriptionFake({}), CustomerDeliveryFake())
@@ -204,6 +206,7 @@ def intake_app(
         availability=availability,
         customer_email=customer_email or CustomerDeliveryFake(),
         customer_text=customer_text,
+        owner_email=owner_email,
     )
     return (
         build_application(
@@ -648,8 +651,12 @@ async def test_booking_request_is_copied_to_the_notification_email(
     subject, body = payload["subject"], payload["body"]
     assert isinstance(subject, str) and isinstance(body, str)
     assert payload["to"] == "owner@example.com"
-    assert subject.startswith("[Test Co] Booking request")
+    assert subject.startswith(f"[Test Co] New booking request #{reference}")
     assert f"approve booking {reference}" in body
+    html = payload["html"]
+    assert isinstance(html, str) and f"New booking request #{reference}" in html
+    assert "max-width:34rem" in html and "<img" not in html.lower()
+    assert "Jane Doe" in html
 
 
 @pytest.mark.asyncio
@@ -1248,6 +1255,24 @@ def test_intake_notes_accumulate_without_repeating() -> None:
         "Plumber, 3 vans; Uses Jobber"
     )
     assert extended.merge(IntakeCollected(notes="vans")).notes == "Plumber, 3 vans; vans"
+    corrected = IntakeCollected(notes="No water damage").merge(
+        IntakeCollected(notes="Water damage")
+    )
+    assert corrected.notes == "No water damage; Water damage"
+
+
+def test_intake_notes_do_not_repeat_the_running_summary_on_reschedule() -> None:
+    summary = "Business: Ace Plumbing. Trade: plumbing, 3 vans. Current tools: paper and Jobber."
+    collected = IntakeCollected(notes=summary)
+    for _ in range(3):
+        collected = collected.merge(IntakeCollected(notes=summary))
+    assert collected.notes == summary
+    grown = collected.merge(IntakeCollected(notes=f"{summary} Wants online booking."))
+    assert grown.notes == f"{summary} Wants online booking."
+    updated = grown.merge(IntakeCollected(notes="Current tools: Jobber only."))
+    assert updated.notes is not None
+    assert updated.notes.count("Current tools") == 1
+    assert "Jobber only" in updated.notes
 
 
 def test_intake_booking_notice_reports_a_missing_address_only_without_a_profile() -> None:

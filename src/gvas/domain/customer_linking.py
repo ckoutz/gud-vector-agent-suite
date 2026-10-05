@@ -13,11 +13,17 @@ from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import IntakeCustomerEmail, owner_notice_email_command
 from gvas.domain.messages import OutboundOwnerMessage, TextPart
 from gvas.domain.outbox import owner_reply_command
+from gvas.domain.owner_email import (
+    OWNER_CHANNEL_FOOTER,
+    OwnerEmailAction,
+    OwnerEmailContent,
+    OwnerEmailThread,
+    owner_notice_content,
+    render_owner_email_html,
+    render_owner_email_text,
+)
 from gvas.domain.quotes import Quote
 from gvas.domain.repositories import UnitOfWork
-
-OWNER_EMAIL_SUBJECT_MAX_CHARS = 78
-OWNER_EMAIL_FOOTER = "Reply in your owner channel to act on this."
 
 
 async def enqueue_quote_owner_notice(
@@ -63,17 +69,19 @@ async def enqueue_intake_owner_notice(
     *,
     correlation_id: str,
     text: str,
-    email_extra_lines: tuple[str, ...] = (),
+    email: OwnerEmailContent | None = None,
+    email_actions: tuple[OwnerEmailAction, ...] = (),
+    email_thread: OwnerEmailThread | None = None,
 ) -> bool:
-    """Queue ``text`` for the owner in their latest channel conversation.
+    """Queue ``text`` for the owner in their latest channel conversation,
+    plus the notification e-mail copy.
 
     Intake conversations start on the web, so there is no owner conversation
-    to inherit — the notice anchors to the business's most recent inbound
-    message, which lands it in the newest owner thread across the connected
-    channels. Idempotent on ``correlation_id``; False when nothing reached
-    the owner — no inbound message to anchor to *and* no notification e-mail.
-    ``email_extra_lines`` are appended to the e-mail copy only (e.g. the
-    one-click decision links), never to the channel thread.
+    to inherit — see ``enqueue_owner_thread_notice``. Idempotent on
+    ``correlation_id``; False when nothing reached the owner — no owner
+    thread to anchor to *and* no notification e-mail. ``email`` (the
+    structured layout), ``email_actions`` (the one-click decision buttons) and
+    ``email_thread`` (reply-by-e-mail routing) shape the e-mail copy only.
     """
 
     emailed = await enqueue_owner_email_copy(
@@ -81,13 +89,29 @@ async def enqueue_intake_owner_notice(
         business_id,
         correlation_id=correlation_id,
         text=text,
-        extra_lines=email_extra_lines,
+        content=email,
+        actions=email_actions,
+        thread=email_thread,
     )
+    threaded = await enqueue_owner_thread_notice(
+        unit_of_work, business_id, correlation_id=correlation_id, text=text
+    )
+    # The e-mail copy alone still lets the owner act (decision links and
+    # replies), so it counts as notified.
+    return threaded or emailed
+
+
+async def enqueue_owner_thread_notice(
+    unit_of_work: UnitOfWork, business_id: BusinessId, *, correlation_id: str, text: str
+) -> bool:
+    """Queue ``text`` in the newest owner thread across the connected chat
+    channels, anchored to the business's most recent inbound message there.
+    Reply-only channels (e-mail) never become the anchor. Idempotent on
+    ``correlation_id``; False when there is no owner thread."""
+
     source = await unit_of_work.inbound_messages.find_latest_for_business(business_id)
     if source is None:
-        # The e-mail copy alone still lets the owner act (decision links), so
-        # it counts as notified.
-        return emailed
+        return False
     existing = await unit_of_work.outbound_messages.find_by_correlation(
         business_id, source.conversation_id, correlation_id
     )
@@ -112,32 +136,39 @@ async def enqueue_owner_email_copy(
     *,
     correlation_id: str,
     text: str,
-    extra_lines: tuple[str, ...] = (),
+    content: OwnerEmailContent | None = None,
+    actions: tuple[OwnerEmailAction, ...] = (),
+    thread: OwnerEmailThread | None = None,
 ) -> bool:
     """Queue a copy of an owner notice to the business's ``notification_email``.
 
-    The channel thread stays the place to act (approve/decline); the e-mail
-    is a second inbox so a notice is never missed — ``extra_lines`` may add
-    e-mail-only affordances like the one-click decision links. Idempotent on
-    ``correlation_id``; False when no notification e-mail is configured.
+    Every notice renders through the one owner e-mail layout (text + HTML);
+    ``content`` is the notice's structured form when it has one, otherwise
+    ``text`` is laid out generically. ``thread`` routes replies back for a
+    decision. Idempotent on ``correlation_id``; False when no notification
+    e-mail is configured.
     """
 
     business = await unit_of_work.businesses.get(business_id)
     if business is None or business.notification_email is None:
         return False
-    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "Notice")
-    subject = first_line[:OWNER_EMAIL_SUBJECT_MAX_CHARS]
-    extras = "\n".join(extra_lines)
-    body = (
-        f"{text}\n\n{extras}\n\n{OWNER_EMAIL_FOOTER}"
-        if extras
-        else f"{text}\n\n{OWNER_EMAIL_FOOTER}"
-    )
+    name = business.display_name or business.name
+    layout = (content or owner_notice_content(text)).model_copy(update={"business_name": name})
+    layout = layout.with_actions(actions, "Each button works once.")
+    if thread is not None:
+        layout = layout.with_footer(
+            "Or just reply to this e-mail: “approve”, or “decline” with a reason."
+        )
+    elif layout.footer is None:
+        layout = layout.with_footer(OWNER_CHANNEL_FOOTER)
     email = IntakeCustomerEmail(
         business_id=business_id,
         to=business.notification_email,
-        subject=f"[{business.display_name or business.name}] {subject}",
-        body=body,
+        subject=layout.email_subject(),
+        body=render_owner_email_text(layout),
+        html=render_owner_email_html(layout),
+        reply_to=thread.reply_to if thread is not None else None,
+        references=(thread.anchor,) if thread is not None else (),
         idempotency_key=f"owner_copy:{business_id}:{correlation_id}",
     )
     await unit_of_work.outbox.enqueue(owner_notice_email_command(email))
@@ -171,6 +202,7 @@ async def link_quote_customer(
 __all__ = [
     "enqueue_intake_owner_notice",
     "enqueue_owner_email_copy",
+    "enqueue_owner_thread_notice",
     "enqueue_quote_owner_notice",
     "link_quote_customer",
 ]
