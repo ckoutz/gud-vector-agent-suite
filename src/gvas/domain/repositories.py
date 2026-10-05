@@ -5,7 +5,7 @@ from typing import Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from gvas.domain.customers import (
     CustomerRepository,
@@ -38,6 +38,7 @@ from gvas.domain.messages import (
     OutboundOwnerMessage,
 )
 from gvas.domain.outbox import OutboxCommand, OutboxRecord
+from gvas.domain.owner import OwnerLoginTokenRepository, OwnerSessionRepository
 from gvas.domain.payments import (
     PaymentEventRepository,
     QuotePaymentRepository,
@@ -106,6 +107,11 @@ class BusinessRecord(BaseModel):
     # Owner inbox that gets a copy of every owner notice raised by the
     # website (booking requests, escalations, service requests, payments).
     notification_email: str | None = None
+    # The address that signs in to the owner dashboard (set by the operator).
+    owner_email: str | None = None
+    # The owner's private calendar subscription link: a credential, read only
+    # by the feed adapter and never returned by any route.
+    calendar_feed_url: str | None = Field(default=None, repr=False)
 
     @field_validator("site_url")
     @classmethod
@@ -212,10 +218,12 @@ class BusinessRepository(Protocol):
         intake_questions: str | None = None,
         intake_opening: str | None = None,
         notification_email: str | None = None,
+        owner_email: str | None = None,
+        calendar_feed_url: str | None = None,
         now: datetime,
     ) -> BusinessRecord:
         """Set hosted-quote and intake-profile fields; ``None`` arguments
-        leave stored values."""
+        leave stored values and an empty ``calendar_feed_url`` clears it."""
         ...
 
 
@@ -333,6 +341,8 @@ class UnitOfWork(Protocol):
     quote_subscriptions: QuoteSubscriptionRepository
     intake_conversations: IntakeConversationRepository
     intake_messages: IntakeMessageRepository
+    owner_login_tokens: OwnerLoginTokenRepository
+    owner_sessions: OwnerSessionRepository
 
     async def __aenter__(self) -> "UnitOfWork": ...
 

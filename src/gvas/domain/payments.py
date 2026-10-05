@@ -334,6 +334,12 @@ class QuoteSubscriptionRepository(Protocol):
         self, business_id: BusinessId, customer_id: CustomerId
     ) -> tuple[QuoteSubscriptionRecord, ...]: ...
 
+    async def list_for_business(
+        self, business_id: BusinessId
+    ) -> tuple[QuoteSubscriptionRecord, ...]:
+        """Newest first."""
+        ...
+
     async def create(self, record: QuoteSubscriptionRecord) -> None:
         """Raises :class:`QuotePaymentConflictError` when the provider
         subscription is already recorded."""

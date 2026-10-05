@@ -204,6 +204,40 @@ class SqlIntakeConversationRepository:
             )
         )
 
+    async def list_booking_requests(
+        self, business_id: BusinessId, *, limit: int
+    ) -> tuple[IntakeConversation, ...]:
+        rows = await self.session.scalars(
+            select(IntakeRow)
+            .where(
+                IntakeRow.business_id == business_id,
+                IntakeRow.state.in_(
+                    (
+                        IntakeState.AWAITING_OWNER.value,
+                        IntakeState.APPROVED.value,
+                        IntakeState.DECLINED.value,
+                    )
+                ),
+            )
+            .order_by(IntakeRow.updated_at.desc())
+            .limit(limit)
+        )
+        return tuple(self._record(row) for row in rows)
+
+    async def list_awaiting_owner(
+        self, business_id: BusinessId, *, limit: int
+    ) -> tuple[IntakeConversation, ...]:
+        rows = await self.session.scalars(
+            select(IntakeRow)
+            .where(
+                IntakeRow.business_id == business_id,
+                IntakeRow.state == IntakeState.AWAITING_OWNER.value,
+            )
+            .order_by(IntakeRow.updated_at.desc())
+            .limit(limit)
+        )
+        return tuple(self._record(row) for row in rows)
+
     async def count_created_since(self, business_id: BusinessId, since: datetime) -> int:
         return int(
             await self.session.scalar(

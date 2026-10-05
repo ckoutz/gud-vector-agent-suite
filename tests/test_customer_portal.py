@@ -398,7 +398,8 @@ async def test_login_token_is_single_use_and_expires(
         first = await http.post("/v1/portal/sessions", json={"token": raw})
         assert first.status_code == 200
         body = first.json()
-        assert set(body) == {"sessionToken", "customer", "business"}
+        assert set(body) == {"sessionToken", "role", "customer", "business"}
+        assert body["role"] == "customer"
         assert body["customer"] == {"displayName": "Jane Doe", "email": EMAIL}
         assert body["business"] == {"displayName": DISPLAY_NAME, "siteUrl": SITE_URL}
         second = await http.post("/v1/portal/sessions", json={"token": raw})
