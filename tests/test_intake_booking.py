@@ -1455,7 +1455,7 @@ async def test_portal_start_answer_reaches_the_customer_immediately(
 
 
 @pytest.mark.asyncio
-async def test_a_no_is_accepted_after_approval_but_a_new_yes_is_not(
+async def test_a_no_is_accepted_after_approval_and_a_new_yes_is_too(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     availability = AvailabilityFake()
@@ -1480,5 +1480,5 @@ async def test_a_no_is_accepted_after_approval_but_a_new_yes_is_not(
     assert (await conversation_row(session_factory, business_id)).sms_consent is False
     assert (await customer_row(session_factory, business_id)).sms_consent is False
     again = await application.intake.record_sms_consent(withdrawn, True)
-    assert again.sms_consent is False
-    assert (await customer_row(session_factory, business_id)).sms_consent is False
+    assert again.sms_consent is True, "a booked chat stays open, so consent can still change"
+    assert (await customer_row(session_factory, business_id)).sms_consent is True

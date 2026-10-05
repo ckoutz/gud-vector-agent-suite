@@ -336,9 +336,14 @@ are shown once.
 
 A thin chat widget on the business's website talks to these routes; GVAS runs
 the agent. Nothing is ever booked here — the customer picks a time, the owner
-approves or declines over Slack/SMS, and the widget polls `state` to show the
-outcome (`collecting` → `proposing_slots` → `awaiting_owner` → `approved` /
-`declined` / `closed`).
+approves or declines over Slack/SMS or the signed links in the notification
+e-mail, and the widget polls `state` to show the outcome (`collecting` →
+`proposing_slots` → `awaiting_owner` → `approved` / `declined` / `closed`).
+A chat with a live booking (`awaiting_owner` or `approved`) stays open: the
+customer can keep asking questions, ask to move the call (a fresh slot offer
+inside the same chat) or cancel it; only `declined` and `closed` are
+terminal. `booking` in every response carries the live booking so a reopened
+chat can name it.
 
 `conversationToken` is 32 random bytes (`secrets.token_urlsafe`), stored only
 as a SHA-256 hash, sent once at creation, used as `Authorization: Bearer
@@ -386,13 +391,16 @@ sent, replaces the stored answer. `200`:
     "problem": "…", "details": "…", "notes": "…"
   },
   "bookingKind": null,
+  "booking": null,
   "smsConsent": true
 }
 ```
 
-`slots` is non-null only while `state` is `proposing_slots` (ISO-8601 with
-offset, business-local; at most 5 real openings across the next 7 business
-days, 60 minutes each). `summary` is null until name, email and `details`
+`slots` is non-null while `state` is `proposing_slots`, and again while the
+customer is picking a new time for a live booking (the state stays
+`awaiting_owner` or `approved`) — same ISO-8601 shape: business-local
+openings, at most 5 across the next 7 business days, 60 minutes each.
+`summary` is null until name, email and `details`
 (what the customer needs) are collected — and, unless the business set its
 own `--intake-questions`, the address too; `problem` mirrors `details` for
 widgets built against the original shape, `notes` holds the answers to the
@@ -401,6 +409,25 @@ not ask for one. `bookingKind` is `booked` once the calendar event
 is confirmed, `link` while the customer's confirmation link is outstanding,
 otherwise null — the widget uses it to tell "approved, check your email" from
 "approved and booked".
+
+`booking` is the live booking when the chat has one, else null:
+
+```json
+{
+  "start": "2026-09-15T09:00:00-07:00",
+  "end": "2026-09-15T10:00:00-07:00",
+  "status": "requested|confirmed",
+  "reference": "ab12cd"
+}
+```
+
+`requested` while the owner is still deciding, `confirmed` once approved —
+the widget greets a returning visitor with it ("you have a call booked for
+…") and labels it pending until `confirmed`.
+
+A reschedule files a *new* request under the same reference: the owner sees
+"Updated booking request" and the chat stays `awaiting_owner`. Approving the
+new time cancels the previously approved event; declining restores it.
 
 The customer picks a time by replying in text (the model maps it) or the
 widget sends `{"message": "slot:<start>"}` with the exact `start` string.
@@ -414,7 +441,8 @@ question at a time and stays under ~60 words. Ambiguous turns escalate: the
 owner gets a transcript summary once.
 
 Errors: `401` missing/invalid/expired token · `404` unknown id · `409`
-conversation decided or expired · `422` empty or over-long message · `429`.
+conversation declined, canceled or expired · `422` empty or over-long
+message · `429`.
 
 ## `GET /v1/intake/conversations/{conversationId}`
 
@@ -427,6 +455,7 @@ Bearer `conversationToken`. `200`:
   "slots": null,
   "summary": null,
   "bookingKind": null,
+  "booking": null,
   "smsConsent": null
 }
 ```
@@ -440,3 +469,28 @@ the public create, but the conversation is linked to the signed-in customer
 and pre-filled with their name/email/phone — the agent skips identity
 questions and only asks about the new service. Takes the same optional
 `{"smsConsent": …}` body; without one the customer's stored answer is kept.
+
+# Owner booking-decision links
+
+The booking-request copy in the owner's notification e-mail carries two
+signed URLs when `GVAS_INTAKE_DECISION_LINK_*` is configured — one per
+action. They need no login and are not for the widget:
+
+## `GET /v1/intake/booking-decisions/{token}`
+
+Renders a minimal HTML confirmation page ("Approve booking #abc123?" plus a
+button). Always `200` — an invalid, expired or stale link renders a page
+saying so, so a mail client's link prefetch can never decide anything.
+
+## `POST /v1/intake/booking-decisions/{token}`
+
+Applies the decision: the same approve/decline transition the owner runs
+with `approve booking <ref>` in their channel, so the customer e-mail/text
+and the owner-thread record are identical. `200` with a result page
+("approved", "already decided", "link for an earlier request", "expired",
+"invalid").
+
+The token is HMAC-signed per request + action, expires after 7 days, and
+only ever acts once — a rescheduled request re-stamps the notice, which
+makes every older link stale. Both routes share the public per-IP rate
+limit.

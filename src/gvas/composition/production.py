@@ -502,6 +502,7 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
             ),
             rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
             intake=application.intake,
+            decision_links=application.intake_decision_links,
         )
     )
     routers.append(

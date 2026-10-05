@@ -58,25 +58,36 @@ async def enqueue_quote_owner_notice(
 
 
 async def enqueue_intake_owner_notice(
-    unit_of_work: UnitOfWork, business_id: BusinessId, *, correlation_id: str, text: str
+    unit_of_work: UnitOfWork,
+    business_id: BusinessId,
+    *,
+    correlation_id: str,
+    text: str,
+    email_extra_lines: tuple[str, ...] = (),
 ) -> bool:
     """Queue ``text`` for the owner in their latest channel conversation.
 
     Intake conversations start on the web, so there is no owner conversation
     to inherit — the notice anchors to the business's most recent inbound
     message, which lands it in the newest owner thread across the connected
-    channels. Idempotent on ``correlation_id``; False when the business has
-    no inbound message to anchor to.
+    channels. Idempotent on ``correlation_id``; False when nothing reached
+    the owner — no inbound message to anchor to *and* no notification e-mail.
+    ``email_extra_lines`` are appended to the e-mail copy only (e.g. the
+    one-click decision links), never to the channel thread.
     """
 
+    emailed = await enqueue_owner_email_copy(
+        unit_of_work,
+        business_id,
+        correlation_id=correlation_id,
+        text=text,
+        extra_lines=email_extra_lines,
+    )
     source = await unit_of_work.inbound_messages.find_latest_for_business(business_id)
     if source is None:
-        # Callers treat a missing thread as "not notified" and roll the
-        # action back, so no copy goes out either.
-        return False
-    await enqueue_owner_email_copy(
-        unit_of_work, business_id, correlation_id=correlation_id, text=text
-    )
+        # The e-mail copy alone still lets the owner act (decision links), so
+        # it counts as notified.
+        return emailed
     existing = await unit_of_work.outbound_messages.find_by_correlation(
         business_id, source.conversation_id, correlation_id
     )
@@ -96,12 +107,18 @@ async def enqueue_intake_owner_notice(
 
 
 async def enqueue_owner_email_copy(
-    unit_of_work: UnitOfWork, business_id: BusinessId, *, correlation_id: str, text: str
+    unit_of_work: UnitOfWork,
+    business_id: BusinessId,
+    *,
+    correlation_id: str,
+    text: str,
+    extra_lines: tuple[str, ...] = (),
 ) -> bool:
     """Queue a copy of an owner notice to the business's ``notification_email``.
 
     The channel thread stays the place to act (approve/decline); the e-mail
-    is a second inbox so a notice is never missed. Idempotent on
+    is a second inbox so a notice is never missed — ``extra_lines`` may add
+    e-mail-only affordances like the one-click decision links. Idempotent on
     ``correlation_id``; False when no notification e-mail is configured.
     """
 
@@ -110,11 +127,17 @@ async def enqueue_owner_email_copy(
         return False
     first_line = next((line.strip() for line in text.splitlines() if line.strip()), "Notice")
     subject = first_line[:OWNER_EMAIL_SUBJECT_MAX_CHARS]
+    extras = "\n".join(extra_lines)
+    body = (
+        f"{text}\n\n{extras}\n\n{OWNER_EMAIL_FOOTER}"
+        if extras
+        else f"{text}\n\n{OWNER_EMAIL_FOOTER}"
+    )
     email = IntakeCustomerEmail(
         business_id=business_id,
         to=business.notification_email,
         subject=f"[{business.display_name or business.name}] {subject}",
-        body=f"{text}\n\n{OWNER_EMAIL_FOOTER}",
+        body=body,
         idempotency_key=f"owner_copy:{business_id}:{correlation_id}",
     )
     await unit_of_work.outbox.enqueue(owner_notice_email_command(email))

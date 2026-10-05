@@ -57,6 +57,10 @@ class IntakeConversation(Base):
     booking_link: Mapped[str | None] = mapped_column(String(2048))
     booking_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     booked_event_uri: Mapped[str | None] = mapped_column(String(2048))
+    # The booking a pending reschedule request replaces; cancelled when the
+    # owner approves the new time, restored when they decline it.
+    superseded_booking: Mapped[dict[str, JsonValue] | None] = mapped_column(json_type)
+    reschedule_offered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     booking_event_type_uri: Mapped[str | None] = mapped_column(String(2048))
     decision_reason: Mapped[str | None] = mapped_column(String(500))
     decision_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

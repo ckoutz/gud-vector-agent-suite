@@ -25,6 +25,7 @@ from gvas.domain.identifiers import (
     ServiceRequestId,
 )
 from gvas.domain.intake import (
+    BOOKING_DECISION_PATH,
     BOOKING_INTENT,
     INTAKE_CHANNEL_WEB,
     INTAKE_CONVERSATION_TTL,
@@ -33,9 +34,15 @@ from gvas.domain.intake import (
     SERVICE_REQUEST_SOURCE_INTAKE,
     AvailabilityError,
     AvailableSlot,
+    BookingDecision,
+    BookingDecisionAction,
+    BookingDecisionLink,
     BookingEventKind,
     BookingKind,
     BookingRequest,
+    ExistingBooking,
+    ExistingBookingStatus,
+    ExpiredDecisionLinkError,
     IntakeAgentError,
     IntakeBookingEvent,
     IntakeCollected,
@@ -46,16 +53,21 @@ from gvas.domain.intake import (
     IntakeProfile,
     IntakeState,
     IntakeTurnRequest,
+    InvalidDecisionLinkError,
     booking_decision,
+    booking_decision_link_token,
     booking_request_notice,
+    cancel_request_notice,
     conversation_token_hash,
     escalation_notice,
     format_slot_label,
+    intake_booking_cancel_command,
     intake_customer_email_command,
     intake_customer_email_request,
     intake_customer_text_command,
     new_conversation_token,
     new_reference,
+    parse_booking_decision_link_token,
     pick_offer_slots,
     scrub_agent_reply,
     slot_confirmed_reply,
@@ -108,6 +120,18 @@ OPENING_REPLY = (
 )
 PORTAL_OPENING_REPLY = "Welcome back! What do you need this time, and where is the property?"
 BOOKING_ABOUT_MAX_CHARS = 120
+RESCHEDULE_OFFER_REPLY = (
+    "Here are the next openings — pick one and I'll send it over for approval. "
+    "Your current time stays until the new one is approved."
+)
+RESCHEDULE_UNAVAILABLE_REPLY = (
+    "I don't have another opening to offer just now — the team will follow up to "
+    "find a new time with you."
+)
+CANCEL_CONFIRMED_REPLY = "Done — your call is canceled and the team has been told."
+SLOT_HELD_REPLY = (
+    "That time is already with the team for approval — we'll confirm by email or text."
+)
 
 
 class IntakeError(ValueError):
@@ -164,6 +188,8 @@ class IntakeService:
         ceiling: UsageCeilingGuard | None = None,
         max_conversations_per_day: int = 50,
         max_user_messages: int = INTAKE_MAX_USER_MESSAGES,
+        decision_link_secret: str = "",
+        decision_link_base_url: str = "",
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
@@ -172,6 +198,8 @@ class IntakeService:
         self._ceiling = ceiling or UsageCeilingGuard()
         self._max_conversations_per_day = max_conversations_per_day
         self._max_user_messages = max_user_messages
+        self._decision_link_secret = decision_link_secret
+        self._decision_link_origin = decision_link_base_url.rstrip("/")
         self._now = now
 
     async def start_conversation(
@@ -409,15 +437,6 @@ class IntakeService:
             return await self._handle_slot_pick(
                 unit_of_work, conversation, picked, now, explicit=True
             )
-        if conversation.state is IntakeState.AWAITING_OWNER:
-            reply = await self._reply(
-                unit_of_work,
-                conversation,
-                "The owner is reviewing your requested time — we'll confirm "
-                "by email/text once approved.",
-                now,
-            )
-            return IntakeReply(conversation, reply, conversation.proposed_slots)
 
         if await self._ceiling.is_reached(
             conversation.business_id, UsageKind.REVIEW_TOKENS, now=now
@@ -429,6 +448,7 @@ class IntakeService:
             conversation.business_id, conversation.conversation_id
         )
         business = await self._business(unit_of_work, conversation.business_id)
+        holder = await self._live_booking_holder(unit_of_work, conversation)
         try:
             turn = await self._agent.turn(
                 IntakeTurnRequest(
@@ -439,6 +459,7 @@ class IntakeService:
                     collected=conversation.collected,
                     offered_slots=conversation.proposed_slots,
                     known_customer=conversation.customer_id is not None,
+                    existing_booking=self._existing_booking(holder),
                     brief=business.intake_profile.brief,
                     questions=business.intake_profile.questions,
                 )
@@ -453,6 +474,12 @@ class IntakeService:
         collected = conversation.collected.merge(turn.collected)
         current = conversation.with_updates(now, collected=collected)
         await unit_of_work.intake_conversations.save(current)
+
+        if holder is not None:
+            if turn.wants_cancel:
+                return await self._cancel_booking(unit_of_work, current, holder, business, now)
+            if turn.wants_reschedule:
+                return await self._offer_reschedule(unit_of_work, current, holder, now)
 
         if turn.needs_human:
             reply_text = f"{scrub_agent_reply(turn.reply)} {ESCALATION_REPLY}"
@@ -469,15 +496,21 @@ class IntakeService:
                     await unit_of_work.intake_conversations.save(current)
             return IntakeReply(current, reply_text, current.proposed_slots)
 
-        if turn.chosen_slot is not None and current.state is IntakeState.PROPOSING_SLOTS:
+        if turn.chosen_slot is not None and (
+            current.state is IntakeState.PROPOSING_SLOTS or current.is_choosing_new_time
+        ):
             return await self._handle_slot_pick(
                 unit_of_work, current, turn.chosen_slot, now, explicit=False
             )
 
-        if turn.ready_for_slots and _ready_for_slots(
-            current.collected,
-            business.intake_profile,
-            known_customer=current.customer_id is not None,
+        if (
+            holder is None
+            and turn.ready_for_slots
+            and _ready_for_slots(
+                current.collected,
+                business.intake_profile,
+                known_customer=current.customer_id is not None,
+            )
         ):
             if current.state is IntakeState.PROPOSING_SLOTS:
                 # A re-offer while slots are on the table: the customer can
@@ -496,11 +529,177 @@ class IntakeService:
         await self._reply(unit_of_work, current, reply_text, now)
         return IntakeReply(current, reply_text, current.proposed_slots)
 
+    async def _live_booking_holder(
+        self, unit_of_work: UnitOfWork, conversation: IntakeConversation
+    ) -> IntakeConversation | None:
+        """The conversation holding this visitor's live booking, if any.
+
+        The visitor's own conversation counts; otherwise a live booking under
+        the same collected e-mail — the identifier the owner approved against
+        — does, which is how a returning visitor is recognised without their
+        stored conversation id.
+        """
+
+        if conversation.has_live_booking:
+            return conversation
+        email = conversation.collected.email
+        if not email:
+            return None
+        other = await unit_of_work.intake_conversations.lock_latest_by_invitee_email(
+            conversation.business_id, email
+        )
+        if (
+            other is None
+            or other.conversation_id == conversation.conversation_id
+            or not other.has_live_booking
+        ):
+            return None
+        return other
+
+    @staticmethod
+    def _existing_booking(holder: IntakeConversation | None) -> ExistingBooking | None:
+        if holder is None or holder.requested_slot_start is None:
+            return None
+        status = (
+            ExistingBookingStatus.REQUESTED
+            if holder.state is IntakeState.AWAITING_OWNER
+            else ExistingBookingStatus.CONFIRMED
+        )
+        return ExistingBooking(
+            status=status, slot_label=format_slot_label(holder.requested_slot_start)
+        )
+
+    async def _cancel_booking(
+        self,
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        holder: IntakeConversation,
+        business: BusinessRecord,
+        now: datetime,
+    ) -> IntakeReply:
+        """The customer drops their own call — no owner approval needed; the
+        owner hears about it and any calendar event is cancelled."""
+
+        notified = await enqueue_intake_owner_notice(
+            unit_of_work,
+            holder.business_id,
+            correlation_id=f"intake_cancel:{holder.conversation_id}",
+            text=cancel_request_notice(
+                holder, business_name=business.display_name or business.name
+            ),
+        )
+        if not notified:
+            logger.warning(
+                "customer cancel for booking %s stored without an owner notice",
+                holder.reference,
+            )
+        if holder.booked_event_uri:
+            await unit_of_work.outbox.enqueue(intake_booking_cancel_command(holder))
+        # The caller may have already copied the conversation (``with_updates``
+        # merge), so same-chat is decided by id, not object identity.
+        same_chat = holder.conversation_id == conversation.conversation_id
+        closed = (conversation if same_chat else holder).with_updates(now, state=IntakeState.CLOSED)
+        await unit_of_work.intake_conversations.save(closed)
+        reply = await self._reply(unit_of_work, conversation, CANCEL_CONFIRMED_REPLY, now)
+        return IntakeReply(closed if same_chat else conversation, reply, ())
+
+    async def _offer_reschedule(
+        self,
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        holder: IntakeConversation,
+        now: datetime,
+    ) -> IntakeReply:
+        """Offer new times while the current booking stays in force.
+
+        A pending request is simply re-picked inside its own conversation; an
+        approved booking in another conversation is adopted here first, so the
+        new request carries custody of the old event.
+        """
+
+        if holder.conversation_id != conversation.conversation_id:
+            if holder.state is IntakeState.APPROVED:
+                conversation = await self._adopt_booking(unit_of_work, conversation, holder, now)
+            else:
+                reply = await self._reply(
+                    unit_of_work,
+                    conversation,
+                    "Your requested time is still waiting on approval — once it's "
+                    "confirmed you can move it, or I can cancel it now.",
+                    now,
+                )
+                return IntakeReply(conversation, reply, ())
+        offered = await self._offer_slots(unit_of_work, conversation, now, keep_booked=True)
+        if offered is None:
+            reply = await self._reply(unit_of_work, conversation, RESCHEDULE_UNAVAILABLE_REPLY, now)
+            return IntakeReply(conversation, reply, ())
+        reply = await self._reply(unit_of_work, offered, RESCHEDULE_OFFER_REPLY, now)
+        return IntakeReply(offered, reply, offered.proposed_slots)
+
+    async def _adopt_booking(
+        self,
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        holder: IntakeConversation,
+        now: datetime,
+    ) -> IntakeConversation:
+        """Move an approved booking from a previous conversation into this one
+        (same customer e-mail); the old chat closes."""
+
+        adopted = conversation.with_updates(
+            now,
+            state=IntakeState.APPROVED,
+            requested_slot_start=holder.requested_slot_start,
+            requested_slot_end=holder.requested_slot_end,
+            booking_kind=holder.booking_kind,
+            booking_link=holder.booking_link,
+            booking_attempted_at=holder.booking_attempted_at,
+            booked_event_uri=holder.booked_event_uri,
+            booking_event_type_uri=holder.booking_event_type_uri,
+            decision_at=holder.decision_at,
+        )
+        closed_holder = holder.with_updates(
+            now,
+            state=IntakeState.CLOSED,
+            # The event now belongs to the new conversation; clearing the uri
+            # keeps a late cancellation webhook from re-closing this row into
+            # a misleading state.
+            booked_event_uri=None,
+            superseded_booking=None,
+            reschedule_offered_at=None,
+        )
+        await unit_of_work.intake_conversations.save(closed_holder)
+        await unit_of_work.intake_conversations.save(adopted)
+        return adopted
+
+    def _decision_link_lines(self, conversation: IntakeConversation) -> tuple[str, ...]:
+        """The approve/decline URLs appended to the owner e-mail copy; empty
+        when no signing secret/base URL is configured. Minted only once
+        ``owner_notified_at`` is set on the conversation passed in."""
+
+        if not self._decision_link_secret or not self._decision_link_origin:
+            return ()
+        links = []
+        for action, verb in (
+            (BookingDecisionAction.APPROVE, "Approve"),
+            (BookingDecisionAction.DECLINE, "Decline"),
+        ):
+            token = booking_decision_link_token(
+                self._decision_link_secret,
+                conversation=conversation,
+                action=action,
+                now=self._now(),
+            )
+            links.append(f"{verb}: {self._decision_link_origin}{BOOKING_DECISION_PATH}{token}")
+        return ("Or decide from this e-mail — each link works once:", *links)
+
     async def _offer_slots(
         self,
         unit_of_work: UnitOfWork,
         conversation: IntakeConversation,
         now: datetime,
+        *,
+        keep_booked: bool = False,
     ) -> IntakeConversation | None:
         if self._availability is None:
             return None
@@ -516,9 +715,15 @@ class IntakeService:
         offered = pick_offer_slots(tuple(openings), now=now)
         if not offered:
             return None
-        updated = conversation.with_updates(
-            now, state=IntakeState.PROPOSING_SLOTS, proposed_slots=offered
-        )
+        if keep_booked:
+            # Reschedule: the booking stands while new times are on the table.
+            updated = conversation.with_updates(
+                now, proposed_slots=offered, reschedule_offered_at=now
+            )
+        else:
+            updated = conversation.with_updates(
+                now, state=IntakeState.PROPOSING_SLOTS, proposed_slots=offered
+            )
         await unit_of_work.intake_conversations.save(updated)
         return updated
 
@@ -531,12 +736,18 @@ class IntakeService:
         *,
         explicit: bool,
     ) -> IntakeReply:
-        if conversation.state is not IntakeState.PROPOSING_SLOTS:
+        choosing = (
+            conversation.state is IntakeState.PROPOSING_SLOTS or conversation.is_choosing_new_time
+        )
+        if not choosing:
             reply = await self._reply(unit_of_work, conversation, SLOT_NOT_OFFERED_REPLY, now)
             return IntakeReply(conversation, reply, conversation.proposed_slots)
         slot = conversation.find_proposed_slot(start)
         if slot is None:
             reply = await self._reply(unit_of_work, conversation, SLOT_NOT_OFFERED_REPLY, now)
+            return IntakeReply(conversation, reply, conversation.proposed_slots)
+        if conversation.is_choosing_new_time and conversation.requested_slot_start == slot.start:
+            reply = await self._reply(unit_of_work, conversation, SLOT_HELD_REPLY, now)
             return IntakeReply(conversation, reply, conversation.proposed_slots)
 
         collected = conversation.collected
@@ -557,23 +768,52 @@ class IntakeService:
                 conversation.sms_consent,
                 conversation.sms_consent_at or now,
             )
+        superseded = conversation.booking_snapshot()
+        previous_label: str | None = None
+        if superseded is not None:
+            previous_label = superseded.slot_label
+        elif (
+            conversation.state is IntakeState.AWAITING_OWNER
+            and conversation.requested_slot_start is not None
+        ):
+            previous_label = format_slot_label(conversation.requested_slot_start)
         updated = conversation.with_updates(
             now,
             state=IntakeState.AWAITING_OWNER,
             customer_id=customer_id,
             requested_slot_start=slot.start,
             requested_slot_end=slot.end,
+            # Custody of the previous booking moves into ``superseded`` — it
+            # stays on the calendar until the owner approves the new time.
+            superseded_booking=superseded,
+            reschedule_offered_at=None,
+            booking_kind=None,
+            booking_link=None,
+            booking_attempted_at=None,
+            booked_event_uri=None,
+            booking_event_type_uri=None,
+            decision_at=None,
+            decision_reason=None,
+            owner_notified_at=now,
         )
         business = await self._business(unit_of_work, conversation.business_id)
+        correlation_id = f"intake_request:{conversation.conversation_id}"
+        if conversation.owner_notified_at is not None:
+            # A second request from one conversation needs a fresh id or the
+            # notice/email copies dedup against the first request's send.
+            correlation_id = f"{correlation_id}:{int(now.timestamp())}"
         notified = await enqueue_intake_owner_notice(
             unit_of_work,
             conversation.business_id,
-            correlation_id=f"intake_request:{conversation.conversation_id}",
+            correlation_id=correlation_id,
             text=booking_request_notice(
                 updated,
                 business_name=business.display_name or business.name,
                 profile=business.intake_profile,
+                previous_label=previous_label,
+                previous_booked=superseded is not None,
             ),
+            email_extra_lines=self._decision_link_lines(updated),
         )
         if not notified:
             # There is no owner thread to deliver the decision request to:
@@ -599,7 +839,6 @@ class IntakeService:
                     created_at=now,
                 )
             )
-        updated = updated.with_updates(now, owner_notified_at=now)
         await unit_of_work.intake_conversations.save(updated)
         reply = slot_confirmed_reply(slot)
         await self._append(unit_of_work, updated, IntakeMessageRole.AGENT, reply, now)
@@ -716,7 +955,10 @@ class ArrangeIntakeBookingService:
                 link = result.link or ""
                 body = f"{business_name} approved {slot_label}{about}. Confirm your spot: {link}"
                 subject = "Confirm your appointment"
-            key_base = f"intake_booking:{conversation.conversation_id}"
+            # The decision stamp keeps re-bookings (reschedule approved
+            # again) from deduping against the first request's e-mail/text.
+            stamp = conversation.decision_at or conversation.booking_attempted_at or now
+            key_base = f"intake_booking:{conversation.conversation_id}:{int(stamp.timestamp())}"
             await unit_of_work.outbox.enqueue(
                 intake_customer_email_command(
                     IntakeCustomerEmail(
@@ -795,7 +1037,8 @@ class BookingDecisionHandler:
     """``approve booking <ref>`` / ``decline booking <ref> [reason]``.
 
     Tenant-scoped by the business of the owner's message; the transition
-    itself is shared with the owner dashboard (``decide_booking``).
+    itself is shared with the dashboard and the e-mail links
+    (``decide_booking``).
     """
 
     intent = BOOKING_INTENT
@@ -930,9 +1173,13 @@ class IntakeBookingEventService:
         self,
         unit_of_work_factory: UnitOfWorkFactory,
         *,
+        decision_link_secret: str = "",
+        decision_link_origin: str = "",
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
+        self._decision_link_secret = decision_link_secret
+        self._decision_link_origin = decision_link_origin
         self._now = now
 
     async def handle(self, event: IntakeBookingEvent) -> IntakeBookingEventOutcome:
@@ -941,17 +1188,27 @@ class IntakeBookingEventService:
             if conversation is None:
                 return IntakeBookingEventOutcome(IntakeBookingEventResult.IGNORED)
             recorded = conversation.booked_event_uri
+            superseded = conversation.superseded_booking
+            superseded_uri = None if superseded is None else superseded.event_uri
+            now = self._now()
             if event.kind is BookingEventKind.CREATED:
-                if recorded is not None:
+                if recorded is not None or event.event_uri == superseded_uri:
                     # Redelivery or a second event for the same request:
                     # overwriting the recorded URI could orphan the event a
-                    # decline is meant to cancel.
+                    # decline is meant to cancel. A superseded event's
+                    # redelivery is likewise not this request's booking.
                     return IntakeBookingEventOutcome(IntakeBookingEventResult.IGNORED)
             elif recorded != event.event_uri:
+                if event.event_uri == superseded_uri:
+                    # The customer (or Calendly) cancelled the old event
+                    # while the reschedule is pending — drop the snapshot's
+                    # event so an approve doesn't cancel it a second time.
+                    result = await self._superseded_canceled(unit_of_work, conversation, now)
+                    await unit_of_work.commit()
+                    return IntakeBookingEventOutcome(result)
                 # A cancellation only closes the request when it names the
                 # event we already recorded — others are not ours to act on.
                 return IntakeBookingEventOutcome(IntakeBookingEventResult.IGNORED)
-            now = self._now()
             if event.kind is BookingEventKind.CANCELED:
                 result = await self._canceled(unit_of_work, conversation, event, now)
             else:
@@ -1018,6 +1275,7 @@ class IntakeBookingEventService:
                 now,
                 booked_event_uri=event.event_uri,
                 booking_kind=BookingKind.BOOKED.value,
+                reschedule_offered_at=None,
             )
             if conversation.state is IntakeState.APPROVED and not already_booked:
                 await self._notify(
@@ -1050,6 +1308,11 @@ class IntakeBookingEventService:
             booked_event_uri=event.event_uri,
             decision_at=None,
             decision_reason=None,
+            # The event that landed becomes the request; anything it replaced
+            # is still cancelled only on approve. Re-stamping ``owner_notified_at``
+            # makes decision links minted for the earlier request stale.
+            reschedule_offered_at=None,
+            owner_notified_at=now,
         )
         await self._notify(
             unit_of_work,
@@ -1062,9 +1325,25 @@ class IntakeBookingEventService:
                 f"{original}. Reply `approve booking {conversation.reference}` "
                 f"to keep it or `decline booking {conversation.reference} <reason>` to cancel."
             ),
+            email_extra_lines=self._decision_link_lines(updated),
         )
         await unit_of_work.intake_conversations.save(updated)
         return IntakeBookingEventResult.REROUTED
+
+    async def _superseded_canceled(
+        self,
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        now: datetime,
+    ) -> IntakeBookingEventResult:
+        superseded = conversation.superseded_booking
+        if superseded is not None and superseded.event_uri:
+            updated = conversation.with_updates(
+                now,
+                superseded_booking=superseded.model_copy(update={"event_uri": None}),
+            )
+            await unit_of_work.intake_conversations.save(updated)
+        return IntakeBookingEventResult.CANCELED
 
     async def _canceled(
         self,
@@ -1073,6 +1352,37 @@ class IntakeBookingEventService:
         event: IntakeBookingEvent,
         now: datetime,
     ) -> IntakeBookingEventResult:
+        superseded = conversation.superseded_booking
+        if superseded is not None and superseded.event_uri:
+            # The new event died on the calendar while the owner was still
+            # deciding: the old booking goes back in force.
+            updated = conversation.with_updates(
+                now,
+                state=IntakeState.APPROVED,
+                requested_slot_start=superseded.slot_start,
+                requested_slot_end=superseded.slot_end,
+                booked_event_uri=superseded.event_uri,
+                booking_kind=superseded.booking_kind,
+                booking_link=superseded.booking_link,
+                booking_attempted_at=superseded.booking_attempted_at,
+                booking_event_type_uri=superseded.booking_event_type_uri,
+                superseded_booking=None,
+                decision_at=None,
+                decision_reason=None,
+            )
+            await self._notify(
+                unit_of_work,
+                conversation,
+                event,
+                text=(
+                    f"Booking {conversation.reference} — the new "
+                    f"{format_slot_label(event.start)} event was canceled on "
+                    f"Calendly; the original {superseded.slot_label} booking "
+                    "still stands."
+                ),
+            )
+            await unit_of_work.intake_conversations.save(updated)
+            return IntakeBookingEventResult.CANCELED
         updated = conversation.with_updates(
             now, state=IntakeState.CLOSED, booked_event_uri=event.event_uri
         )
@@ -1088,6 +1398,26 @@ class IntakeBookingEventService:
         await unit_of_work.intake_conversations.save(updated)
         return IntakeBookingEventResult.CANCELED
 
+    def _decision_link_lines(self, conversation: IntakeConversation) -> tuple[str, ...]:
+        """Same e-mail links as the intake chat mints, kept here so a webhook
+        re-route's notice offers them too; empty when links are not configured."""
+
+        if not self._decision_link_secret or not self._decision_link_origin:
+            return ()
+        links = []
+        for action, verb in (
+            (BookingDecisionAction.APPROVE, "Approve"),
+            (BookingDecisionAction.DECLINE, "Decline"),
+        ):
+            token = booking_decision_link_token(
+                self._decision_link_secret,
+                conversation=conversation,
+                action=action,
+                now=self._now(),
+            )
+            links.append(f"{verb}: {self._decision_link_origin}{BOOKING_DECISION_PATH}{token}")
+        return ("Or decide from this e-mail — each link works once:", *links)
+
     async def _notify(
         self,
         unit_of_work: UnitOfWork,
@@ -1095,18 +1425,170 @@ class IntakeBookingEventService:
         event: IntakeBookingEvent,
         *,
         text: str,
+        email_extra_lines: tuple[str, ...] = (),
     ) -> None:
         notified = await enqueue_intake_owner_notice(
             unit_of_work,
             conversation.business_id,
             correlation_id=f"intake_booking_event:{event.kind.value}:{event.event_uri}",
             text=text,
+            email_extra_lines=email_extra_lines,
         )
         if not notified:
             logger.warning(
                 "booking event for request %s stored without an owner notice",
                 conversation.reference,
             )
+
+
+class DecisionLinkPage(StrEnum):
+    """The page a booking-decision link renders."""
+
+    CONFIRM = "confirm"
+    APPLIED = "applied"
+    ALREADY_DECIDED = "already_decided"
+    STALE = "stale"
+    EXPIRED = "expired"
+    INVALID = "invalid"
+
+
+@dataclass(frozen=True)
+class DecisionLinkView:
+    """What the public decision endpoint renders: a confirmation form, or a
+    result line after the decision ran (or could not)."""
+
+    page: DecisionLinkPage
+    title: str
+    body: str
+    action: BookingDecisionAction | None = None
+
+
+class IntakeDecisionLinkService:
+    """The signed approve/decline links in the owner notification e-mail.
+
+    A GET only previews (``CONFIRM``) so a mail client's prefetch never acts;
+    the POST runs the shared ``decide_booking`` transition, so the customer
+    e-mail/text and any follow-up are identical to the channel command. The
+    token carries the stamp of the request it was minted for: a link for a
+    request that was rescheduled, decided or superseded can never act again.
+    """
+
+    def __init__(
+        self,
+        unit_of_work_factory: UnitOfWorkFactory,
+        *,
+        secret: str,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._secret = secret
+        self._now = now
+
+    async def preview(self, token: str) -> DecisionLinkView:
+        resolved = await self._resolve(token)
+        if isinstance(resolved, DecisionLinkView):
+            return resolved
+        link, conversation = resolved
+        verb = "Approve" if link.action is BookingDecisionAction.APPROVE else "Decline"
+        name = conversation.collected.name or "the customer"
+        slot = (
+            format_slot_label(conversation.requested_slot_start)
+            if conversation.requested_slot_start is not None
+            else "the requested time"
+        )
+        return DecisionLinkView(
+            page=DecisionLinkPage.CONFIRM,
+            title=f"{verb} booking #{conversation.reference}?",
+            body=(
+                f"{name} is asking for {slot}. This link works once; the "
+                "customer is told the outcome the same way as a channel reply."
+            ),
+            action=link.action,
+        )
+
+    async def decide(self, token: str) -> DecisionLinkView:
+        resolved = await self._resolve(token)
+        if isinstance(resolved, DecisionLinkView):
+            return resolved
+        link, _conversation = resolved
+        decision = BookingDecision(reference=link.reference, action=link.action, reason=None)
+        async with self._unit_of_work_factory() as unit_of_work:
+            outcome = await decide_booking(
+                unit_of_work,
+                link.business_id,
+                decision,
+                self._now(),
+                request_epoch=link.request_epoch,
+            )
+            if outcome.applied:
+                # Parity with the channel command, which replies in the owner
+                # thread: record the decision there too (and on the
+                # notification e-mail), so the e-mail link leaves a trail.
+                await enqueue_intake_owner_notice(
+                    unit_of_work,
+                    link.business_id,
+                    correlation_id=(f"intake_decided:{link.conversation_id}:{link.request_epoch}"),
+                    text=outcome.text,
+                )
+                await unit_of_work.commit()
+        if outcome.applied:
+            done = (
+                "approved — the customer is being notified"
+                if link.action is BookingDecisionAction.APPROVE
+                else "declined — the customer is being notified"
+            )
+            return DecisionLinkView(
+                page=DecisionLinkPage.APPLIED,
+                title=f"Booking {done}",
+                body=outcome.text,
+            )
+        return DecisionLinkView(
+            page=DecisionLinkPage.ALREADY_DECIDED,
+            title="This request was already decided",
+            body=outcome.text,
+        )
+
+    async def _resolve(
+        self, token: str
+    ) -> tuple[BookingDecisionLink, IntakeConversation] | DecisionLinkView:
+        try:
+            link = parse_booking_decision_link_token(self._secret, token, now=self._now())
+        except ExpiredDecisionLinkError:
+            return DecisionLinkView(
+                page=DecisionLinkPage.EXPIRED,
+                title="This link has expired",
+                body="Use your owner channel to approve or decline the booking.",
+            )
+        except (InvalidDecisionLinkError, ValueError):
+            return DecisionLinkView(
+                page=DecisionLinkPage.INVALID,
+                title="This link isn't valid",
+                body="Check the link was copied in full, or decide in your owner channel.",
+            )
+        async with self._unit_of_work_factory() as unit_of_work:
+            conversation = await unit_of_work.intake_conversations.lock_by_reference(
+                link.business_id, link.reference
+            )
+            if (
+                conversation is None
+                or conversation.conversation_id != link.conversation_id
+                or not link.matches_request(conversation)
+            ):
+                return DecisionLinkView(
+                    page=DecisionLinkPage.STALE,
+                    title="This link is for an earlier request",
+                    body=(
+                        "The request was updated since this e-mail — use the "
+                        "newest booking e-mail's link."
+                    ),
+                )
+            if conversation.state is not IntakeState.AWAITING_OWNER:
+                return DecisionLinkView(
+                    page=DecisionLinkPage.ALREADY_DECIDED,
+                    title="This request was already decided",
+                    body=f"Booking {link.reference} is no longer waiting on a decision.",
+                )
+            return link, conversation
 
 
 class CancelIntakeBookingService:

@@ -223,6 +223,63 @@ The response's `resource.signing_key` becomes `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY
 A subscription is per Calendly user — repeat per business's user (or use
 `scope: "organization"` for all users in the org).
 
+### Booked-mode chat: reschedule, cancel and returning visitors
+
+A conversation no longer closes once it has a live booking — `awaiting_owner`
+and `approved` keep the chat open so the customer can keep asking about the
+business (same intake brief, same never-quote-prices guard, same caps) while
+exactly one booking stays live per conversation:
+
+- **Reschedule** — asking to move the call re-offers real Calendly openings
+  without leaving the booked state (`reschedule_offered_at` marks the
+  re-offer; the booking stands if the customer never picks). Picking a new
+  time files a fresh booking request under the same reference ("Updated
+  booking request" to the owner); the previous approved event moves into
+  `superseded_booking` custody and is cancelled only when the owner approves
+  the new time — a decline restores it as `approved` and tells the customer
+  their original time stands. A pending (still `awaiting_owner`) request is
+  simply re-picked — nothing on the calendar yet, no custody needed.
+- **Cancel** — "cancel my call" closes the conversation, tells the owner and
+  enqueues `intake_booking.cancel` for the recorded event. No owner approval
+  is needed to cancel your own call.
+- **Returning visitors** — the widget keeps the conversation id in browser
+  storage, so a reopened chat shows the booking it holds. Without it, the
+  collected e-mail is the identifier: a new conversation whose visitor e-mail
+  matches a live booking sees it (`existing_booking` in the agent request),
+  an `approved` booking is adopted into the new chat (the old one closes,
+  custody of the event moves) and a still-pending request can be cancelled
+  but not rescheduled until the owner decides. No IP addresses — shared
+  networks would leak one visitor's booking to another.
+- **Webhooks** — a `canceled` event for the pending reschedule's replacement
+  puts the superseded booking back in force; a cancellation naming the
+  superseded event just clears its recorded URI so an approve cannot cancel
+  it twice. Approving the new time cancels the superseded event the same way
+  the first booking's cancel works — which is why the flow also works on a
+  free Calendly plan: the new request's single-use scheduling link is minted
+  on approve exactly like the original's.
+- **Migration**: `0021_intake_reschedule_custody` adds the nullable
+  `superseded_booking` JSON and `reschedule_offered_at` columns to
+  `intake_conversations` (`down_revision` `0019`; another open change takes
+  `0020` — merge whichever lands second onto it).
+
+### Owner approve/decline links in the notification e-mail
+
+With `GVAS_INTAKE_DECISION_LINK_SECRET` and
+`GVAS_INTAKE_DECISION_LINK_BASE_URL` (the public origin of the web service)
+both set, every booking-request copy to the business's `notification_email`
+appends signed `Approve:` and `Decline:` URLs
+(`/v1/intake/booking-decisions/<token>`). The token is HMAC-SHA256 of a
+compact body naming the business, conversation, reference, action and the
+request stamp; links expire after 7 days and only ever act once — the stamp
+makes every link for a superseded request stale, and a decided request is no
+longer `awaiting_owner`. A `GET` renders a plain confirmation page (a mail
+client's prefetcher can never decide); the `POST` runs the same
+`decide_booking` transition as `approve booking <ref>` in the owner channel,
+so the customer e-mail/text and the owner-thread record are identical. Leave
+the pair unset to keep the e-mail informational only. The secret is minted
+per environment (e.g. `openssl rand -hex 32`) and never appears in the
+e-mail body, the page output, or logs.
+
 `GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY`
 (default 50) and `GVAS_INTAKE_MAX_MESSAGES_PER_CONVERSATION` (default 30) cap
 intake churn per business; `0` disables each cap. Model calls also consume
@@ -282,9 +339,11 @@ undoes the other, and owner failure notices stay sanitized.
   --notification-email info@example.com` makes GVAS e-mail (via Resend) a
   copy of every website-originated owner notice — booking requests,
   escalations, portal service requests, quote accepted/paid — to that inbox,
-  in addition to the owner channel thread. Decisions (`approve booking …`)
-  are still taken in the channel; `--clear-notification-email` turns it off.
-  Failed copies raise an `owner_notice.email` dead-letter notice in the channel.
+  in addition to the owner channel thread. Booking-request copies also carry
+  the signed approve/decline links when `GVAS_INTAKE_DECISION_LINK_*` is set
+  (see the intake section), so a decision can be made straight from the
+  e-mail; `--clear-notification-email` turns it off. Failed copies raise an
+  `owner_notice.email` dead-letter notice in the channel.
 - **Owner dashboard login**: `gvas-configure-business --business-id <uuid>
   --owner-email owner@example.com` lets that address sign in on the portal
   login page and land on the owner dashboard (migration 0020). Without it
@@ -445,6 +504,8 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_PUBLIC_RATE_LIMIT_PER_MINUTE` | Default 120; per-IP limit on the public claim-token, booking and intake routes |
 | `GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY` | Default 50 per business per UTC day; `0` is unlimited |
 | `GVAS_INTAKE_MAX_MESSAGES_PER_CONVERSATION` | Default 30 customer messages; `0` is unlimited |
+| `GVAS_INTAKE_DECISION_LINK_SECRET` | Optional set with the base URL; HMAC key for the owner e-mail approve/decline links — never sent anywhere |
+| `GVAS_INTAKE_DECISION_LINK_BASE_URL` | Optional set; public origin of the web service the links point at (e.g. `https://<gvas-host>`) |
 | `GVAS_CALENDLY_TOKEN` | Optional set; personal access token, bearer header only |
 | `GVAS_CALENDLY_INSTALLATIONS` | Optional set; `business_uuid=https://api.calendly.com/users/<uuid>` |
 | `GVAS_CALENDLY_API_BASE_URL`, `GVAS_CALENDLY_API_TIMEOUT_SECONDS`, `GVAS_CALENDLY_PAGE_SIZE` | Defaults suffice |
