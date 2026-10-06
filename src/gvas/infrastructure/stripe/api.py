@@ -18,6 +18,7 @@ carry the status code only.
 import logging
 from datetime import UTC, datetime
 from typing import Final
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -144,6 +145,14 @@ class StripeCheckout:
                 if parsed.expires_at is not None
                 else None
             ),
+        )
+
+    async def expire_checkout(self, session_id: str) -> None:
+        await self._post(
+            f"{CHECKOUT_SESSIONS_PATH}/{quote(session_id, safe='')}/expire",
+            {},
+            idempotency_key=None,
+            what="checkout session expiry",
         )
 
     async def create_customer(self, request: BillingCustomerRequest) -> BillingCustomerResult:

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from uuid import UUID
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -355,6 +356,49 @@ class SqlPaymentLedgerRepository:
                 return payment
         flagged = payment.model_copy(update={"duplicate": True})
         return flagged if await self._insert(flagged) else None
+
+    async def list_for_quote(
+        self, business_id: BusinessId, quote_id: QuoteId
+    ) -> tuple[LedgerPayment, ...]:
+        rows = await self.session.scalars(
+            select(LedgerPaymentRow)
+            .where(
+                LedgerPaymentRow.business_id == business_id,
+                LedgerPaymentRow.quote_id == quote_id,
+            )
+            .order_by(LedgerPaymentRow.paid_at, LedgerPaymentRow.id)
+        )
+        return tuple(self._payment(row) for row in rows)
+
+    async def void_manual(
+        self, business_id: BusinessId, payment_id: UUID, *, by: str, at: datetime
+    ) -> bool:
+        voided = await self.session.scalar(
+            update(LedgerPaymentRow)
+            .where(
+                LedgerPaymentRow.id == payment_id,
+                LedgerPaymentRow.business_id == business_id,
+                LedgerPaymentRow.source == PaymentSource.MANUAL.value,
+                LedgerPaymentRow.voided_at.is_(None),
+            )
+            .values(voided_at=at, voided_by=by)
+            .returning(LedgerPaymentRow.id)
+            .execution_options(synchronize_session="fetch")
+        )
+        return voided is not None
+
+    async def mark_duplicate(
+        self, business_id: BusinessId, payment_id: UUID, duplicate: bool
+    ) -> None:
+        await self.session.execute(
+            update(LedgerPaymentRow)
+            .where(
+                LedgerPaymentRow.id == payment_id,
+                LedgerPaymentRow.business_id == business_id,
+            )
+            .values(duplicate=duplicate)
+            .execution_options(synchronize_session="fetch")
+        )
 
     async def list_for_business(
         self, business_id: BusinessId, *, since: datetime | None = None

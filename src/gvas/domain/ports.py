@@ -96,6 +96,10 @@ class PaymentCheckoutPort(Protocol):
 
     async def create_checkout(self, request: PaymentCheckoutRequest) -> PaymentCheckoutResult: ...
 
+    async def expire_checkout(self, session_id: str) -> None:
+        """Close an open session so it can no longer be paid."""
+        ...
+
 
 class BillingAccountPort(Protocol):
     """Provider-side customers and the self-service billing portal.

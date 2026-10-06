@@ -441,6 +441,23 @@ class PaymentLedgerRepository(Protocol):
         """Newest first by ``paid_at``."""
         ...
 
+    async def list_for_quote(
+        self, business_id: BusinessId, quote_id: QuoteId
+    ) -> tuple[LedgerPayment, ...]:
+        """Oldest first by ``paid_at``."""
+        ...
+
+    async def void_manual(
+        self, business_id: BusinessId, payment_id: UUID, *, by: str, at: datetime
+    ) -> bool:
+        """Void a manual payment that is not already voided; ``False`` when
+        there is none (Stripe payments are never voided here)."""
+        ...
+
+    async def mark_duplicate(
+        self, business_id: BusinessId, payment_id: UUID, duplicate: bool
+    ) -> None: ...
+
 
 def months_for(interval: BillingInterval | None) -> int | None:
     if interval is None:
@@ -459,6 +476,17 @@ def month_totals(payments: Iterable[LedgerPayment], zone: tzinfo, now: datetime)
         if payment.counts and (local.year, local.month) == (current.year, current.month):
             totals[payment.currency] = totals.get(payment.currency, 0) + payment.amount_minor
     return totals
+
+
+def first_counted(payments: Iterable[LedgerPayment]) -> dict[QuoteId, LedgerPayment]:
+    """Each quote's earliest counted payment: when, and how, it was paid."""
+
+    counted: dict[QuoteId, LedgerPayment] = {}
+    for payment in payments:
+        current = counted.get(payment.quote_id)
+        if payment.counts and (current is None or payment.paid_at < current.paid_at):
+            counted[payment.quote_id] = payment
+    return counted
 
 
 def first_paid_at(payments: Iterable[LedgerPayment]) -> dict[QuoteId, datetime]:

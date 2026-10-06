@@ -308,6 +308,7 @@ def build_application(
         unit_of_work_factory,
         booked_events=ports.booked_events,
         calendar_feed=ports.calendar_feed,
+        checkout=ports.payment_checkout,
         now=now,
     )
     router = WorkflowRouter(
