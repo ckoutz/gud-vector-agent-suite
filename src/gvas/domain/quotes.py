@@ -486,16 +486,22 @@ class Quote(QuoteModel):
             }
         )
 
-    def undo_customer_payment(self, now: datetime) -> "Quote":
-        """The owner voided the payment that settled the quote: it is
-        accepted and unpaid again."""
+    def undo_customer_payment(
+        self,
+        now: datetime,
+        back_to: CustomerQuoteStatus | None = CustomerQuoteStatus.ACCEPTED,
+    ) -> "Quote":
+        """The owner voided the payment that settled the quote: it is unpaid
+        again, back where the customer had left it (accepted by default)."""
 
         self._require_claimable()
         if self.customer_status is not CustomerQuoteStatus.PAID:
             return self
+        if back_to in {CustomerQuoteStatus.PAID, CustomerQuoteStatus.DECLINED}:
+            raise InvalidQuoteTransitionError(f"an unpaid quote cannot be {back_to}")
         return self.model_copy(
             update={
-                "customer_status": CustomerQuoteStatus.ACCEPTED,
+                "customer_status": back_to,
                 "updated_at": now,
                 "version": self.version + 1,
             }

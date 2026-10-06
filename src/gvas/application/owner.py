@@ -11,6 +11,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from typing import Literal
 from uuid import uuid4
 
 from gvas.domain.customers import (
@@ -375,8 +376,8 @@ class OwnerService:
         method: PaymentMethod,
         note: str | None = None,
     ) -> Quote:
-        """Record a check, cash or other payment for the full amount of an
-        accepted one-off quote. The ledger keeps one active payment per
+        """Record a check, cash or other payment for the full amount of a
+        sent one-off quote, accepted or not. The ledger keeps one active payment per
         quote, an open card checkout is closed, and the customer is e-mailed
         a short receipt."""
 
@@ -397,8 +398,14 @@ class OwnerService:
                 raise OwnerConflictError("Only one-off quotes can be marked paid.")
             if quote.customer_status is CustomerQuoteStatus.PAID:
                 raise OwnerConflictError("This quote is already paid.")
-            if quote.customer_status is not CustomerQuoteStatus.ACCEPTED:
-                raise OwnerConflictError("Only accepted quotes can be marked paid.")
+            if quote.customer_status is CustomerQuoteStatus.DECLINED:
+                raise OwnerConflictError("The customer declined this quote.")
+            # Approved quotes are claimable before delivery runs; until then
+            # only a customer who has seen it makes it payable.
+            if not quote.is_claimable() or (
+                quote.customer_status is None and quote.status is QuoteStatus.APPROVED
+            ):
+                raise OwnerConflictError("Only quotes sent to the customer can be marked paid.")
             payment_id = uuid4()
             recorded = await unit_of_work.payments.record(
                 LedgerPayment(
@@ -416,6 +423,7 @@ class OwnerService:
                     recorded_by=context.session.email,
                     recorded_at=now,
                     note=note,
+                    customer_status_before=_status_before(quote.customer_status),
                 )
             )
             if recorded is None or recorded.duplicate:
@@ -500,7 +508,9 @@ class OwnerService:
                 )
                 updated = quote
             else:
-                updated = quote.undo_customer_payment(now)
+                updated = quote.undo_customer_payment(
+                    now, _status_after_undo(manual.customer_status_before)
+                )
                 try:
                     await unit_of_work.quotes.save(updated, expected_version=quote.version)
                 except QuoteConcurrencyError as error:
@@ -613,3 +623,22 @@ __all__ = [
     "ServiceRequestView",
     "SettingsUpdate",
 ]
+
+
+def _status_before(status: CustomerQuoteStatus | None) -> Literal["sent", "viewed", "accepted"]:
+    if status is CustomerQuoteStatus.VIEWED:
+        return "viewed"
+    if status is CustomerQuoteStatus.ACCEPTED:
+        return "accepted"
+    return "sent"
+
+
+def _status_after_undo(
+    before: Literal["sent", "viewed", "accepted"] | None,
+) -> CustomerQuoteStatus | None:
+    # Rows recorded before this was kept were all on accepted quotes.
+    if before == "sent":
+        return None
+    if before == "viewed":
+        return CustomerQuoteStatus.VIEWED
+    return CustomerQuoteStatus.ACCEPTED

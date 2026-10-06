@@ -135,6 +135,7 @@ class LedgerPaymentRow(Base):
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     note: Mapped[str | None] = mapped_column(String(500))
     voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    customer_status_before: Mapped[str | None] = mapped_column(String(20))
     voided_by: Mapped[str | None] = mapped_column(String(320))
     duplicate: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
