@@ -125,6 +125,7 @@ class _StripeObject(BaseModel):
     parent: _StripeParent | None = None
     billing_reason: str | None = None
     amount_paid: int | None = None
+    amount_total: int | None = None
     amount_due: int | None = None
     currency: str | None = None
     lines: _StripeInvoiceLines | None = None
@@ -191,6 +192,7 @@ def parse_checkout_event(body: bytes) -> PaymentWebhookEvent:
         metadata=record.metadata,
         subscription=subscription,
         occurred_at=_timestamp(parsed.created),
+        collected_minor=record.amount_total if parsed.type in PAYMENT_SUCCEEDED_EVENTS else None,
     )
 
 

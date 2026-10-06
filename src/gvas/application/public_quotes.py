@@ -443,26 +443,34 @@ class PublicQuoteService:
                 await unit_of_work.commit()
                 return True
             draft = quote.draft
-            await unit_of_work.payments.record(
-                LedgerPayment(
-                    payment_id=uuid4(),
-                    business_id=payment.business_id,
-                    quote_id=payment.quote_id,
-                    kind=PaymentKind.ONE_OFF if event.subscription is None else PaymentKind.PLAN,
-                    source=PaymentSource.STRIPE,
-                    method=PaymentMethod.CARD,
-                    reference=payment.checkout_session_id,
-                    amount_minor=payment.amount_minor,
-                    currency=payment.currency,
-                    paid_at=event.occurred_at or now,
-                    months_covered=(
-                        None
-                        if event.subscription is None or draft is None
-                        else months_for(draft.interval)
-                    ),
-                    recorded_at=now,
-                )
+            collected = (
+                payment.amount_minor if event.collected_minor is None else event.collected_minor
             )
+            if collected > 0:
+                # A zero-charge checkout (e.g. a full discount) settles the
+                # quote but collected no money, so it adds nothing to the ledger.
+                await unit_of_work.payments.record(
+                    LedgerPayment(
+                        payment_id=uuid4(),
+                        business_id=payment.business_id,
+                        quote_id=payment.quote_id,
+                        kind=(
+                            PaymentKind.ONE_OFF if event.subscription is None else PaymentKind.PLAN
+                        ),
+                        source=PaymentSource.STRIPE,
+                        method=PaymentMethod.CARD,
+                        reference=payment.checkout_session_id,
+                        amount_minor=collected,
+                        currency=payment.currency,
+                        paid_at=event.occurred_at or now,
+                        months_covered=(
+                            None
+                            if event.subscription is None or draft is None
+                            else months_for(draft.interval)
+                        ),
+                        recorded_at=now,
+                    )
+                )
             paid = quote.record_customer_payment(now)
             if event.subscription is not None:
                 paid, _ = await link_quote_customer(unit_of_work, paid, now)

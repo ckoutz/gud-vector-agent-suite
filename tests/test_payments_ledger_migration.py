@@ -53,6 +53,23 @@ def _checkout(business_id: UUID, quote_id: UUID, session_id: str, status: str, a
     )
 
 
+def _subscription(business_id: UUID, quote_id: UUID, ref: str, interval: str, at: datetime) -> Any:
+    return sa.text(
+        "INSERT INTO quote_subscriptions (id, business_id, quote_id, customer_id, provider, "
+        "stripe_subscription_id, status, interval, amount_cents, currency, "
+        "cancel_at_period_end, created_at, updated_at) VALUES (:id, :business, :quote, "
+        ":customer, 'stripe', :ref, 'active', :interval, 25000, 'USD', false, :at, :at)"
+    ).bindparams(
+        id=uuid4(),
+        business=business_id,
+        quote=quote_id,
+        customer=uuid4(),
+        ref=f"{ref}-{business_id}",
+        interval=interval,
+        at=at,
+    )
+
+
 def test_settled_checkouts_are_filled_into_the_ledger(monkeypatch: pytest.MonkeyPatch) -> None:
     database_url = os.getenv("GVAS_TEST_DATABASE_URL")
     if database_url is None:
@@ -76,15 +93,8 @@ def test_settled_checkouts_are_filled_into_the_ledger(monkeypatch: pytest.Monkey
                     _checkout(business_id, one_off, "cs_again", "paid", NOW + timedelta(hours=1)),
                     _checkout(business_id, one_off, "cs_open", "open", NOW),
                     _checkout(business_id, plan, "cs_plan", "paid", NOW),
-                    sa.text(
-                        "INSERT INTO quote_subscriptions (id, business_id, quote_id, "
-                        "customer_id, provider, stripe_subscription_id, status, interval, "
-                        "amount_cents, currency, cancel_at_period_end, created_at, updated_at) "
-                        "VALUES (:id, :business, :quote, :customer, 'stripe', 'sub_1', "
-                        "'active', 'year', 25000, 'USD', false, :now, :now)"
-                    ).bindparams(
-                        id=uuid4(), business=business_id, quote=plan, customer=uuid4(), now=NOW
-                    ),
+                    _subscription(business_id, plan, "sub_old", "month", NOW - timedelta(days=60)),
+                    _subscription(business_id, plan, "sub_new", "year", NOW),
                 ],
             )
         )

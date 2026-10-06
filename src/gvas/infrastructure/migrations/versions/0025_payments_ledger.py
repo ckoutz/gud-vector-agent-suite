@@ -59,16 +59,25 @@ def upgrade() -> None:
             amount_cents, currency, paid_at, months_covered, recorded_at, duplicate
         )
         SELECT
-            qp.id, qp.business_id, qp.quote_id,
-            CASE WHEN s.id IS NULL THEN 'one_off' ELSE 'plan' END,
-            'stripe', 'card', qp.checkout_session_id,
-            qp.amount_cents, UPPER(qp.currency), qp.updated_at,
-            CASE WHEN s.id IS NULL THEN NULL WHEN s.interval = 'year' THEN 12 ELSE 1 END,
-            qp.updated_at, false
-        FROM quote_payments qp
-        LEFT JOIN quote_subscriptions s
-            ON s.business_id = qp.business_id AND s.quote_id = qp.quote_id
-        WHERE qp.status = 'paid'
+            id, business_id, quote_id,
+            CASE WHEN plan_interval IS NULL THEN 'one_off' ELSE 'plan' END,
+            'stripe', 'card', checkout_session_id,
+            amount_cents, UPPER(currency), updated_at,
+            CASE WHEN plan_interval IS NULL THEN NULL
+                WHEN plan_interval = 'year' THEN 12 ELSE 1 END,
+            updated_at, false
+        FROM (
+            SELECT qp.*, (
+                -- A quote can have had more than one subscription; the latest
+                -- one decides the interval, and each checkout stays one row.
+                SELECT s.interval FROM quote_subscriptions s
+                WHERE s.business_id = qp.business_id AND s.quote_id = qp.quote_id
+                ORDER BY s.created_at DESC, s.id
+                LIMIT 1
+            ) AS plan_interval
+            FROM quote_payments qp
+            WHERE qp.status = 'paid'
+        ) paid
         """
     )
     # A quote paid through two checkouts keeps both rows; only the first counts.

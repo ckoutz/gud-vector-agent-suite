@@ -156,6 +156,9 @@ class PaymentWebhookEvent(PaymentModel):
     subscription: SubscriptionEventData | None = None
     #: When the provider says it happened (its settle time for a payment).
     occurred_at: datetime | None = None
+    #: What a completed checkout actually collected, in minor units; zero
+    #: when nothing was charged (e.g. a full discount).
+    collected_minor: int | None = Field(default=None, ge=0)
 
 
 class QuotePaymentRecord(PaymentModel):

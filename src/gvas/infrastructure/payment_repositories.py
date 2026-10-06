@@ -334,7 +334,25 @@ class SqlPaymentLedgerRepository:
         if known is not None or payment.kind is not PaymentKind.ONE_OFF or payment.duplicate:
             return None
         # The quote already has an active payment: keep the money on record
-        # for the owner to refund, but never count it twice.
+        # for the owner to refund, but never count it twice. The one that
+        # settled first counts, whichever webhook arrived first.
+        active = await self.session.scalar(
+            select(LedgerPaymentRow)
+            .where(
+                LedgerPaymentRow.business_id == payment.business_id,
+                LedgerPaymentRow.quote_id == payment.quote_id,
+                LedgerPaymentRow.kind == PaymentKind.ONE_OFF.value,
+                LedgerPaymentRow.voided_at.is_(None),
+                LedgerPaymentRow.duplicate.is_(False),
+            )
+            .with_for_update()
+        )
+        if active is not None and payment.paid_at < _aware(active.paid_at):
+            async with self.session.begin_nested():
+                active.duplicate = True
+                await self.session.flush()
+            if await self._insert(payment):
+                return payment
         flagged = payment.model_copy(update={"duplicate": True})
         return flagged if await self._insert(flagged) else None
 

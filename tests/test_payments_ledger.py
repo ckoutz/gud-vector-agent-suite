@@ -262,3 +262,53 @@ async def test_each_plan_renewal_invoice_is_one_ledger_row_on_its_settle_day(
         1,
     )
     assert all(p.source is PaymentSource.STRIPE and p.counts for p in payments)
+
+
+@pytest.mark.asyncio
+async def test_the_payment_that_settled_first_counts_even_when_its_webhook_comes_last(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await hosted_quote(session_factory, checkout=CheckoutFake())
+    business_id, quote_id = await _quote_of(session_factory)
+    later = SETTLED + timedelta(days=40)
+    async with session_factory() as session:
+        ledger = SqlPaymentLedgerRepository(session)
+        arrived_first = await ledger.record(
+            _payment(business_id, quote_id, reference="late-settle", paid_at=later)
+        )
+        arrived_last = await ledger.record(
+            _payment(business_id, quote_id, reference="early-settle", paid_at=SETTLED)
+        )
+        await session.commit()
+        payments = await ledger.list_for_business(business_id)
+
+    assert arrived_first is not None and arrived_last is not None
+    assert not arrived_last.duplicate
+    by_reference = {p.reference: p for p in payments}
+    assert by_reference["early-settle"].counts
+    assert by_reference["late-settle"].duplicate
+    assert month_totals(payments, UTC, SETTLED) == {"USD": 25_000}
+    assert month_totals(payments, UTC, later) == {}
+
+
+@pytest.mark.parametrize(("collected", "expected"), [(0, None), (20_000, 20_000)])
+@pytest.mark.asyncio
+async def test_the_ledger_records_what_the_checkout_actually_collected(
+    session_factory: async_sessionmaker[AsyncSession], collected: int, expected: int | None
+) -> None:
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=CheckoutFake())
+    body = json.loads(_event(payment_status="paid" if collected else "no_payment_required"))
+    body["data"]["object"]["amount_total"] = collected
+    raw = json.dumps(body).encode()
+    async with public_client(application, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 200
+        response = await client.post(
+            "/webhooks/stripe", content=raw, headers={SIGNATURE_HEADER: sign(raw)}
+        )
+        assert response.status_code == 200
+
+    async with session_factory() as session:
+        rows = (await session.scalars(select(LedgerPaymentRow))).all()
+        quote = await session.scalar(select(QuoteRecord))
+    assert [row.amount_cents for row in rows] == ([] if expected is None else [expected])
+    assert quote is not None and quote.customer_status == "paid"
