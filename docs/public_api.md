@@ -494,38 +494,3 @@ The token is HMAC-signed per request + action, expires after 7 days, and
 only ever acts once — a rescheduled request re-stamps the notice, which
 makes every older link stale. Both routes share the public per-IP rate
 limit.
-
-# Owner e-mail replies
-
-## `POST /v1/webhooks/resend` (Resend → GVAS, not for the frontend)
-
-Mounted when `GVAS_RESEND_WEBHOOK_SECRET` and `GVAS_INTAKE_OWNER_REPLY_DOMAIN`
-are set. Resend's `email.received` event (subscribed in the Resend
-dashboard) is verified with the Svix headers `svix-id`, `svix-timestamp` and
-`svix-signature` (HMAC-SHA256 over `id.timestamp.body` with the `whsec_`
-secret, any listed `v1` signature, 5-minute tolerance); a bad or stale
-signature is `401`. Other event types are answered `200`
-`{"status": "ignored"}`.
-
-The event carries metadata only, so GVAS fetches the message with
-`GET /emails/receiving/{email_id}` (`503` when Resend is unreachable, so it
-retries). The reply is then:
-
-- **deduplicated** on `svix-id` (first writer wins in the provider-event
-  ledger; replays answer `{"status": "duplicate"}`);
-- **scoped** to one business by the signed `owner+<token>@<reply domain>`
-  recipient, falling back to the token in `In-Reply-To`/`References`; mail
-  without a verifying token is rejected, even from the owner;
-- **authorized**: the sender must be that business's `notification_email` or
-  `owner_email` with a DMARC pass (aligned SPF/DKIM) — otherwise
-  `{"status": "rejected"}` and no reply is sent;
-- **stripped** of the quoted original and signature, then queued as an owner
-  message (`{"status": "accepted"}`).
-
-The worker runs the channel-agnostic owner understanding step on the text
-with the booking as context: owner commands and short replies resolve
-deterministically, anything else asks the review model for approve / decline
-/ unclear. Decisions run `decide_booking` (stale request stamps refused) and
-the answer — confirmation, "which one?" question or "that request changed"
-— is e-mailed back in the same thread; the owner thread gets its usual
-update.

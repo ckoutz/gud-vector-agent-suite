@@ -851,9 +851,8 @@ def intake_booking_arrange_command(
 class IntakeCustomerEmail(IntakeModel):
     """A plain customer-facing email the worker can send verbatim.
 
-    Owner notices also carry an ``html`` part and, for booking requests,
-    reply routing (``reply_to``) and thread ``references``; customer e-mails
-    leave them unset.
+    Owner notices also carry an ``html`` part; customer e-mails leave it
+    unset.
     """
 
     business_id: BusinessId
@@ -862,8 +861,6 @@ class IntakeCustomerEmail(IntakeModel):
     body: str = Field(min_length=1)
     idempotency_key: str = Field(min_length=1)
     html: str | None = None
-    reply_to: str | None = None
-    references: tuple[str, ...] = ()
 
 
 def intake_customer_email_command(email: IntakeCustomerEmail) -> OutboxCommand:
@@ -906,8 +903,6 @@ def intake_customer_email_request(
     if not all(isinstance(value, str) and value for value in fields.values()):
         raise ValueError("intake email command payload is incomplete")
     html = payload.get("html")
-    reply_to = payload.get("reply_to")
-    references = payload.get("references")
     return IntakeCustomerEmail(
         business_id=business_id,
         to=str(fields["to"]),
@@ -915,12 +910,6 @@ def intake_customer_email_request(
         body=str(fields["body"]),
         idempotency_key=str(fields["idempotency_key"]),
         html=html if isinstance(html, str) and html else None,
-        reply_to=reply_to if isinstance(reply_to, str) and reply_to else None,
-        references=(
-            tuple(item for item in references if isinstance(item, str) and item)
-            if isinstance(references, list)
-            else ()
-        ),
     )
 
 
@@ -936,8 +925,6 @@ def intake_owner_email_request(
         subject=email.subject,
         text=email.body,
         html=email.html,
-        reply_to=email.reply_to,
-        references=email.references,
         idempotency_key=email.idempotency_key,
     )
 
@@ -951,10 +938,6 @@ def _email_payload(email: IntakeCustomerEmail) -> dict[str, JsonValue]:
     }
     if email.html:
         payload["html"] = email.html
-    if email.reply_to:
-        payload["reply_to"] = email.reply_to
-    if email.references:
-        payload["references"] = list(email.references)
     return payload
 
 

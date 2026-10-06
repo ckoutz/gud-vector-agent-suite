@@ -1,42 +1,15 @@
-"""Owner notice e-mail rendering, reply tokens and inbound normalization."""
-
-import base64
-import hashlib
-import hmac
-import json
-from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+"""Owner notice e-mail rendering."""
 
 import pytest
 
-from gvas.domain.identifiers import BusinessId, IntakeConversationId
 from gvas.domain.owner_email import (
     OwnerEmailAction,
     OwnerEmailContent,
     OwnerEmailDetail,
-    OwnerEmailRequest,
     owner_notice_content,
-    owner_reply_thread,
-    owner_reply_token,
-    owner_reply_tokens,
-    parse_owner_reply_token,
     render_owner_email_html,
     render_owner_email_text,
-    reply_subject,
-    strip_quoted_reply,
 )
-from gvas.infrastructure.resend import ResendReceivedEmail
-from gvas.infrastructure.resend_inbound import (
-    ResendSignatureError,
-    SvixWebhookVerifier,
-    normalize_received_email,
-)
-
-REPLY_KEY = "reply-signing-key"
-DOMAIN = "reply.example.test"
-WEBHOOK_KEY = b"resend-webhook-test-key"
-WEBHOOK_SECRET = "whsec_" + base64.b64encode(WEBHOOK_KEY).decode()
-NOW = datetime(2026, 10, 5, 21, 0, tzinfo=UTC)
 
 
 def sample_content() -> OwnerEmailContent:
@@ -92,115 +65,3 @@ def test_channel_notice_text_becomes_structured_content() -> None:
     assert content.intro == "Jane Doe asked for a human."
     assert content.details == (OwnerEmailDetail(label="Phone", value="+15555550100"),)
     assert content.commands
-
-
-def test_reply_token_round_trips_and_binds_the_request() -> None:
-    business_id, conversation_id = BusinessId(uuid4()), IntakeConversationId(uuid4())
-    epoch = int(NOW.timestamp())
-    token = owner_reply_token(
-        REPLY_KEY,
-        business_id=business_id,
-        conversation_id=conversation_id,
-        reference="65e7b537",
-        request_epoch=epoch,
-    )
-    assert str(business_id) not in token and str(conversation_id) not in token
-    thread = owner_reply_thread(token, DOMAIN)
-    assert thread.reply_to == f"owner+{token}@{DOMAIN}"
-    parsed = parse_owner_reply_token(token)
-    assert parsed is not None and parsed.request_epoch == epoch
-    assert parsed.verifies(REPLY_KEY, business_id=business_id, conversation_id=conversation_id)
-    assert not parsed.verifies("other", business_id=business_id, conversation_id=conversation_id)
-    assert not parsed.verifies(
-        REPLY_KEY, business_id=BusinessId(uuid4()), conversation_id=conversation_id
-    )
-    found = owner_reply_tokens([f"Owner <{thread.reply_to.upper()}>", thread.anchor], DOMAIN)
-    assert found == (parsed,)
-    assert owner_reply_tokens([f"owner+{token}@evil.example"], DOMAIN) == ()
-
-
-def test_quoted_original_and_signatures_are_stripped() -> None:
-    body = (
-        "Can't make it, out of town that week\n\n"
-        "On Mon, Oct 5, 2026 at 2:52 PM Güd Vector <quotes@gudvector.com>\nwrote:\n"
-        "> New booking request #65e7b537\n"
-    )
-    assert strip_quoted_reply(body) == "Can't make it, out of town that week"
-    assert strip_quoted_reply("yes\n--\nCameron\nGüd Vector") == "yes"
-    assert strip_quoted_reply("ok\n\nSent from my iPhone") == "ok"
-    assert reply_subject("New booking request") == "Re: New booking request"
-    assert reply_subject("RE: x") == "RE: x"
-
-
-def test_owner_email_request_carries_thread_headers() -> None:
-    request = OwnerEmailRequest(
-        business_id=BusinessId(uuid4()),
-        to="owner@example.com",
-        subject="Re: x",
-        text="Approved.",
-        in_reply_to="<a@x>",
-        references=("<t@reply>", "<a@x>"),
-        idempotency_key="k",
-    )
-    assert request.headers() == {"In-Reply-To": "<a@x>", "References": "<t@reply> <a@x>"}
-
-
-def signed(body: bytes, message_id: str, at: datetime, key: bytes = WEBHOOK_KEY) -> dict[str, str]:
-    timestamp = str(int(at.timestamp()))
-    digest = hmac.new(key, f"{message_id}.{timestamp}.".encode() + body, hashlib.sha256)
-    return {
-        "svix-id": message_id,
-        "svix-timestamp": timestamp,
-        "svix-signature": f"v1,bogus v1,{base64.b64encode(digest.digest()).decode()}",
-    }
-
-
-def test_svix_signature_is_verified_with_freshness() -> None:
-    verifier = SvixWebhookVerifier(WEBHOOK_SECRET, clock=lambda: NOW)
-    body = json.dumps({"type": "email.received"}).encode()
-    assert verifier.verify(body, signed(body, "msg_1", NOW)) == "msg_1"
-    with pytest.raises(ResendSignatureError):
-        verifier.verify(body + b" ", signed(body, "msg_1", NOW))
-    with pytest.raises(ResendSignatureError):
-        verifier.verify(body, signed(body, "msg_1", NOW - timedelta(minutes=10)))
-    with pytest.raises(ResendSignatureError):
-        verifier.verify(body, signed(body, "msg_1", NOW, key=b"other"))
-    with pytest.raises(ResendSignatureError):
-        verifier.verify(body, {})
-
-
-def test_received_email_is_normalized_with_authentication_verdict() -> None:
-    received = ResendReceivedEmail.model_validate(
-        {
-            "id": "rcv-1",
-            "from": "Cameron <Info@GudVector.com>",
-            "to": ["owner+abcd-1-00@reply.example.test"],
-            "subject": "Re: New booking request",
-            "text": None,
-            "html": "<div>Yes&nbsp;please</div><blockquote>old</blockquote>",
-            "message_id": "<m1@mail>",
-            "headers": {"In-Reply-To": "<r@resend>", "References": "<t@reply> <r@resend>"},
-            "authentication": {"spf": "pass", "dkim": "pass", "dmarc": "pass"},
-        }
-    )
-    email = normalize_received_email(received, event_id="msg_1", now=NOW)
-    assert email is not None
-    assert email.sender == "info@gudvector.com"
-    assert email.sender_authenticated
-    assert email.references == ("<r@resend>", "<t@reply>")
-    assert email.text.startswith("Yes")
-    assert "old" not in email.text
-    spoofed = received.model_copy(
-        update={"authentication": received.authentication.model_copy(update={"dmarc": "fail"})}
-        if received.authentication
-        else {}
-    )
-    spoofed_email = normalize_received_email(spoofed, event_id="msg_2", now=NOW)
-    assert spoofed_email is not None and not spoofed_email.sender_authenticated
-    unaligned = received.model_copy(
-        update={"authentication": received.authentication.model_copy(update={"dmarc": "none"})}
-        if received.authentication
-        else {}
-    )
-    unaligned_email = normalize_received_email(unaligned, event_id="msg_3", now=NOW)
-    assert unaligned_email is not None and not unaligned_email.sender_authenticated

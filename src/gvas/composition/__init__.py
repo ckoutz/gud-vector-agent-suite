@@ -35,9 +35,7 @@ from gvas.application.intake import (
 )
 from gvas.application.outbox_service import OutboxService
 from gvas.application.owner import OwnerService
-from gvas.application.owner_email_replies import OwnerEmailReplyService
 from gvas.application.owner_reply_delivery import DeliverOwnerReplyService
-from gvas.application.owner_understanding import OwnerMessageUnderstanding
 from gvas.application.plan_custody import (
     CopyPlanSetIntoCustodyService,
     RegisterPlanSetUploadService,
@@ -70,10 +68,7 @@ from gvas.composition.report_publication import (
 from gvas.composition.review import CoordinateFieldNoteReviewService
 from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.config import IntakeSettings, Settings
-from gvas.domain.calendar_blocks import CALENDAR_BLOCK_INTENT
 from gvas.domain.completeness import CompletenessReviewPort
-from gvas.domain.intake import BOOKING_INTENT
-from gvas.domain.owner_email import OWNER_EMAIL_SOURCE_NAMESPACE, OWNER_EMAIL_UNSUPPORTED_REPLY
 from gvas.domain.ports import (
     AppointmentLookupPort,
     AttachmentAccessPort,
@@ -88,7 +83,6 @@ from gvas.domain.ports import (
     IntentResolutionPort,
     ObjectStoragePort,
     OwnerEmailPort,
-    OwnerIntentInterpreterPort,
     OwnerReplyPort,
     PaymentCheckoutPort,
     PortalLoginEmailPort,
@@ -160,12 +154,9 @@ class ApplicationPorts:
     # Owner-requested blocks of time (``unavailable 8-12``) on the booking
     # calendar; absent means the owner is told blocking isn't set up.
     schedule_blocks: ScheduleBlockPort | None = None
-    # Owner notices as text + HTML with reply routing; absent means they go
-    # out text-only through ``customer_email``.
+    # Owner notices as text + HTML; absent means they go out text-only
+    # through ``customer_email``.
     owner_email: OwnerEmailPort | None = None
-    # Review-model fallback of the owner understanding step; absent means
-    # anything the grammar doesn't match is answered with a question.
-    owner_intent_interpreter: OwnerIntentInterpreterPort | None = None
 
 
 @dataclass(frozen=True)
@@ -210,8 +201,6 @@ class Application:
     outbox: OutboxService
     dispatcher: OutboxCommandDispatcher
     worker: OutboxWorker
-    # Wired only when owner reply-by-e-mail is configured.
-    owner_email_replies: OwnerEmailReplyService | None = None
 
 
 def _utcnow() -> datetime:
@@ -280,20 +269,11 @@ def build_application(
         ports.quote_drafting,
         appointment_lookup=ports.appointment_lookup,
     )
-    booking_handler = BookingDecisionHandler(
-        unit_of_work_factory,
-        mirrored_namespaces=frozenset({OWNER_EMAIL_SOURCE_NAMESPACE}),
-        now=now,
-    )
+    booking_handler = BookingDecisionHandler(unit_of_work_factory, now=now)
     calendar_block_handler = CalendarBlockHandler(
         unit_of_work_factory, ports.schedule_blocks, now=now
     )
     resolved_intake_settings = intake_settings or IntakeSettings()
-    owner_reply_domain = (
-        resolved_intake_settings.owner_reply_domain
-        if resolved_intake_settings.owner_replies_enabled
-        else ""
-    )
     intake_service = (
         IntakeService(
             unit_of_work_factory,
@@ -304,7 +284,6 @@ def build_application(
             max_user_messages=resolved_intake_settings.max_messages_per_conversation,
             decision_link_secret=resolved_intake_settings.decision_link_secret,
             decision_link_base_url=resolved_intake_settings.decision_link_base_url,
-            owner_reply_domain=owner_reply_domain,
             now=now,
         )
         if ports.intake_agent is not None
@@ -331,13 +310,6 @@ def build_application(
         calendar_feed=ports.calendar_feed,
         now=now,
     )
-    # Owner e-mail replies may only decide bookings and block time.
-    owner_email_policy = ChannelWorkflowPolicy(
-        source_namespace=OWNER_EMAIL_SOURCE_NAMESPACE,
-        allowed_intents=frozenset({BOOKING_INTENT, CALENDAR_BLOCK_INTENT}),
-        unsupported_reply=OWNER_EMAIL_UNSUPPORTED_REPLY,
-    )
-    channel_policies = (*ports.channel_policies, owner_email_policy)
     router = WorkflowRouter(
         [
             quote_handler,
@@ -346,7 +318,7 @@ def build_application(
             field_note_handler,
             WorkflowConflictHandler(),
             UnmatchedMessageHandler(),
-            *(ChannelUnsupportedMessageHandler(policy) for policy in channel_policies),
+            *(ChannelUnsupportedMessageHandler(policy) for policy in ports.channel_policies),
         ]
     )
 
@@ -356,23 +328,10 @@ def build_application(
         field_note_unit_of_work_factory,
         unit_of_work_factory,
     )
-    resolver = ChannelScopedIntentResolver(resolver, channel_policies, unit_of_work_factory)
-    owner_email_replies = (
-        OwnerEmailReplyService(
-            unit_of_work_factory,
-            OwnerMessageUnderstanding(
-                unit_of_work_factory,
-                ports.owner_intent_interpreter,
-                ceilings=ceiling_guard,
-                now=now,
-            ),
-            secret=resolved_intake_settings.decision_link_secret,
-            reply_domain=owner_reply_domain,
-            now=now,
+    if ports.channel_policies:
+        resolver = ChannelScopedIntentResolver(
+            resolver, ports.channel_policies, unit_of_work_factory
         )
-        if owner_reply_domain
-        else None
-    )
 
     transcripts = FieldNoteTranscriptService(field_note_unit_of_work_factory)
     template_resolver = TemplateResolver(completeness_unit_of_work_factory)
@@ -464,7 +423,6 @@ def build_application(
         owner_email=(
             SendOwnerEmailService(ports.owner_email) if ports.owner_email is not None else None
         ),
-        owner_email_replies=owner_email_replies,
     )
     return Application(
         engine=resolved_engine,
@@ -500,7 +458,6 @@ def build_application(
             unit_of_work_factory,
             decision_link_secret=resolved_intake_settings.decision_link_secret,
             decision_link_origin=resolved_intake_settings.decision_link_origin(),
-            owner_reply_domain=owner_reply_domain,
             now=now,
         ),
         intake_decision_links=intake_decision_links,
@@ -518,5 +475,4 @@ def build_application(
             lease_ttl=lease_ttl,
             failure_notices=failure_notices,
         ),
-        owner_email_replies=owner_email_replies,
     )

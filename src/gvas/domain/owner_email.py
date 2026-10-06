@@ -1,46 +1,23 @@
-"""Owner notification e-mails and e-mailed owner replies.
+"""Owner notification e-mails.
 
 Every owner notice e-mail — booking requests, escalations, portal service
 requests, quote acceptances and payments — is rendered from one
 ``OwnerEmailContent`` into a plain-text part and a small inline-styled HTML
 part, so they all read the same.
-
-Booking-request notices carry a per-request reply address
-``owner+<token>@<reply domain>``. The token names the request reference and
-its request epoch and is signed (HMAC-SHA256, like the one-click decision
-links): it is never a raw id, and a tampered or stale token is refused.
-The same address doubles as a ``References`` thread anchor so a reply that
-loses the address (forwarded, edited recipients) can still be matched.
 """
 
-import hashlib
-import hmac
 import html
 import re
-from collections.abc import Iterable, Sequence
-from datetime import datetime
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from gvas.domain.identifiers import BusinessId, IntakeConversationId
+from gvas.domain.identifiers import BusinessId
 
+# Endpoints of the retired reply-by-e-mail channel may still exist in the
+# database; they must never anchor new owner notices.
 OWNER_EMAIL_SOURCE_NAMESPACE = "email"
-OWNER_EMAIL_REPLY_COMMAND_TYPE = "owner_email.reply"
-OWNER_EMAIL_REPLY_COMMAND_NAMESPACE = UUID("4d7a2c19-8e35-4b61-a0f8-6c3e9b1d5a27")
-OWNER_REPLY_LOCAL_PART = "owner"
-OWNER_EMAIL_REPLY_MAX_CHARS = 2000
 OWNER_EMAIL_SUBJECT_MAX_CHARS = 78
 OWNER_CHANNEL_FOOTER = "Reply in your owner channel to act on this."
-OWNER_EMAIL_UNSUPPORTED_REPLY = (
-    "By e-mail I can approve or decline booking requests and block time "
-    "(`unavailable 8-12`). Use your owner channel for everything else."
-)
-
-_SIGNATURE_HEX_CHARS = 32
-_TOKEN = re.compile(
-    r"^(?P<reference>[0-9a-z]{4,32})-(?P<epoch>[0-9a-z]{1,13})-(?P<sig>[0-9a-f]{32})$"
-)
 _CODE = re.compile(r"`([^`]+)`")
 _DETAIL_LINE = re.compile(r"^(?P<label>[A-Z][A-Za-z ]{0,29}):\s+(?P<value>\S.*)$")
 
@@ -97,14 +74,6 @@ class OwnerEmailContent(OwnerEmailModel):
     def email_subject(self) -> str:
         subject = (self.subject or self.heading)[:OWNER_EMAIL_SUBJECT_MAX_CHARS]
         return f"[{self.business_name}] {subject}" if self.business_name else subject
-
-
-class OwnerEmailThread(OwnerEmailModel):
-    """Reply routing for one request: ``reply_to`` receives the owner's reply
-    and ``anchor`` is the stable thread id carried in ``References``."""
-
-    reply_to: str = Field(min_length=3)
-    anchor: str = Field(min_length=3)
 
 
 def owner_notice_content(
@@ -262,216 +231,26 @@ def render_owner_email_html(content: OwnerEmailContent) -> str:
     return "".join(parts)
 
 
-def _base36(value: int) -> str:
-    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
-    if value <= 0:
-        return "0"
-    out = ""
-    while value:
-        value, remainder = divmod(value, 36)
-        out = digits[remainder] + out
-    return out
-
-
-def _reply_signature(
-    secret: str,
-    *,
-    business_id: BusinessId,
-    conversation_id: IntakeConversationId,
-    reference: str,
-    request_epoch: int,
-) -> str:
-    body = f"owner-reply|{business_id}|{conversation_id}|{reference}|{request_epoch}"
-    digest = hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
-    return digest[:_SIGNATURE_HEX_CHARS]
-
-
-def owner_reply_token(
-    secret: str,
-    *,
-    business_id: BusinessId,
-    conversation_id: IntakeConversationId,
-    reference: str,
-    request_epoch: int,
-) -> str:
-    """``<reference>-<epoch base36>-<128-bit signature>``: lowercase so it
-    survives mailbox case folding, short enough for an address local part."""
-
-    signature = _reply_signature(
-        secret,
-        business_id=business_id,
-        conversation_id=conversation_id,
-        reference=reference,
-        request_epoch=request_epoch,
-    )
-    return f"{reference.lower()}-{_base36(request_epoch)}-{signature}"
-
-
-class OwnerReplyToken(OwnerEmailModel):
-    reference: str
-    request_epoch: int
-    signature: str
-
-    def verifies(
-        self, secret: str, *, business_id: BusinessId, conversation_id: IntakeConversationId
-    ) -> bool:
-        expected = _reply_signature(
-            secret,
-            business_id=business_id,
-            conversation_id=conversation_id,
-            reference=self.reference,
-            request_epoch=self.request_epoch,
-        )
-        return hmac.compare_digest(expected, self.signature)
-
-
-def parse_owner_reply_token(token: str) -> OwnerReplyToken | None:
-    match = _TOKEN.match(token.strip().lower())
-    if match is None:
-        return None
-    return OwnerReplyToken(
-        reference=match.group("reference"),
-        request_epoch=int(match.group("epoch"), 36),
-        signature=match.group("sig"),
-    )
-
-
-def owner_reply_thread(token: str, domain: str) -> OwnerEmailThread:
-    address = f"{OWNER_REPLY_LOCAL_PART}+{token}@{domain.lower()}"
-    return OwnerEmailThread(reply_to=address, anchor=f"<{address}>")
-
-
-def owner_reply_tokens(values: Iterable[str], domain: str) -> tuple[OwnerReplyToken, ...]:
-    """Every well-formed token addressed at ``domain`` in ``values``
-    (recipient addresses or ``In-Reply-To``/``References`` ids), in order."""
-
-    pattern = re.compile(
-        rf"{OWNER_REPLY_LOCAL_PART}\+([0-9a-z]+-[0-9a-z]+-[0-9a-f]+)@{re.escape(domain.lower())}\b"
-    )
-    tokens: list[OwnerReplyToken] = []
-    for value in values:
-        for match in pattern.finditer(value.lower()):
-            token = parse_owner_reply_token(match.group(1))
-            if token is not None and token not in tokens:
-                tokens.append(token)
-    return tuple(tokens)
-
-
-_QUOTE_BOUNDARY = re.compile(
-    r"^(?:-{2,}\s*(?:original message|forwarded message)\s*-{2,}"
-    r"|_{5,}"
-    r"|from:\s.+"
-    r"|sent from my .+"
-    r"|get outlook for .+"
-    r"|--\s?)$",
-    re.IGNORECASE,
-)
-_ON_WROTE = re.compile(r"^on\s.+", re.IGNORECASE)
-
-
-def strip_quoted_reply(text: str) -> str:
-    """The owner's own words: everything above the quoted original, the
-    ``On … wrote:`` attribution (also when wrapped onto two lines), a
-    ``--`` signature delimiter or a mobile sign-off."""
-
-    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    kept: list[str] = []
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith(">") or _QUOTE_BOUNDARY.match(stripped):
-            break
-        if _ON_WROTE.match(stripped):
-            following = lines[index + 1].strip() if index + 1 < len(lines) else ""
-            if stripped.endswith("wrote:") or following.endswith("wrote:"):
-                break
-        kept.append(line.rstrip())
-    return "\n".join(kept).strip()[:OWNER_EMAIL_REPLY_MAX_CHARS]
-
-
-class InboundOwnerEmail(OwnerEmailModel):
-    """A received e-mail, already verified and fetched by the provider
-    adapter. ``event_source``/``event_id`` key the replay ledger;
-    ``sender_authenticated`` is the provider's SPF/DKIM verdict."""
-
-    event_source: str = Field(min_length=1)
-    event_id: str = Field(min_length=1)
-    email_id: str = Field(min_length=1)
-    sender: str = Field(min_length=3)
-    sender_authenticated: bool
-    recipients: tuple[str, ...] = ()
-    subject: str = ""
-    message_id: str | None = None
-    references: tuple[str, ...] = ()
-    text: str = ""
-    received_at: datetime
-
-    @field_validator("sender")
-    @classmethod
-    def _bare_lower(cls, value: str) -> str:
-        return value.strip().lower()
-
-
 class OwnerEmailRequest(OwnerEmailModel):
-    """One owner e-mail send: multipart text+HTML with optional reply
-    routing and thread headers."""
+    """One owner e-mail send: multipart text + HTML."""
 
     business_id: BusinessId
     to: str = Field(min_length=3)
     subject: str = Field(min_length=1)
     text: str = Field(min_length=1)
     html: str | None = None
-    reply_to: str | None = None
-    in_reply_to: str | None = None
-    references: tuple[str, ...] = ()
     idempotency_key: str = Field(min_length=1)
-
-    def headers(self) -> dict[str, str]:
-        headers: dict[str, str] = {}
-        if self.in_reply_to:
-            headers["In-Reply-To"] = self.in_reply_to
-        if self.references:
-            headers["References"] = " ".join(self.references)
-        return headers
-
-
-def reply_subject(subject: str) -> str:
-    subject = subject.strip() or "Your reply"
-    return subject if subject.lower().startswith("re:") else f"Re: {subject}"
-
-
-def message_ids(values: Sequence[str]) -> tuple[str, ...]:
-    """``<id>`` tokens from ``In-Reply-To``/``References`` header values."""
-
-    found: list[str] = []
-    for value in values:
-        for match in re.finditer(r"<[^<>\s]+>", value):
-            if match.group(0) not in found:
-                found.append(match.group(0))
-    return tuple(found)
 
 
 __all__ = [
     "OWNER_CHANNEL_FOOTER",
-    "OWNER_EMAIL_REPLY_COMMAND_NAMESPACE",
-    "OWNER_EMAIL_REPLY_COMMAND_TYPE",
-    "OWNER_EMAIL_REPLY_MAX_CHARS",
     "OWNER_EMAIL_SOURCE_NAMESPACE",
     "OWNER_EMAIL_SUBJECT_MAX_CHARS",
-    "InboundOwnerEmail",
     "OwnerEmailAction",
     "OwnerEmailContent",
     "OwnerEmailDetail",
     "OwnerEmailRequest",
-    "OwnerEmailThread",
-    "OwnerReplyToken",
-    "message_ids",
     "owner_notice_content",
-    "owner_reply_thread",
-    "owner_reply_token",
-    "owner_reply_tokens",
-    "parse_owner_reply_token",
     "render_owner_email_html",
     "render_owner_email_text",
-    "reply_subject",
-    "strip_quoted_reply",
 ]
