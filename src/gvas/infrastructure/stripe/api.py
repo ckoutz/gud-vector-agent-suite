@@ -161,11 +161,34 @@ class StripeCheckout:
                 what="checkout session expiry",
             )
         except StripeCheckoutError as error:
-            # Stripe answers 400 for a session already expired or completed,
-            # 404 for one it no longer knows: nothing is left to close.
-            if error.status_code in (400, 404):
+            # 404: Stripe no longer knows the session. 400 also covers other
+            # request errors, so only a session that is no longer open counts.
+            if error.status_code == 404 or (
+                error.status_code == 400 and await self._session_status(session_id) != "open"
+            ):
                 raise PaymentCheckoutClosedError("checkout session is already closed") from error
             raise
+
+    async def _session_status(self, session_id: str) -> object:
+        try:
+            response = await self._client.get(
+                f"{self._settings.api_base_url.rstrip('/')}"
+                f"{CHECKOUT_SESSIONS_PATH}/{quote(session_id, safe='')}",
+                headers={"Authorization": f"Bearer {self._settings.secret_key}"},
+                timeout=self._settings.timeout_seconds,
+            )
+        except httpx.HTTPError as error:
+            raise StripeCheckoutError("payment provider was unreachable") from error
+        if response.status_code >= 400:
+            raise StripeCheckoutError(
+                f"payment provider returned http {response.status_code}",
+                status_code=response.status_code,
+            )
+        try:
+            payload: object = response.json()
+        except ValueError as error:
+            raise _unreadable("checkout session lookup", error) from error
+        return payload.get("status") if isinstance(payload, dict) else None
 
     async def create_customer(self, request: BillingCustomerRequest) -> BillingCustomerResult:
         payload = await self._post(

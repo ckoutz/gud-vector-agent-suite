@@ -303,12 +303,23 @@ class PublicQuoteService:
                 )
                 if existing is None:
                     raise
+                # A concurrent accept recorded this session; it already
+                # closed it if the quote stopped being payable.
+                current = await self._find_claimable(unit_of_work, claim_token)
+                if (
+                    current.customer_status is not CustomerQuoteStatus.ACCEPTED
+                    or existing.status is not QuotePaymentStatus.OPEN
+                ):
+                    raise InvalidQuoteTransitionError(
+                        "the quote changed while checkout opened"
+                    ) from None
                 await unit_of_work.commit()
                 return existing.checkout_url
-            # The owner may have marked the quote paid while the session
-            # opened. Bumping the version serialises against that write.
+            # The owner may have marked the quote paid, or the customer
+            # declined, while the session opened. Bumping the version
+            # serialises against those writes.
             current = await self._find_claimable(unit_of_work, claim_token)
-            paid_meanwhile = current.customer_status is CustomerQuoteStatus.PAID
+            paid_meanwhile = current.customer_status is not CustomerQuoteStatus.ACCEPTED
             if not paid_meanwhile:
                 try:
                     await unit_of_work.quotes.save(
