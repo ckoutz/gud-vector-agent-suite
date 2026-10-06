@@ -541,3 +541,21 @@ async def test_another_business_owner_cannot_mark_a_sent_quote_paid(
         )
     assert await _rows(session_factory) == []
     assert await _quote_status(session_factory) is None
+
+
+@pytest.mark.asyncio
+async def test_a_quote_not_delivered_yet_cannot_be_marked_paid(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, context, quote_id, _ = await _sent(session_factory)
+    async with session_factory() as session:
+        row = await session.scalar(select(QuoteRecord))
+        assert row is not None and row.status in {"delivery_pending", "delivered"}
+        row.status = "approved"
+        await session.commit()
+
+    with pytest.raises(OwnerConflictError):
+        await application.owner.mark_paid(
+            context, quote_id, paid_on=PAID_ON, method=PaymentMethod.CHECK
+        )
+    assert await _rows(session_factory) == []

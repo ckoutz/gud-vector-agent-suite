@@ -400,7 +400,11 @@ class OwnerService:
                 raise OwnerConflictError("This quote is already paid.")
             if quote.customer_status is CustomerQuoteStatus.DECLINED:
                 raise OwnerConflictError("The customer declined this quote.")
-            if not quote.is_claimable():
+            # Approved quotes are claimable before delivery runs; until then
+            # only a customer who has seen it makes it payable.
+            if not quote.is_claimable() or (
+                quote.customer_status is None and quote.status is QuoteStatus.APPROVED
+            ):
                 raise OwnerConflictError("Only quotes sent to the customer can be marked paid.")
             payment_id = uuid4()
             recorded = await unit_of_work.payments.record(
