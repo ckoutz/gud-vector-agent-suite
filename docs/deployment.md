@@ -255,12 +255,17 @@ exactly one booking stays live per conversation:
   enqueues `intake_booking.cancel` for the recorded event. No owner approval
   is needed to cancel your own call.
 - **Returning visitors** — the widget keeps the conversation id in browser
-  storage, so a reopened chat shows the booking it holds. Without it, the
-  collected e-mail is the identifier: a new conversation whose visitor e-mail
-  matches a live booking sees it (`existing_booking` in the agent request),
-  an `approved` booking is adopted into the new chat (the old one closes,
-  custody of the event moves) and a still-pending request can be cancelled
-  but not rescheduled until the owner decides. No IP addresses — shared
+  storage, so a reopened chat shows the booking it holds. An e-mail typed
+  into a new anonymous chat proves nothing: if it matches another chat's live
+  booking, the agent only learns that one exists (`existing_booking` with
+  `verified: false`, no time), and a move or cancel request is passed to the
+  owner as a notice — the booking, its event and its chat stay untouched.
+  The owner can then `cancel booking <ref>` (owner channel only, never an
+  e-mail link). A verified portal chat for the same customer record may
+  cancel directly or adopt an `approved` booking (the old chat closes,
+  custody of the event moves). A typed e-mail matching an existing customer
+  also never links the request to that record or fills in its name/phone;
+  the owner notice flags it as unverified. No IP addresses — shared
   networks would leak one visitor's booking to another.
 - **Webhooks** — a `canceled` event for the pending reschedule's replacement
   puts the superseded booking back in force; a cancellation naming the

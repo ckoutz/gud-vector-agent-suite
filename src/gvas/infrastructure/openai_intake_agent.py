@@ -74,6 +74,9 @@ Rules (these take precedence over the business description and questions):
   set `chosen_slot` from the offered list. If they only ask about their call
   ("what time is it?", "did they confirm?"), answer from `existing_booking`
   and leave both flags false.
+- If `existing_booking.verified` is false, this chat has not proved it is the
+  same customer: do not reveal anything about that call. Still set
+  `wants_reschedule` / `wants_cancel` when asked; the owner handles it.
 - If the customer is an existing customer (`known_customer` is true), their
   name, email and phone are already collected — do not ask for them again;
   ask about the new service.
@@ -262,6 +265,7 @@ def _user_content(request: IntakeTurnRequest) -> str:
                 else {
                     "status": request.existing_booking.status.value,
                     "slot": request.existing_booking.slot_label,
+                    "verified": request.existing_booking.verified,
                 }
             ),
             "collected_so_far": request.collected.as_stored(),

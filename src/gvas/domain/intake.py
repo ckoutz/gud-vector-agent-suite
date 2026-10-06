@@ -39,6 +39,8 @@ from gvas.domain.owner_email import OwnerEmailContent, OwnerEmailDetail, OwnerEm
 
 BOOKING_INTENT = WorkflowIntent("booking_decision")
 INTAKE_CHANNEL_WEB = "web"
+# Opened from a verified customer-portal session: the customer is known.
+INTAKE_CHANNEL_PORTAL = "portal"
 INTAKE_CONVERSATION_TTL = timedelta(hours=24)
 INTAKE_MESSAGE_MAX_CHARS = 2000
 INTAKE_MAX_USER_MESSAGES = 30
@@ -78,7 +80,7 @@ _CURRENCY_AMOUNT = re.compile(
 )
 _SLOT_PREFIX = re.compile(r"^slot:(?P<start>\S+)\s*$", re.IGNORECASE)
 _BOOKING_COMMAND = re.compile(
-    r"^\s*(?P<action>approve|decline)\s+booking\s+(?P<reference>[0-9a-zA-Z-]{4,32})"
+    r"^\s*(?P<action>approve|decline|cancel)\s+booking\s+(?P<reference>[0-9a-zA-Z-]{4,32})"
     r"(?:\s+(?P<reason>.+?))?\s*$",
     re.IGNORECASE | re.DOTALL,
 )
@@ -430,6 +432,8 @@ class IntakeConversation(IntakeModel):
 class BookingDecisionAction(StrEnum):
     APPROVE = "approve"
     DECLINE = "decline"
+    # Owner-channel only: never minted into an e-mail link.
+    CANCEL = "cancel"
 
 
 # --- One-click owner decision links -------------------------------------------
@@ -520,6 +524,8 @@ def parse_booking_decision_link_token(
             request_epoch=int(payload["n"]),
             expires_epoch=int(payload["e"]),
         )
+        if link.action is BookingDecisionAction.CANCEL:
+            raise ValueError("cancel is not a link action")
     except (KeyError, TypeError, ValueError) as error:
         raise InvalidDecisionLinkError("malformed link") from error
     if now.timestamp() >= link.expires_epoch:
@@ -534,7 +540,8 @@ class BookingDecision(IntakeModel):
 
 
 def booking_decision(text: str) -> BookingDecision | None:
-    """``approve booking <ref>`` / ``decline booking <ref> [reason]``."""
+    """``approve booking <ref>`` / ``decline booking <ref> [reason]`` /
+    ``cancel booking <ref>``."""
 
     match = _BOOKING_COMMAND.match(text)
     if match is None:
@@ -668,6 +675,7 @@ def booking_request_notice(
     profile: IntakeProfile | None = None,
     previous_label: str | None = None,
     previous_booked: bool = True,
+    unverified_email: bool = False,
 ) -> str:
     """The owner notice posted when a customer picks a slot.
 
@@ -701,6 +709,8 @@ def booking_request_notice(
             lines.append(f"Replaces the earlier request for {previous_label}.")
     if collected.notes:
         lines.append(f"Notes: {collected.notes}")
+    if unverified_email:
+        lines.append(UNVERIFIED_EMAIL_NOTE)
     lines.append(f"Reply `approve booking {ref}` or `decline booking {ref} <reason>`.")
     lines.append(
         "Busy then? Reply like `unavailable 8-12` to block that time and send the "
@@ -718,6 +728,7 @@ def booking_request_email(
     profile: IntakeProfile | None = None,
     previous_label: str | None = None,
     previous_booked: bool = True,
+    unverified_email: bool = False,
 ) -> OwnerEmailContent:
     """The e-mail form of ``booking_request_notice``: same facts, laid out
     as a details list with the owner-channel commands in the footer."""
@@ -759,6 +770,8 @@ def booking_request_email(
         )
     if collected.notes:
         details.append(OwnerEmailDetail(label="Notes", value=collected.notes))
+    if unverified_email:
+        details.append(OwnerEmailDetail(label="Unverified", value=UNVERIFIED_EMAIL_NOTE))
     return OwnerEmailContent(
         heading=f"{kind} #{ref}",
         details=tuple(details),
@@ -770,6 +783,58 @@ def booking_request_email(
         business_name=business_name,
         subject=f"{kind} #{ref} — {name}",
     )
+
+
+UNVERIFIED_EMAIL_NOTE = (
+    "This e-mail matches an existing customer, but the chat didn't prove it's "
+    "them, so the request isn't linked to that customer's record."
+)
+
+
+def unverified_booking_change_notice(
+    holder: IntakeConversation,
+    requester: IntakeConversation,
+    *,
+    cancel: bool,
+    business_name: str | None = None,
+) -> str:
+    """A chat other than the booking's own asked to cancel or move it.
+
+    The only link between them is an e-mail typed into the chat, which
+    proves nothing, so nothing changes until the owner acts.
+    """
+
+    ref = holder.reference
+    who = holder.collected.name or "a customer"
+    when = (
+        format_slot_label(holder.requested_slot_start)
+        if holder.requested_slot_start is not None
+        else "their requested time"
+    )
+    ask = "cancel" if cancel else "move"
+    lines = [
+        f"Booking #{ref} — a different website chat asked to {ask} {who}'s {when}. "
+        "It only typed the booking's e-mail, which doesn't prove who it is, "
+        "so nothing has changed."
+    ]
+    typed = [value for value in (requester.collected.name, requester.collected.phone) if value]
+    if typed:
+        lines.append(f"That chat gave: {', '.join(typed)}")
+    if holder.collected.email:
+        lines.append(f"Booking contact: {holder.collected.email}")
+    if cancel:
+        lines.append(
+            f"If you've checked with the customer, reply `cancel booking {ref}`. "
+            "Otherwise no action is needed."
+        )
+    else:
+        lines.append(
+            "If you've checked with the customer, arrange the new time with them; "
+            "the booking stays as it is."
+        )
+    if business_name:
+        lines.append(f"Business: {business_name}.")
+    return "\n".join(lines)
 
 
 def cancel_request_notice(
@@ -1090,10 +1155,15 @@ class ExistingBookingStatus(StrEnum):
 class ExistingBooking(IntakeModel):
     """A call the customer already has — from this chat or an earlier one
     under the same e-mail — so the agent can discuss, move or cancel it
-    instead of starting over."""
+    instead of starting over.
+
+    ``verified`` is false when only a typed e-mail links this chat to the
+    booking: its time is withheld and a move or cancel goes to the owner.
+    """
 
     status: ExistingBookingStatus
-    slot_label: str
+    slot_label: str | None = None
+    verified: bool = True
 
 
 class IntakeTurnRequest(IntakeModel):

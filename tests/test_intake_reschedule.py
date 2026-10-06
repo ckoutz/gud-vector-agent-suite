@@ -10,11 +10,11 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from composition_fakes import OwnerReplyFake
-from gvas.application.intake import RESCHEDULE_OFFER_REPLY
+from gvas.application.intake import RESCHEDULE_OFFER_REPLY, UNVERIFIED_CHANGE_REPLY
 from gvas.composition import Application
 from gvas.config import IntakeSettings
 from gvas.domain.identifiers import BusinessId
@@ -22,14 +22,19 @@ from gvas.domain.intake import (
     INTAKE_BOOKING_CANCEL_COMMAND_TYPE,
     INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
     OWNER_NOTICE_EMAIL_COMMAND_TYPE,
+    UNVERIFIED_EMAIL_NOTE,
+    BookingDecisionAction,
     BookingEventKind,
     BookingKind,
     BookingResult,
     IntakeBookingEvent,
     IntakeTurn,
+    booking_decision,
 )
+from gvas.domain.owner_actions import decide_booking
 from gvas.domain.ports import OwnerEmailPort
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
+from gvas.infrastructure.models import Customer
 from gvas.interfaces.http.app import create_app
 from gvas.interfaces.http.public import create_public_router
 from test_composition import inbound
@@ -444,19 +449,18 @@ async def test_declining_the_new_time_restores_the_original_booking(
 
 
 @pytest.mark.asyncio
-async def test_a_new_conversation_sees_the_pending_request(
+async def test_a_typed_email_cannot_move_or_cancel_another_chats_request(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Returning visitor without the stored id: the same e-mail finds the
-    live request — a reschedule is refused while it waits on the owner, a
-    cancel is allowed."""
+    """A fresh anonymous chat that types the booking's e-mail proves nothing:
+    move and cancel both go to the owner, and the booking is untouched."""
     agent = IntakeAgentFake(
         [
             collected_turn(name="Jane Doe", email=EMAIL, phone="+15555550100", problem="leak"),
             collected_turn(address="1 Main St"),
             IntakeTurn(reply="Great, here are openings.", ready_for_slots=True),
-            collected_turn(name="Jane Doe", email=EMAIL),
-            IntakeTurn(reply="Refuse.", wants_reschedule=True),
+            collected_turn(name="Mallory", email=EMAIL, phone="+15555550199"),
+            IntakeTurn(reply="Sure.", wants_reschedule=True),
             IntakeTurn(reply="Okay.", wants_cancel=True),
         ]
     )
@@ -470,25 +474,29 @@ async def test_a_new_conversation_sees_the_pending_request(
         await post(client, conversation_id, token, "hi, it's Jane again")
         moved = await post(client, conversation_id, token, "can we move it?")
         assert moved.status_code == 200
-        assert "waiting on approval" in moved.json()["reply"]
+        assert moved.json()["reply"] == UNVERIFIED_CHANGE_REPLY
         assert moved.json()["slots"] is None
         cancelled = await post(client, conversation_id, token, "cancel it then")
         assert cancelled.status_code == 200
-        assert "canceled" in cancelled.json()["reply"]
+        assert cancelled.json()["reply"] == UNVERIFIED_CHANGE_REPLY
     for _ in range(4):
         await immediate_worker(application).drain()
     first = await row_by_id(session_factory, business_id, first_cid)
-    assert first.state == "closed"
-    notices = [t for t in texts_of(owner, "Booking") if "canceled" in t]
-    assert notices
+    assert first.state == "awaiting_owner"
+    assert first.reschedule_offered_at is None
+    assert await commands_of(session_factory, business_id, INTAKE_BOOKING_CANCEL_COMMAND_TYPE) == []
+    referred = [t for t in texts_of(owner, f"Booking #{reference}") if "different website" in t]
+    assert len(referred) == 2
+    assert any("asked to move" in t for t in referred)
+    assert any(f"cancel booking {reference}" in t and "Mallory" in t for t in referred)
     request = agent.requests[-2]  # the "can we move it?" turn
     assert request.existing_booking is not None
-    assert request.existing_booking.status.value == "requested"
-    assert request.existing_booking.slot_label
+    assert request.existing_booking.verified is False
+    assert request.existing_booking.slot_label is None, "an unverified chat learns no details"
 
 
 @pytest.mark.asyncio
-async def test_a_new_conversation_adopts_an_approved_booking(
+async def test_a_typed_email_cannot_adopt_an_approved_booking_and_the_owner_cancels_it(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     availability = AvailabilityFake(result=BookingResult(kind=BookingKind.BOOKED))
@@ -501,32 +509,160 @@ async def test_a_new_conversation_adopts_an_approved_booking(
             IntakeTurn(reply="Which times?", wants_reschedule=True),
         ]
     )
-    application, _o, business_id, reference, first_cid, _t = await drive(
+    application, owner, business_id, reference, first_cid, _t = await drive(
         session_factory, availability=availability, agent=agent
     )
     await owner_approve(application, business_id, reference, "approve-adopt")
+    await record_event(
+        application, business_id, await conversation_row(session_factory, business_id)
+    )
     row = await conversation_row(session_factory, business_id)
-    assert row.state == "approved"
+    assert row.state == "approved" and row.booked_event_uri == OLD_EVENT
     booked_start = row.requested_slot_start
 
-    later = slot(datetime.now(UTC), days=4)
-    availability.slots = (later,)
+    availability.slots = (slot(datetime.now(UTC), days=4),)
     async with http_client(application) as client:
         created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
         token = created.json()["conversationToken"]
         conversation_id = created.json()["conversationId"]
-        assert conversation_id != first_cid
-        first = await post(client, conversation_id, token, "hi, Jane again")
-        assert first.status_code == 200
+        await post(client, conversation_id, token, "hi, Jane again")
         moved = await post(client, conversation_id, token, "can I move my call?")
         assert moved.status_code == 200
-        assert moved.json()["state"] == "approved"
-        assert moved.json()["slots"], "the adopted booking offers new times"
+        assert moved.json()["reply"] == UNVERIFIED_CHANGE_REPLY
+        assert moved.json()["slots"] is None
+        assert moved.json()["state"] != "approved"
+    for _ in range(4):
+        await immediate_worker(application).drain()
     first_row = await row_by_id(session_factory, business_id, first_cid)
-    assert first_row.state == "closed", "the old chat closes once custody moved"
-    adopted = await row_by_id(session_factory, business_id, conversation_id)
-    assert adopted.state == "approved"
-    assert adopted.requested_slot_start == booked_start
+    assert first_row.state == "approved", "the booking stays in its own chat"
+    assert first_row.booked_event_uri == OLD_EVENT
+    assert first_row.requested_slot_start == booked_start
+    newcomer = await row_by_id(session_factory, business_id, conversation_id)
+    assert newcomer.booked_event_uri is None and newcomer.requested_slot_start is None
+
+    await application.ingest_service.ingest(
+        inbound(business_id, f"cancel booking {reference}", message_key="owner-cancel")
+    )
+    for _ in range(8):
+        await immediate_worker(application).drain()
+    first_row = await row_by_id(session_factory, business_id, first_cid)
+    assert first_row.state == "closed"
+    cancels = await commands_of(session_factory, business_id, INTAKE_BOOKING_CANCEL_COMMAND_TYPE)
+    assert [c.payload["event_uri"] for c in cancels] == [OLD_EVENT]
+    emails = await commands_of(session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE)
+    assert any(c.payload["subject"] == "Your appointment is canceled" for c in emails)
+    assert texts_of(owner, f"Canceled booking {reference}")
+
+
+@pytest.mark.asyncio
+async def test_a_verified_portal_customer_can_cancel_their_booking_from_a_new_chat(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    agent = IntakeAgentFake(
+        [
+            collected_turn(name="Jane Doe", email=EMAIL, phone="+15555550100", problem="leak"),
+            collected_turn(address="1 Main St"),
+            IntakeTurn(reply="Great, here are openings.", ready_for_slots=True),
+            IntakeTurn(reply="Okay.", wants_cancel=True),
+        ]
+    )
+    application, owner, business_id, reference, first_cid, _t = await drive(
+        session_factory, availability=AvailabilityFake(), agent=agent
+    )
+    assert application.intake is not None
+    async with application.unit_of_work_factory() as unit_of_work:
+        business = await unit_of_work.businesses.get(business_id)
+        customer = await unit_of_work.customers.find_by_email(business_id, EMAIL)
+    assert business is not None and customer is not None
+    start = await application.intake.start_portal_conversation(business, customer)
+    async with http_client(application) as client:
+        cancelled = await post(
+            client, str(start.conversation.conversation_id), start.token, "cancel my call"
+        )
+        assert cancelled.status_code == 200
+        assert "canceled" in cancelled.json()["reply"]
+    for _ in range(4):
+        await immediate_worker(application).drain()
+    first = await row_by_id(session_factory, business_id, first_cid)
+    assert first.state == "closed"
+    assert [t for t in texts_of(owner, "Booking") if "canceled" in t and reference in t]
+
+
+@pytest.mark.asyncio
+async def test_a_typed_email_never_links_to_or_fills_in_an_existing_customer(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    availability = AvailabilityFake()
+    agent = IntakeAgentFake(
+        [
+            collected_turn(name="Jane Doe", email=EMAIL, phone="+15555550100", problem="leak"),
+            collected_turn(address="1 Main St"),
+            IntakeTurn(reply="Great, here are openings.", ready_for_slots=True),
+            collected_turn(name="Mallory", email=EMAIL, phone="+15555550199", problem="x"),
+            collected_turn(address="2 Side St"),
+            IntakeTurn(reply="Here are openings.", ready_for_slots=True),
+        ]
+    )
+    application, owner, business_id, reference, first_cid, _t = await drive(
+        session_factory, availability=availability, agent=agent
+    )
+    first = await row_by_id(session_factory, business_id, first_cid)
+    assert first.customer_id is not None, "a brand-new e-mail starts a customer record"
+    await application.ingest_service.ingest(
+        inbound(business_id, f"decline booking {reference} busy", message_key="decline-1")
+    )
+    for _ in range(8):
+        await immediate_worker(application).drain()
+    async with session_factory() as session:
+        await session.execute(
+            update(Customer)
+            .where(Customer.id == first.customer_id)
+            .values(display_name=None, phone=None)
+        )
+        await session.commit()
+
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        token = created.json()["conversationToken"]
+        conversation_id = created.json()["conversationId"]
+        await post(client, conversation_id, token, "leak")
+        await post(client, conversation_id, token, "2 Side St")
+        proposed = await post(client, conversation_id, token, "times?")
+        assert proposed.json()["state"] == "proposing_slots"
+        start = availability.slots[0].start.isoformat()
+        picked = await post(client, conversation_id, token, f"slot:{start}")
+        assert picked.json()["state"] == "awaiting_owner"
+    for _ in range(4):
+        await immediate_worker(application).drain()
+    second = await row_by_id(session_factory, business_id, conversation_id)
+    assert second.customer_id is None
+    async with session_factory() as session:
+        customer = await session.get(Customer, first.customer_id)
+    assert customer is not None
+    assert customer.display_name is None and customer.phone is None
+    assert [t for t in texts_of(owner, "Booking request") if UNVERIFIED_EMAIL_NOTE in t]
+
+
+@pytest.mark.asyncio
+async def test_owner_cancel_is_tenant_scoped_and_never_a_link_action(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, _o, business_id, reference, first_cid, _t = await drive(
+        session_factory, availability=AvailabilityFake()
+    )
+    other_business = await intake_business(session_factory, public_key="pk_other_tenant")
+    decision = booking_decision(f"cancel booking {reference}")
+    assert decision is not None and decision.action is BookingDecisionAction.CANCEL
+    async with application.unit_of_work_factory() as unit_of_work:
+        outcome = await decide_booking(unit_of_work, other_business, decision, datetime.now(UTC))
+    assert not outcome.applied and "can't find" in outcome.text
+    async with application.unit_of_work_factory() as unit_of_work:
+        outcome = await decide_booking(
+            unit_of_work, business_id, decision, datetime.now(UTC), request_epoch=1
+        )
+    assert not outcome.applied
+    first = await row_by_id(session_factory, business_id, first_cid)
+    assert first.state == "awaiting_owner"
 
 
 @pytest.mark.asyncio
