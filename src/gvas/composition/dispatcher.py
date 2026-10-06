@@ -94,6 +94,10 @@ class MalformedCommandPayloadError(ValueError):
 
 logger = logging.getLogger(__name__)
 
+# Commands of the retired reply-by-e-mail channel that may still sit in the
+# outbox; they are acknowledged and dropped instead of dead-lettered.
+RETIRED_COMMAND_TYPES = frozenset({"owner_email.reply"})
+
 
 @dataclass(frozen=True)
 class DispatchOutcome:
@@ -211,6 +215,9 @@ class OutboxCommandDispatcher:
             return await self._send_intake_email(command)
         if command.command_type == INTAKE_CUSTOMER_TEXT_COMMAND_TYPE:
             return await self._send_intake_text(command)
+        if command.command_type in RETIRED_COMMAND_TYPES:
+            logger.info("dropping retired %s command %s", command.command_type, command.command_id)
+            return DispatchOutcome(command.command_type, "retired")
         raise UnknownCommandTypeError(f"no handler is registered for {command.command_type}")
 
     def _window(self) -> tuple[datetime, datetime]:

@@ -87,6 +87,7 @@ from gvas.domain.messages import (
 )
 from gvas.domain.owner_actions import decide_booking
 from gvas.domain.owner_email import (
+    OWNER_EMAIL_SOURCE_NAMESPACE,
     OwnerEmailAction,
     OwnerEmailRequest,
 )
@@ -1101,6 +1102,15 @@ class BookingDecisionHandler:
                 message, "Reply `approve booking <id>` or `decline booking <id> <reason>`."
             )
         async with self._unit_of_work_factory() as unit_of_work:
+            endpoint = await unit_of_work.conversations.find_endpoint(message.conversation_ref)
+            if endpoint is not None and endpoint.source_namespace == OWNER_EMAIL_SOURCE_NAMESPACE:
+                # A reply-by-e-mail queued before the channel was retired: it
+                # can no longer prove which request it answered, and there is
+                # nowhere to send a reply, so it decides nothing.
+                return WorkflowResult(
+                    status=WorkflowRunStatus.SUCCEEDED,
+                    detail="e-mail replies no longer decide bookings",
+                )
             outcome = await decide_booking(unit_of_work, message.business_id, decision, self._now())
         return self._result(message, outcome.text)
 
