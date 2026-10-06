@@ -1120,7 +1120,10 @@ async def test_subscription_lifecycle_webhooks_update_the_row_and_notify_the_own
             "currency",
             "currentPeriodEnd",
             "cancelAtPeriodEnd",
+            "manual",
+            "paidThrough",
         }
+        assert subscription["manual"] is False and subscription["paidThrough"] is None
         assert subscription["status"] == "canceled"
         assert subscription["interval"] == "month"
         assert subscription["amountCents"] == 9_900

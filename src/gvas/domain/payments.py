@@ -5,8 +5,9 @@ know a vendor's API. The checkout port lives in ``gvas.domain.ports``; these
 are the values it moves.
 """
 
+import calendar
 from collections.abc import Iterable
-from datetime import datetime, tzinfo
+from datetime import date, datetime, timedelta, tzinfo
 from enum import StrEnum
 from typing import Literal, Protocol
 from uuid import UUID, uuid5
@@ -123,6 +124,14 @@ CHECKOUT_EXPIRE_COMMAND_TYPE = "payment.checkout_expire"
 CHECKOUT_EXPIRE_COMMAND_NAMESPACE = UUID("6d0f4c1e-2b7a-4f53-9e18-3a5c7b9d1e24")
 MANUAL_RECEIPT_COMMAND_TYPE = "payment.manual_receipt"
 MANUAL_RECEIPT_COMMAND_NAMESPACE = UUID("a3e9b7d2-5c41-4e86-8f0a-7b2d4c6e9f13")
+PLAN_NUDGE_COMMAND_TYPE = "payment.plan_nudge"
+PLAN_NUDGE_COMMAND_NAMESPACE = UUID("c7f2a915-3d6b-4e08-9a41-5b8e2d7c0f36")
+MANUAL_PROVIDER = "manual"
+ENDED_SUBSCRIPTION_STATUSES = frozenset({"canceled", "incomplete_expired"})
+#: Longest prepay one manual plan payment can cover.
+PLAN_MONTHS_MAX = 24
+#: How long before a manual plan's paid-through date the owner is nudged.
+PLAN_NUDGE_LEAD = timedelta(days=7)
 
 
 def checkout_expire_command(business_id: BusinessId, session_id: str) -> OutboxCommand:
@@ -364,6 +373,19 @@ class QuoteSubscriptionRecord(PaymentModel):
     cancel_at_period_end: bool = False
     created_at: datetime
     updated_at: datetime
+    #: Manual plans only: the first day paid for, and the last day covered.
+    paid_from: date | None = None
+    paid_through: date | None = None
+
+    @property
+    def is_manual(self) -> bool:
+        return self.provider == MANUAL_PROVIDER
+
+    @property
+    def is_live(self) -> bool:
+        """Still billing or covering the customer: not ended."""
+
+        return self.status not in ENDED_SUBSCRIPTION_STATUSES
 
     @field_validator("created_at", "updated_at", "current_period_end")
     @classmethod
@@ -414,6 +436,18 @@ class QuoteSubscriptionRepository(Protocol):
         ...
 
     async def save(self, record: QuoteSubscriptionRecord) -> None: ...
+
+    async def list_for_quote(
+        self, business_id: BusinessId, quote_id: QuoteId
+    ) -> tuple[QuoteSubscriptionRecord, ...]: ...
+
+    async def get(
+        self,
+        business_id: BusinessId,
+        subscription_id: SubscriptionId,
+        *,
+        for_update: bool = False,
+    ) -> QuoteSubscriptionRecord | None: ...
 
 
 class PaymentEventRepository(Protocol):
@@ -526,6 +560,39 @@ def months_for(interval: BillingInterval | None) -> int | None:
     if interval is None:
         return None
     return 12 if interval is BillingInterval.YEAR else 1
+
+
+def add_months(day: date, months: int) -> date:
+    """The same day ``months`` later, clamped to the end of a short month."""
+
+    index = day.month - 1 + months
+    year, month = day.year + index // 12, index % 12 + 1
+    return date(year, month, min(day.day, calendar.monthrange(year, month)[1]))
+
+
+def paid_through(paid_from: date, months: int) -> date:
+    """The last day covered by ``months`` paid from ``paid_from``."""
+
+    return add_months(paid_from, months) - timedelta(days=1)
+
+
+def plan_nudge_command(record: QuoteSubscriptionRecord, *, at: datetime, key: str) -> OutboxCommand:
+    """Remind the owner that a manual plan runs out soon; the worker drops
+    it when the plan moved on (paid again, undone or ended) since."""
+
+    assert record.paid_through is not None
+    dedup = f"plan-nudge:{record.subscription_id}:{record.paid_through.isoformat()}:{key}"
+    return OutboxCommand(
+        command_id=OutboxCommandId(uuid5(PLAN_NUDGE_COMMAND_NAMESPACE, dedup)),
+        business_id=record.business_id,
+        command_type=PLAN_NUDGE_COMMAND_TYPE,
+        payload={
+            "subscription_id": str(record.subscription_id),
+            "paid_through": record.paid_through.isoformat(),
+        },
+        dedup_key=dedup,
+        not_before=at,
+    )
 
 
 def month_totals(payments: Iterable[LedgerPayment], zone: tzinfo, now: datetime) -> dict[str, int]:

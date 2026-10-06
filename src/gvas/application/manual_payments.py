@@ -1,10 +1,13 @@
 """Worker side of a manual payment: close the card checkout it replaced,
-and send the customer's receipt unless the payment was voided first."""
+send the customer's receipt unless the payment was voided first, and nudge
+the owner a week before a manual plan's paid-through date."""
 
 from collections.abc import Awaitable, Callable, Mapping
 from uuid import UUID
 
-from gvas.domain.identifiers import BusinessId, QuoteId
+from gvas.domain.customer_linking import enqueue_owner_email_copy, enqueue_quote_owner_notice
+from gvas.domain.identifiers import BusinessId, QuoteId, SubscriptionId
+from gvas.domain.money import format_money
 from gvas.domain.payments import PaymentCheckoutClosedError
 from gvas.domain.ports import PaymentCheckoutPort
 from gvas.domain.repositories import UnitOfWork
@@ -47,4 +50,44 @@ class ManualPaymentEffectsService:
         if self._receipts is None:
             raise RuntimeError("customer e-mail is not wired")
         await self._receipts(business_id, payload)
+        return "sent"
+
+    async def nudge_plan(self, business_id: BusinessId, payload: Mapping[str, object]) -> str:
+        """Tell the owner a manual plan runs out in a week, unless it moved
+        on since the nudge was queued: paid again, undone or ended."""
+
+        try:
+            subscription_id = SubscriptionId(UUID(str(payload.get("subscription_id"))))
+        except ValueError as error:
+            raise ValueError("plan nudge payload is incomplete") from error
+        async with self._unit_of_work_factory() as unit_of_work:
+            plan = await unit_of_work.quote_subscriptions.get(business_id, subscription_id)
+            if (
+                plan is None
+                or not plan.is_manual
+                or not plan.is_live
+                or plan.paid_through is None
+                or plan.paid_through.isoformat() != payload.get("paid_through")
+            ):
+                return "moved on"
+            quote = await unit_of_work.quotes.get(business_id, plan.quote_id)
+            if quote is None:
+                return "moved on"
+            customer = await unit_of_work.customers.get(business_id, plan.customer_id)
+            who = (customer.display_name or customer.email) if customer is not None else None
+            through = plan.paid_through
+            text = (
+                f"{who or 'A customer'}'s plan"
+                f" ({format_money(plan.amount_minor, plan.currency)}/{plan.interval.value})"
+                f" is paid through {through:%b} {through.day}."
+                " Record the next payment in the dashboard when it arrives."
+            )
+            correlation_id = f"plan-nudge:{plan.subscription_id}:{through.isoformat()}"
+            if not await enqueue_quote_owner_notice(
+                unit_of_work, quote, correlation_id=correlation_id, text=text
+            ):
+                await enqueue_owner_email_copy(
+                    unit_of_work, business_id, correlation_id=correlation_id, text=text
+                )
+            await unit_of_work.commit()
         return "sent"

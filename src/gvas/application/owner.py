@@ -14,6 +14,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Literal
 from uuid import uuid4
 
+from gvas.domain.customer_linking import link_quote_customer
 from gvas.domain.customers import (
     CustomerRecord,
     ServiceRequest,
@@ -21,8 +22,8 @@ from gvas.domain.customers import (
     new_portal_token,
     portal_token_matches,
 )
-from gvas.domain.enums import CustomerQuoteStatus, QuoteBilling, QuoteStatus
-from gvas.domain.identifiers import MessageKey
+from gvas.domain.enums import BillingInterval, CustomerQuoteStatus, QuoteBilling, QuoteStatus
+from gvas.domain.identifiers import MessageKey, SubscriptionId
 from gvas.domain.intake import (
     INTAKE_BRIEF_MAX_CHARS,
     INTAKE_OPENING_MAX_CHARS,
@@ -51,13 +52,19 @@ from gvas.domain.owner_actions import (
     reject_quote,
 )
 from gvas.domain.payments import (
+    MANUAL_PROVIDER,
+    PLAN_MONTHS_MAX,
+    PLAN_NUDGE_LEAD,
     LedgerPayment,
     PaymentKind,
     PaymentMethod,
     PaymentSource,
+    QuotePaymentConflictError,
     QuoteSubscriptionRecord,
     checkout_expire_command,
     manual_receipt_command,
+    paid_through,
+    plan_nudge_command,
 )
 from gvas.domain.ports import BookedEventsPort, CalendarFeedPort
 from gvas.domain.quotes import (
@@ -80,6 +87,9 @@ DUPLICATE_WINDOW = timedelta(minutes=1)
 PAYMENT_NOTE_MAX_CHARS = 500
 MANUAL_PAYMENT_METHODS = frozenset({PaymentMethod.CHECK, PaymentMethod.CASH, PaymentMethod.OTHER})
 _RECEIPT_METHOD = {PaymentMethod.CHECK: " by check", PaymentMethod.CASH: " in cash"}
+PLAN_AMOUNT_MAX_MINOR = 10_000_000
+#: The form's one-time key: a retry or double-click reuses it.
+PAYMENT_KEY_PATTERN = r"^[A-Za-z0-9_-]{8,64}$"
 
 
 class OwnerAuthenticationError(PermissionError):
@@ -467,6 +477,282 @@ class OwnerService:
                 )
             await unit_of_work.commit()
         return paid
+
+    async def record_plan_payment(
+        self,
+        context: OwnerContext,
+        quote_id: str,
+        *,
+        key: str,
+        paid_on: date,
+        method: PaymentMethod,
+        months: int,
+        amount_minor: int,
+        note: str | None = None,
+    ) -> QuoteSubscriptionRecord:
+        """Record a check, cash or other payment covering ``months`` of a
+        sent recurring quote. The first one starts a manual plan paid from
+        ``paid_on``; each later one moves its paid-through date forward.
+        ``key`` comes from the form, so a retry records it once."""
+
+        if method not in MANUAL_PAYMENT_METHODS:
+            raise OwnerInputError("Pick check, cash or other.")
+        if not 1 <= months <= PLAN_MONTHS_MAX:
+            raise OwnerInputError(f"A payment covers 1-{PLAN_MONTHS_MAX} months.")
+        if not 0 <= amount_minor <= PLAN_AMOUNT_MAX_MINOR:
+            raise OwnerInputError("Enter the amount received.")
+        note = (note or "").strip() or None
+        if note is not None and len(note) > PAYMENT_NOTE_MAX_CHARS:
+            raise OwnerInputError(f"Keep the note under {PAYMENT_NOTE_MAX_CHARS} characters.")
+        now = self._now()
+        zone = business_zone(context.business.timezone) or UTC
+        if paid_on > now.astimezone(zone).date():
+            raise OwnerInputError("The paid date can't be in the future.")
+        business_id = context.business.business_id
+        reference = f"manual:{key}"
+        async with self._unit_of_work_factory() as unit_of_work:
+            quote = await self._find_quote(unit_of_work, context, quote_id)
+            draft = quote.draft
+            if draft is None or draft.billing is QuoteBilling.ONE_TIME or draft.interval is None:
+                raise OwnerConflictError("Only recurring quotes have a plan.")
+            if draft.interval is BillingInterval.YEAR and months % 12:
+                raise OwnerInputError("A yearly plan is paid in whole years.")
+            if quote.customer_status is CustomerQuoteStatus.DECLINED:
+                raise OwnerConflictError("The customer declined this quote.")
+            if not quote.is_claimable() or (
+                quote.customer_status is None and quote.status is QuoteStatus.APPROVED
+            ):
+                raise OwnerConflictError("Only quotes sent to the customer can be marked paid.")
+            plans = await unit_of_work.quote_subscriptions.list_for_quote(
+                business_id, quote.quote_id
+            )
+            payments = await unit_of_work.payments.list_for_quote(business_id, quote.quote_id)
+            plan = next((p for p in plans if p.is_manual), None)
+            if any(p.reference == reference and p.source is PaymentSource.MANUAL for p in payments):
+                if plan is None:
+                    raise OwnerConflictError("This payment changed; refresh and try again.")
+                return plan
+            if any(not p.is_manual and p.is_live for p in plans):
+                raise OwnerConflictError("This customer pays by card; Stripe bills the plan.")
+            if plan is not None:
+                plan = await unit_of_work.quote_subscriptions.get(
+                    business_id, plan.subscription_id, for_update=True
+                )
+                assert plan is not None
+                payments = await unit_of_work.payments.list_for_quote(business_id, quote.quote_id)
+            linked = quote
+            if quote.customer_id is None:
+                linked, _ = await link_quote_customer(unit_of_work, quote, now)
+            if linked.customer_id is None:
+                raise OwnerConflictError("A plan needs the customer's e-mail on the quote.")
+            starts_paid = quote.customer_status is not CustomerQuoteStatus.PAID
+            if linked is not quote or starts_paid:
+                saved = linked.record_customer_payment(now) if starts_paid else linked
+                try:
+                    await unit_of_work.quotes.save(saved, expected_version=quote.version)
+                except QuoteConcurrencyError as error:
+                    raise OwnerConflictError(
+                        "This quote changed; refresh and try again."
+                    ) from error
+            if starts_paid:
+                await self._close_open_checkout(unit_of_work, quote)
+            covered = sum(
+                p.months_covered or 0
+                for p in payments
+                if p.kind is PaymentKind.PLAN
+                and p.source is PaymentSource.MANUAL
+                and p.voided_at is None
+            )
+            fresh = plan is None or not plan.is_live or plan.paid_from is None or not covered
+            paid_from = paid_on if fresh or plan is None else plan.paid_from
+            assert paid_from is not None
+            covered = months if fresh else covered + months
+            payment_id = uuid4()
+            recorded = await unit_of_work.payments.record(
+                LedgerPayment(
+                    payment_id=payment_id,
+                    business_id=business_id,
+                    quote_id=quote.quote_id,
+                    kind=PaymentKind.PLAN,
+                    source=PaymentSource.MANUAL,
+                    method=method,
+                    reference=reference,
+                    amount_minor=amount_minor,
+                    currency=draft.currency,
+                    paid_at=datetime.combine(paid_on, time(12), tzinfo=zone).astimezone(UTC),
+                    months_covered=months,
+                    recorded_by=context.session.email,
+                    recorded_at=now,
+                    note=note,
+                    customer_status_before=(
+                        _status_before(quote.customer_status) if starts_paid else None
+                    ),
+                )
+            )
+            if recorded is None:
+                raise OwnerConflictError("This payment changed; refresh and try again.")
+            if plan is None:
+                plan = QuoteSubscriptionRecord(
+                    subscription_id=SubscriptionId(uuid4()),
+                    business_id=business_id,
+                    quote_id=quote.quote_id,
+                    customer_id=linked.customer_id,
+                    provider=MANUAL_PROVIDER,
+                    subscription_ref=f"manual:{quote.quote_id}",
+                    status="active",
+                    interval=draft.interval,
+                    amount_minor=draft.total_minor,
+                    currency=draft.currency,
+                    current_period_end=None,
+                    created_at=now,
+                    updated_at=now,
+                    paid_from=paid_from,
+                    paid_through=paid_through(paid_from, covered),
+                )
+                try:
+                    await unit_of_work.quote_subscriptions.create(plan)
+                except QuotePaymentConflictError as error:
+                    raise OwnerConflictError("This plan changed; refresh and try again.") from error
+            else:
+                plan = plan.model_copy(
+                    update={
+                        "status": "active",
+                        "paid_from": paid_from,
+                        "paid_through": paid_through(paid_from, covered),
+                        "updated_at": now,
+                    }
+                )
+                await unit_of_work.quote_subscriptions.save(plan)
+            await self._queue_plan_nudge(unit_of_work, plan, now, key=f"pay:{payment_id}")
+            email = draft.recipient.email_address
+            if email is not None:
+                business = context.business.display_name or context.business.name
+                through = plan.paid_through
+                assert through is not None
+                await unit_of_work.outbox.enqueue(
+                    manual_receipt_command(
+                        business_id=business_id,
+                        quote_id=quote.quote_id,
+                        payment_id=payment_id,
+                        to=email,
+                        subject=f"Receipt from {business}",
+                        body="\n\n".join(
+                            [
+                                f"Thanks! {business} received your payment of"
+                                f" {format_money(amount_minor, draft.currency)}"
+                                f"{_RECEIPT_METHOD.get(method, '')}"
+                                f" on {paid_on:%B} {paid_on.day}, {paid_on.year}.",
+                                f"Your plan is paid through {through:%B} {through.day},"
+                                f" {through.year}. Keep this e-mail as your receipt.",
+                            ]
+                        ),
+                    )
+                )
+            await unit_of_work.commit()
+        return plan
+
+    async def void_plan_payment(
+        self, context: OwnerContext, quote_id: str, payment_id: str
+    ) -> QuoteSubscriptionRecord:
+        """Void one manual plan payment, keeping who voided it and when; the
+        paid-through date moves back by the months it covered. Voiding the
+        last one ends the plan and puts the quote back where it was."""
+
+        now = self._now()
+        business_id = context.business.business_id
+        async with self._unit_of_work_factory() as unit_of_work:
+            quote = await self._find_quote(unit_of_work, context, quote_id)
+            plans = await unit_of_work.quote_subscriptions.list_for_quote(
+                business_id, quote.quote_id
+            )
+            found = next((p for p in plans if p.is_manual), None)
+            if found is None:
+                raise OwnerNotFoundError("plan not found")
+            plan = await unit_of_work.quote_subscriptions.get(
+                business_id, found.subscription_id, for_update=True
+            )
+            assert plan is not None
+            manual = [
+                p
+                for p in await unit_of_work.payments.list_for_quote(business_id, quote.quote_id)
+                if p.kind is PaymentKind.PLAN and p.source is PaymentSource.MANUAL
+            ]
+            target = next((p for p in manual if str(p.payment_id) == payment_id), None)
+            if target is None:
+                raise OwnerNotFoundError("payment not found")
+            if target.voided_at is not None or not await unit_of_work.payments.void_manual(
+                business_id, target.payment_id, by=context.session.email, at=now
+            ):
+                raise OwnerConflictError("This payment changed; refresh and try again.")
+            remaining = [
+                p for p in manual if p.voided_at is None and p.payment_id != target.payment_id
+            ]
+            if remaining and plan.paid_from is not None:
+                covered = sum(p.months_covered or 0 for p in remaining)
+                plan = plan.model_copy(
+                    update={
+                        "paid_through": paid_through(plan.paid_from, covered),
+                        "updated_at": now,
+                    }
+                )
+                await unit_of_work.quote_subscriptions.save(plan)
+                await self._queue_plan_nudge(
+                    unit_of_work, plan, now, key=f"undo:{target.payment_id}"
+                )
+            else:
+                plan = plan.model_copy(
+                    update={"status": "canceled", "paid_through": None, "updated_at": now}
+                )
+                await unit_of_work.quote_subscriptions.save(plan)
+                before = next(
+                    (
+                        p.customer_status_before
+                        for p in sorted(manual, key=lambda p: p.recorded_at, reverse=True)
+                        if p.customer_status_before is not None
+                    ),
+                    None,
+                )
+                updated = quote.undo_customer_payment(now, _status_after_undo(before))
+                if updated is not quote:
+                    try:
+                        await unit_of_work.quotes.save(updated, expected_version=quote.version)
+                    except QuoteConcurrencyError as error:
+                        raise OwnerConflictError(
+                            "This quote changed; refresh and try again."
+                        ) from error
+            await unit_of_work.commit()
+        return plan
+
+    async def _queue_plan_nudge(
+        self,
+        unit_of_work: UnitOfWork,
+        plan: QuoteSubscriptionRecord,
+        now: datetime,
+        *,
+        key: str,
+    ) -> None:
+        """Nudge the owner a week before the plan runs out, at 9am in the
+        business's zone; the worker drops it if the plan moved on."""
+
+        through = plan.paid_through
+        business = await unit_of_work.businesses.get(plan.business_id)
+        zone = business_zone(business.timezone if business else None) or UTC
+        if through is None or through < now.astimezone(zone).date():
+            return
+        at = datetime.combine(through - PLAN_NUDGE_LEAD, time(9), tzinfo=zone).astimezone(UTC)
+        await unit_of_work.outbox.enqueue(plan_nudge_command(plan, at=max(at, now), key=key))
+
+    async def _close_open_checkout(self, unit_of_work: UnitOfWork, quote: Quote) -> None:
+        checkout = await unit_of_work.quote_payments.find_open(quote.business_id, quote.quote_id)
+        if checkout is None:
+            return
+        await unit_of_work.quote_payments.save(
+            checkout.mark_expired(self._now()), expected_from=checkout.status
+        )
+        if checkout.checkout_session_id:
+            await unit_of_work.outbox.enqueue(
+                checkout_expire_command(quote.business_id, checkout.checkout_session_id)
+            )
 
     async def mark_unpaid(self, context: OwnerContext, quote_id: str) -> Quote:
         """Void the manual payment of a one-off quote, keeping who voided it

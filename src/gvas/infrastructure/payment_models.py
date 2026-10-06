@@ -1,9 +1,10 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -76,6 +77,14 @@ class QuoteSubscription(Base):
         ),
         Index("ix_quote_subscriptions_business_id_customer_id", "business_id", "customer_id"),
         Index("ix_quote_subscriptions_business_id_quote_id", "business_id", "quote_id"),
+        Index(
+            "uq_quote_subscriptions_one_manual_plan",
+            "business_id",
+            "quote_id",
+            unique=True,
+            postgresql_where=text("provider = 'manual'"),
+            sqlite_where=text("provider = 'manual'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -94,6 +103,8 @@ class QuoteSubscription(Base):
     cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    paid_from: Mapped[date | None] = mapped_column(Date)
+    paid_through: Mapped[date | None] = mapped_column(Date)
 
 
 class LedgerPaymentRow(Base):

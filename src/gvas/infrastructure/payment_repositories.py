@@ -176,7 +176,38 @@ class SqlQuoteSubscriptionRepository:
             cancel_at_period_end=row.cancel_at_period_end,
             created_at=_aware(row.created_at),
             updated_at=_aware(row.updated_at),
+            paid_from=row.paid_from,
+            paid_through=row.paid_through,
         )
+
+    async def list_for_quote(
+        self, business_id: BusinessId, quote_id: QuoteId
+    ) -> tuple[QuoteSubscriptionRecord, ...]:
+        rows = await self.session.scalars(
+            select(QuoteSubscription)
+            .where(
+                QuoteSubscription.business_id == business_id,
+                QuoteSubscription.quote_id == quote_id,
+            )
+            .order_by(QuoteSubscription.created_at.desc())
+        )
+        return tuple(self._record(row) for row in rows)
+
+    async def get(
+        self,
+        business_id: BusinessId,
+        subscription_id: SubscriptionId,
+        *,
+        for_update: bool = False,
+    ) -> QuoteSubscriptionRecord | None:
+        query = select(QuoteSubscription).where(
+            QuoteSubscription.business_id == business_id,
+            QuoteSubscription.id == subscription_id,
+        )
+        if for_update:
+            query = query.with_for_update().execution_options(populate_existing=True)
+        row = await self.session.scalar(query)
+        return None if row is None else self._record(row)
 
     async def find_by_subscription_ref(
         self, subscription_ref: str
@@ -227,6 +258,8 @@ class SqlQuoteSubscriptionRepository:
             cancel_at_period_end=record.cancel_at_period_end,
             created_at=record.created_at,
             updated_at=record.updated_at,
+            paid_from=record.paid_from,
+            paid_through=record.paid_through,
         )
         try:
             async with self.session.begin_nested():
@@ -238,8 +271,13 @@ class SqlQuoteSubscriptionRepository:
     async def save(self, record: QuoteSubscriptionRecord) -> None:
         await self.session.execute(
             update(QuoteSubscription)
-            .where(QuoteSubscription.id == record.subscription_id)
+            .where(
+                QuoteSubscription.id == record.subscription_id,
+                QuoteSubscription.business_id == record.business_id,
+            )
             .values(
+                paid_from=record.paid_from,
+                paid_through=record.paid_through,
                 status=record.status,
                 interval=record.interval.value,
                 amount_cents=record.amount_minor,
