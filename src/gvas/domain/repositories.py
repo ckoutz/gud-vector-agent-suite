@@ -113,6 +113,9 @@ class BusinessRecord(BaseModel):
     # The owner's private calendar subscription link: a credential, read only
     # by the feed adapter and never returned by any route.
     calendar_feed_url: str | None = Field(default=None, repr=False)
+    # The IANA zone the business works in (``America/Los_Angeles``): filled
+    # from Calendly, editable by the owner, and used for every time label.
+    timezone: str | None = None
 
     @field_validator("site_url")
     @classmethod
@@ -221,6 +224,7 @@ class BusinessRepository(Protocol):
         notification_email: str | None = None,
         owner_email: str | None = None,
         calendar_feed_url: str | None = None,
+        timezone: str | None = None,
         now: datetime,
     ) -> BusinessRecord:
         """Set hosted-quote and intake-profile fields; ``None`` arguments

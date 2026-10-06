@@ -46,6 +46,8 @@ class Business(Base):
     # private calendar subscription link (a credential; never sent to a site).
     owner_email: Mapped[str | None] = mapped_column(String(320))
     calendar_feed_url: Mapped[str | None] = mapped_column(Text)
+    # IANA zone name the business's times are shown in.
+    timezone: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

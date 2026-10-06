@@ -6,7 +6,7 @@ the same transition here, so the customer sees the same outcome whichever
 one the owner used.
 """
 
-from datetime import datetime
+from datetime import datetime, tzinfo
 
 from gvas.domain.customer_linking import link_quote_customer
 from gvas.domain.customers import (
@@ -33,6 +33,7 @@ from gvas.domain.intake import (
 from gvas.domain.owner import OWNER_LOGIN_TOKEN_TTL, OwnerLoginToken
 from gvas.domain.quotes import InvalidQuoteTransitionError, Quote, quote_delivery_command
 from gvas.domain.repositories import BusinessRecord, UnitOfWork
+from gvas.domain.time_zones import business_zone
 
 
 class BookingDecisionOutcome:
@@ -83,8 +84,15 @@ async def decide_booking(
             f"Booking {reference} isn't waiting on a decision.", applied=False
         )
     if decision.action is BookingDecisionAction.APPROVE:
-        return await _approve_booking(unit_of_work, conversation, now)
+        return await _approve_booking(
+            unit_of_work, conversation, now, await _business_zone(unit_of_work, business_id)
+        )
     return await _decline_booking(unit_of_work, business_id, conversation, decision, now)
+
+
+async def _business_zone(unit_of_work: UnitOfWork, business_id: BusinessId) -> tzinfo | None:
+    business = await unit_of_work.businesses.get(business_id)
+    return business_zone(business.timezone if business is not None else None)
 
 
 def _request_stamp_matches(conversation: IntakeConversation, request_epoch: int) -> bool:
@@ -93,7 +101,10 @@ def _request_stamp_matches(conversation: IntakeConversation, request_epoch: int)
 
 
 async def _approve_booking(
-    unit_of_work: UnitOfWork, conversation: IntakeConversation, now: datetime
+    unit_of_work: UnitOfWork,
+    conversation: IntakeConversation,
+    now: datetime,
+    zone: tzinfo | None,
 ) -> BookingDecisionOutcome:
     if conversation.requested_slot_start is not None and conversation.requested_slot_start <= now:
         return BookingDecisionOutcome(
@@ -119,13 +130,13 @@ async def _approve_booking(
     await unit_of_work.commit()
     name = updated.collected.name or "the customer"
     slot = (
-        format_slot_label(updated.requested_slot_start)
+        format_slot_label(updated.requested_slot_start, zone)
         if updated.requested_slot_start is not None
         else "their requested time"
     )
     text = f"Approved booking {updated.reference} — arranging {slot} for {name}."
     if superseded is not None:
-        previous = f" The old booking for {superseded.slot_label} is being canceled."
+        previous = f" The old booking for {superseded.slot_label(zone)} is being canceled."
         text = f"{text}{previous}" if superseded.event_uri else f"{text} The old request is closed."
     return BookingDecisionOutcome(text, applied=True)
 
@@ -206,7 +217,7 @@ async def _decline_reschedule(
     business = await unit_of_work.businesses.get(business_id)
     email = updated.collected.email
     notified = "the customer has been notified"
-    kept = superseded.slot_label
+    kept = superseded.slot_label(business_zone(business.timezone if business else None))
     if email:
         business_name = (
             "" if business is None else (business.display_name or business.name)
@@ -254,10 +265,11 @@ async def _cancel_booking(
             f"Booking {reference} isn't active, so there's nothing to cancel.", applied=False
         )
     superseded = conversation.superseded_booking
+    zone = await _business_zone(unit_of_work, business_id)
     if superseded is not None:
-        standing: str | None = superseded.slot_label
+        standing: str | None = superseded.slot_label(zone)
     elif conversation.requested_slot_start is not None:
-        standing = format_slot_label(conversation.requested_slot_start)
+        standing = format_slot_label(conversation.requested_slot_start, zone)
     else:
         standing = None
     updated = conversation.with_updates(
