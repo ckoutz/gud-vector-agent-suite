@@ -30,6 +30,18 @@ def test_zones_outside_the_us_keep_their_own_abbreviation() -> None:
     assert zone_label(local) == "BST"
 
 
+def test_havana_reads_as_its_city_not_us_central_time() -> None:
+    local = datetime(2026, 1, 6, 9, 0, tzinfo=ZoneInfo("America/Havana"))
+
+    assert zone_label(local) == "Havana time"
+
+
+def test_us_central_zones_still_read_as_central_time() -> None:
+    local = datetime(2026, 1, 6, 9, 0, tzinfo=ZoneInfo("America/Chicago"))
+
+    assert zone_label(local) == "Central time"
+
+
 def test_unknown_zone_names_are_rejected_and_ignored() -> None:
     with pytest.raises(ValueError):
         normalize_time_zone("Pacific")

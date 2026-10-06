@@ -701,6 +701,24 @@ async def test_owner_approve_books_directly_and_emails_customer(
 
 
 @pytest.mark.asyncio
+async def test_the_calendar_zone_never_overwrites_one_the_owner_set(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    now = datetime.now(UTC)
+    async with session_factory() as session, session.begin():
+        repository = SqlBusinessRepository(session)
+        # The learner read the zone as unset; the owner saves one before it writes.
+        await repository.configure_site(business_id, timezone="America/Chicago", now=now)
+        adopted = await repository.adopt_timezone(business_id, "America/Los_Angeles", now)
+    assert adopted is False
+    async with session_factory() as session:
+        business = await SqlBusinessRepository(session).get(business_id)
+    assert business is not None and business.timezone == "America/Chicago"
+
+
+@pytest.mark.asyncio
 async def test_times_read_in_the_business_zone_learned_from_the_calendar(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

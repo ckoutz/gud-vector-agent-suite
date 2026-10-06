@@ -998,9 +998,7 @@ class IntakeService:
         key = next((key for slot in openings if (key := zone_key(slot.start))), None)
         if key is None:
             return
-        business = await unit_of_work.businesses.get(business_id)
-        if business is not None and business.timezone is None:
-            await unit_of_work.businesses.configure_site(business_id, timezone=key, now=now)
+        await unit_of_work.businesses.adopt_timezone(business_id, key, now)
 
     async def _business(self, unit_of_work: UnitOfWork, business_id: BusinessId) -> BusinessRecord:
         business = await unit_of_work.businesses.get(business_id)
