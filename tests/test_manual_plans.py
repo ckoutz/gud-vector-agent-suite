@@ -17,7 +17,7 @@ from gvas.application.owner import (
     OwnerInputError,
     OwnerNotFoundError,
 )
-from gvas.domain.enums import BillingInterval
+from gvas.domain.enums import BillingInterval, RecipientAddressKind
 from gvas.domain.identifiers import BusinessId, CustomerId, QuoteId, SubscriptionId
 from gvas.domain.payments import (
     MANUAL_RECEIPT_COMMAND_TYPE,
@@ -521,3 +521,54 @@ async def test_a_card_plan_racing_a_manual_one_is_kept_uncounted_and_the_owner_t
     after = {r.source: r for r in await _rows(session_factory, portal)}
     assert after["manual"].voided_at is not None and not after["stripe"].duplicate
     assert await _status(session_factory, portal) == "paid"
+
+
+@pytest.mark.asyncio
+async def test_a_plan_works_for_a_quote_with_no_customer_email(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    portal, context, quote_id, today = await _plan_quote(session_factory)
+    async with session_factory() as session:
+        row = await session.scalar(
+            select(QuoteRecord).where(QuoteRecord.business_id == portal.business_id)
+        )
+        assert row is not None and row.draft is not None
+        draft = dict(row.draft)
+        recipient = dict(draft["recipient"])  # type: ignore[arg-type]
+        recipient.update(address_kind=RecipientAddressKind.PHONE.value, address="+15415550123")
+        draft["recipient"] = recipient
+        row.draft = draft
+        row.customer_id = None
+        await session.commit()
+    owner = portal.application.owner
+    for key, months in (("no-email-first", 2), ("no-email-second", 1)):
+        plan = await owner.record_plan_payment(
+            context,
+            quote_id,
+            key=key,
+            paid_on=today,
+            method=PaymentMethod.CASH,
+            months=months,
+            amount_minor=9_900 * months,
+        )
+    assert plan.customer_id is None and plan.paid_through == paid_through(today, 3)
+    assert len(await _rows(session_factory, portal)) == 2
+    assert await _commands(session_factory, MANUAL_RECEIPT_COMMAND_TYPE) == []
+    assert await _status(session_factory, portal) == "paid"
+    payload = {
+        "subscription_id": str(plan.subscription_id),
+        "paid_through": plan.paid_through.isoformat(),
+    }
+    assert await _effects(session_factory, []).nudge_plan(portal.business_id, payload) == "sent"
+
+    other = await _plan_quote(session_factory)
+    with pytest.raises(OwnerNotFoundError):
+        await owner.record_plan_payment(
+            other[1],
+            quote_id,
+            key="no-email-other-business",
+            paid_on=today,
+            method=PaymentMethod.CASH,
+            months=1,
+            amount_minor=9_900,
+        )

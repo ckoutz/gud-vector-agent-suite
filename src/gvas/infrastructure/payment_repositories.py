@@ -165,7 +165,7 @@ class SqlQuoteSubscriptionRepository:
             subscription_id=SubscriptionId(row.id),
             business_id=BusinessId(row.business_id),
             quote_id=QuoteId(row.quote_id),
-            customer_id=CustomerId(row.customer_id),
+            customer_id=None if row.customer_id is None else CustomerId(row.customer_id),
             provider=row.provider,
             subscription_ref=row.stripe_subscription_id,
             status=row.status,

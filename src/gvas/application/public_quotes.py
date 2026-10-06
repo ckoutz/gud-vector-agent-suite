@@ -620,8 +620,12 @@ class PublicQuoteService:
         quote = await unit_of_work.quotes.get(subscription.business_id, subscription.quote_id)
         if quote is None:
             return
-        customer = await unit_of_work.customers.get(
-            subscription.business_id, subscription.customer_id
+        customer = (
+            None
+            if subscription.customer_id is None
+            else await unit_of_work.customers.get(
+                subscription.business_id, subscription.customer_id
+            )
         )
         who = (customer.display_name or customer.email) if customer is not None else "customer"
         amount = format_money(updated.amount_minor, updated.currency)

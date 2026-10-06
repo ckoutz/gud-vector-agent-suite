@@ -365,7 +365,8 @@ class QuoteSubscriptionRecord(PaymentModel):
     subscription_id: SubscriptionId
     business_id: BusinessId
     quote_id: QuoteId
-    customer_id: CustomerId
+    # None only for a manual plan whose quote has no customer e-mail.
+    customer_id: CustomerId | None
     provider: str = Field(min_length=1)
     subscription_ref: str = Field(min_length=1)
     status: str = Field(min_length=1)

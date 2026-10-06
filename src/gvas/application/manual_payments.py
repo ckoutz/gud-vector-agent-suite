@@ -95,8 +95,16 @@ class ManualPaymentEffectsService:
             quote = await unit_of_work.quotes.get(business_id, plan.quote_id)
             if quote is None:
                 return "moved on"
-            customer = await unit_of_work.customers.get(business_id, plan.customer_id)
-            who = (customer.display_name or customer.email) if customer is not None else None
+            customer = (
+                None
+                if plan.customer_id is None
+                else await unit_of_work.customers.get(business_id, plan.customer_id)
+            )
+            who: str | None
+            if customer is not None:
+                who = customer.display_name or customer.email
+            else:
+                who = quote.draft.recipient.display_name if quote.draft is not None else None
             through = plan.paid_through
             text = (
                 f"{who or 'A customer'}'s plan"

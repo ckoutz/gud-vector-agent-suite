@@ -552,8 +552,6 @@ class OwnerService:
             linked = quote
             if quote.customer_id is None:
                 linked, _ = await link_quote_customer(unit_of_work, quote, now)
-            if linked.customer_id is None:
-                raise OwnerConflictError("A plan needs the customer's e-mail on the quote.")
             starts_paid = quote.customer_status is not CustomerQuoteStatus.PAID
             if linked is not quote or starts_paid:
                 saved = linked.record_customer_payment(now) if starts_paid else linked
@@ -626,6 +624,7 @@ class OwnerService:
                 plan = plan.model_copy(
                     update={
                         "status": "active",
+                        "customer_id": plan.customer_id or linked.customer_id,
                         "paid_from": paid_from,
                         "paid_through": paid_through(paid_from, covered),
                         "updated_at": now,

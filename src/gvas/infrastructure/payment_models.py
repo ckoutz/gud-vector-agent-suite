@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -75,6 +76,11 @@ class QuoteSubscription(Base):
         UniqueConstraint(
             "stripe_subscription_id", name="uq_quote_subscriptions_stripe_subscription_id"
         ),
+        # A manual plan may be for a customer with no e-mail, so no customer row.
+        CheckConstraint(
+            "customer_id IS NOT NULL OR provider = 'manual'",
+            name="ck_quote_subscriptions_customer_unless_manual",
+        ),
         Index("ix_quote_subscriptions_business_id_customer_id", "business_id", "customer_id"),
         Index("ix_quote_subscriptions_business_id_quote_id", "business_id", "quote_id"),
         Index(
@@ -92,7 +98,7 @@ class QuoteSubscription(Base):
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
     quote_id: Mapped[UUID] = mapped_column(nullable=False)
-    customer_id: Mapped[UUID] = mapped_column(nullable=False)
+    customer_id: Mapped[UUID | None] = mapped_column(nullable=True)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     stripe_subscription_id: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
