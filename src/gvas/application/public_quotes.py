@@ -31,6 +31,7 @@ from gvas.domain.payments import (
     QuotePaymentRecord,
     QuoteSubscriptionRecord,
     SubscriptionEventData,
+    checkout_expire_command,
     months_for,
 )
 from gvas.domain.ports import BillingAccountPort, PaymentCheckoutPort
@@ -302,8 +303,40 @@ class PublicQuoteService:
                 )
                 if existing is None:
                     raise
+                # A concurrent accept recorded this session; it already
+                # closed it if the quote stopped being payable.
+                current = await self._find_claimable(unit_of_work, claim_token)
+                if (
+                    current.customer_status is not CustomerQuoteStatus.ACCEPTED
+                    or existing.status is not QuotePaymentStatus.OPEN
+                ):
+                    raise InvalidQuoteTransitionError(
+                        "the quote changed while checkout opened"
+                    ) from None
                 await unit_of_work.commit()
                 return existing.checkout_url
+            # The owner may have marked the quote paid, or the customer
+            # declined, while the session opened. Bumping the version
+            # serialises against those writes.
+            current = await self._find_claimable(unit_of_work, claim_token)
+            paid_meanwhile = current.customer_status is not CustomerQuoteStatus.ACCEPTED
+            if not paid_meanwhile:
+                try:
+                    await unit_of_work.quotes.save(
+                        current.model_copy(update={"version": current.version + 1}),
+                        expected_version=current.version,
+                    )
+                except QuoteConcurrencyError:
+                    paid_meanwhile = True
+            if paid_meanwhile:
+                await unit_of_work.quote_payments.save(
+                    record.mark_expired(_now()), expected_from=record.status
+                )
+                await unit_of_work.outbox.enqueue(
+                    checkout_expire_command(quote.business_id, result.session_id)
+                )
+                await unit_of_work.commit()
+                raise InvalidQuoteTransitionError("the quote changed while checkout opened")
             await unit_of_work.commit()
             return record.checkout_url
 

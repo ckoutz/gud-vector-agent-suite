@@ -29,8 +29,6 @@ from gvas.domain.intake import (
     BookingDecision,
     BookingDecisionAction,
     IntakeConversation,
-    IntakeCustomerEmail,
-    intake_customer_email_command,
     sanitize_owner_reason,
 )
 from gvas.domain.money import format_money
@@ -53,13 +51,14 @@ from gvas.domain.owner_actions import (
 )
 from gvas.domain.payments import (
     LedgerPayment,
-    PaymentCheckoutError,
     PaymentKind,
     PaymentMethod,
     PaymentSource,
     QuoteSubscriptionRecord,
+    checkout_expire_command,
+    manual_receipt_command,
 )
-from gvas.domain.ports import BookedEventsPort, CalendarFeedPort, PaymentCheckoutPort
+from gvas.domain.ports import BookedEventsPort, CalendarFeedPort
 from gvas.domain.quotes import (
     InvalidQuoteTransitionError,
     Quote,
@@ -146,11 +145,9 @@ class OwnerService:
         *,
         booked_events: BookedEventsPort | None = None,
         calendar_feed: CalendarFeedPort | None = None,
-        checkout: PaymentCheckoutPort | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
-        self._checkout = checkout
         self._booked_events = booked_events
         self._calendar_feed = calendar_feed
         self._now = now
@@ -393,7 +390,6 @@ class OwnerService:
         if paid_on > now.astimezone(zone).date():
             raise OwnerInputError("The paid date can't be in the future.")
         business_id = context.business.business_id
-        open_session: str | None = None
         async with self._unit_of_work_factory() as unit_of_work:
             quote = await self._find_quote(unit_of_work, context, quote_id)
             draft = quote.draft
@@ -434,37 +430,34 @@ class OwnerService:
                 await unit_of_work.quote_payments.save(
                     checkout.mark_expired(now), expected_from=checkout.status
                 )
-                open_session = checkout.checkout_session_id
+                if checkout.checkout_session_id:
+                    await unit_of_work.outbox.enqueue(
+                        checkout_expire_command(business_id, checkout.checkout_session_id)
+                    )
             email = draft.recipient.email_address
             if email is not None:
                 business = context.business.display_name or context.business.name
                 work = ", ".join(item.description for item in draft.line_items)
                 await unit_of_work.outbox.enqueue(
-                    intake_customer_email_command(
-                        IntakeCustomerEmail(
-                            business_id=business_id,
-                            to=email,
-                            subject=f"Receipt from {business}",
-                            body="\n\n".join(
-                                [
-                                    f"Thanks! {business} received your payment of"
-                                    f" {format_money(draft.total_minor, draft.currency)}"
-                                    f"{_RECEIPT_METHOD.get(method, '')}"
-                                    f" on {paid_on:%B} {paid_on.day}, {paid_on.year}.",
-                                    f"For: {work}" if work else "",
-                                    "This quote is paid in full. Keep this e-mail as your receipt.",
-                                ]
-                            ).replace("\n\n\n\n", "\n\n"),
-                            idempotency_key=f"manual-receipt:{payment_id}",
-                        )
+                    manual_receipt_command(
+                        business_id=business_id,
+                        quote_id=quote.quote_id,
+                        payment_id=payment_id,
+                        to=email,
+                        subject=f"Receipt from {business}",
+                        body="\n\n".join(
+                            [
+                                f"Thanks! {business} received your payment of"
+                                f" {format_money(draft.total_minor, draft.currency)}"
+                                f"{_RECEIPT_METHOD.get(method, '')}"
+                                f" on {paid_on:%B} {paid_on.day}, {paid_on.year}.",
+                                f"For: {work}" if work else "",
+                                "This quote is paid in full. Keep this e-mail as your receipt.",
+                            ]
+                        ).replace("\n\n\n\n", "\n\n"),
                     )
                 )
             await unit_of_work.commit()
-        if open_session is not None and self._checkout is not None:
-            try:
-                await self._checkout.expire_checkout(open_session)
-            except PaymentCheckoutError:
-                logger.warning("could not close the open checkout of a quote marked paid")
         return paid
 
     async def mark_unpaid(self, context: OwnerContext, quote_id: str) -> Quote:
@@ -482,18 +475,26 @@ class OwnerService:
                 )
                 if payment.kind is PaymentKind.ONE_OFF and payment.voided_at is None
             ]
-            active = next((payment for payment in payments if not payment.duplicate), None)
-            if active is None:
+            manual = next((p for p in payments if p.source is PaymentSource.MANUAL), None)
+            if manual is None:
+                if payments:
+                    raise OwnerConflictError(
+                        "Card payments can't be undone here. Refund it in Stripe."
+                    )
                 raise OwnerConflictError("This quote has no payment to undo.")
-            if active.source is not PaymentSource.MANUAL:
-                raise OwnerConflictError("Card payments can't be undone here. Refund it in Stripe.")
             if not await unit_of_work.payments.void_manual(
-                business_id, active.payment_id, by=context.session.email, at=now
+                business_id, manual.payment_id, by=context.session.email, at=now
             ):
                 raise OwnerConflictError("This payment changed; refresh and try again.")
-            # A card payment that raced the manual one now counts instead.
-            standby = next((payment for payment in payments if payment.duplicate), None)
-            if standby is not None:
+            # A card payment that raced the manual one counts instead: it
+            # already did when it settled first, or it takes over now.
+            standby = next(
+                (p for p in payments if p.duplicate and p.payment_id != manual.payment_id),
+                None,
+            )
+            if manual.duplicate:
+                updated = quote
+            elif standby is not None:
                 await unit_of_work.payments.mark_duplicate(
                     business_id, standby.payment_id, duplicate=False
                 )

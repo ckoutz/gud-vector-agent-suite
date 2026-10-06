@@ -33,6 +33,7 @@ from gvas.application.intake import (
     SendIntakeCustomerTextService,
     SendOwnerEmailService,
 )
+from gvas.application.manual_payments import ManualPaymentEffectsService
 from gvas.application.outbox_service import OutboxService
 from gvas.application.owner import OwnerService
 from gvas.application.owner_reply_delivery import DeliverOwnerReplyService
@@ -308,7 +309,6 @@ def build_application(
         unit_of_work_factory,
         booked_events=ports.booked_events,
         calendar_feed=ports.calendar_feed,
-        checkout=ports.payment_checkout,
         now=now,
     )
     router = WorkflowRouter(
@@ -423,6 +423,15 @@ def build_application(
         intake_booking_cancel=CancelIntakeBookingService(availability=ports.availability),
         owner_email=(
             SendOwnerEmailService(ports.owner_email) if ports.owner_email is not None else None
+        ),
+        manual_payments=ManualPaymentEffectsService(
+            unit_of_work_factory,
+            checkout=ports.payment_checkout,
+            receipts=(
+                SendIntakeCustomerEmailService(ports.customer_email).send
+                if ports.customer_email is not None
+                else None
+            ),
         ),
     )
     return Application(

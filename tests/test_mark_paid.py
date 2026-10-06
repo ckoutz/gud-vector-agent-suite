@@ -2,12 +2,16 @@
 one active payment per quote, an undo with a trail, the open card checkout
 closed, a card payment that races it flagged, and a receipt e-mail."""
 
+import json
 from datetime import UTC, date, datetime, timedelta
 
+import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from composition_fakes import CustomerDeliveryFake
+from gvas.application.manual_payments import ManualPaymentEffectsService
 from gvas.application.owner import (
     OwnerConflictError,
     OwnerContext,
@@ -16,14 +20,21 @@ from gvas.application.owner import (
 )
 from gvas.composition import Application
 from gvas.domain.identifiers import BusinessId
-from gvas.domain.intake import INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE
 from gvas.domain.owner import OwnerSession
-from gvas.domain.payments import PaymentMethod
+from gvas.domain.payments import (
+    CHECKOUT_EXPIRE_COMMAND_TYPE,
+    MANUAL_RECEIPT_COMMAND_TYPE,
+    PaymentCheckoutClosedError,
+    PaymentCheckoutError,
+    PaymentMethod,
+)
 from gvas.domain.quotes import public_quote_id
 from gvas.infrastructure.models import OutboxMessage, QuoteRecord
 from gvas.infrastructure.payment_models import LedgerPaymentRow, QuotePayment
 from gvas.infrastructure.repositories import SqlBusinessRepository
 from gvas.infrastructure.stripe import StripeWebhookVerifier
+from gvas.infrastructure.stripe.api import StripeCheckout
+from gvas.infrastructure.stripe.config import StripeSettings
 from gvas.infrastructure.stripe.signature import SIGNATURE_HEADER
 from test_hosted_quotes import (
     SESSION_ID,
@@ -109,13 +120,14 @@ async def test_marking_paid_records_one_manual_payment_closes_checkout_and_email
     assert row.paid_at.replace(tzinfo=row.paid_at.tzinfo or UTC).date() == PAID_ON
     assert row.voided_at is None and not row.duplicate
 
-    assert checkout.expired == [SESSION_ID]
+    # Closing the card checkout is the worker's job, so an outage is retried.
+    assert checkout.expired == []
     async with session_factory() as session:
         payment = await session.scalar(select(QuotePayment))
         receipts = (
             await session.scalars(
                 select(OutboxMessage).where(
-                    OutboxMessage.command_type == INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE
+                    OutboxMessage.command_type == MANUAL_RECEIPT_COMMAND_TYPE
                 )
             )
         ).all()
@@ -285,3 +297,174 @@ async def test_the_owner_api_validates_and_scopes_mark_paid(
             f"/v1/owner/quotes/{quote['id']}/mark-unpaid", headers=bearer(owner)
         )
         assert unpaid.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_the_worker_closes_the_checkout_and_sends_the_receipt(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    checkout = CheckoutFake()
+    emails = CustomerDeliveryFake()
+    application, _, _, claim_token = await hosted_quote(
+        session_factory, checkout=checkout, customer_email=emails
+    )
+    async with public_client(application) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 200
+    business_id, quote = await _quote_of(session_factory)
+    context = await _context(session_factory, business_id)
+    await application.owner.mark_paid(
+        context, public_quote_id(quote), paid_on=PAID_ON, method=PaymentMethod.CASH
+    )
+    async with session_factory() as session:
+        types = set(await session.scalars(select(OutboxMessage.command_type)))
+    assert {CHECKOUT_EXPIRE_COMMAND_TYPE, MANUAL_RECEIPT_COMMAND_TYPE} <= types
+
+    await immediate_worker(application).drain()
+
+    assert checkout.expired == [SESSION_ID]
+    [receipt] = [r for r in emails.requests if (r.subject or "").startswith("Receipt")]
+    assert "in cash" in (receipt.body_text or "")
+
+
+@pytest.mark.asyncio
+async def test_a_payment_voided_before_delivery_sends_no_receipt(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    emails = CustomerDeliveryFake()
+    application, _, _, claim_token = await hosted_quote(
+        session_factory, checkout=CheckoutFake(), customer_email=emails
+    )
+    async with public_client(application) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 200
+    business_id, quote = await _quote_of(session_factory)
+    context = await _context(session_factory, business_id)
+    await application.owner.mark_paid(
+        context, public_quote_id(quote), paid_on=PAID_ON, method=PaymentMethod.CHECK
+    )
+    await application.owner.mark_unpaid(context, public_quote_id(quote))
+
+    await immediate_worker(application).drain()
+
+    assert not [r for r in emails.requests if (r.subject or "").startswith("Receipt")]
+
+
+class _ExpiryFails(CheckoutFake):
+    def __init__(self, error: PaymentCheckoutError) -> None:
+        super().__init__()
+        self.error = error
+
+    async def expire_checkout(self, session_id: str) -> None:
+        raise self.error
+
+
+@pytest.mark.asyncio
+async def test_an_expiry_outage_is_retried_but_an_already_closed_session_is_done(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    def effects(error: PaymentCheckoutError) -> ManualPaymentEffectsService:
+        return ManualPaymentEffectsService(
+            session_factory,  # type: ignore[arg-type]
+            checkout=_ExpiryFails(error),
+            receipts=None,
+        )
+
+    payload = {"session_id": SESSION_ID}
+    with pytest.raises(PaymentCheckoutError):
+        await effects(PaymentCheckoutError("unreachable")).expire_checkout(payload)
+    closed = effects(PaymentCheckoutClosedError("closed"))
+    assert await closed.expire_checkout(payload) == "already closed"
+
+
+@pytest.mark.asyncio
+async def test_a_card_payment_settled_before_the_check_date_still_lets_the_owner_undo_the_check(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, context, quote_id, _ = await _accepted(session_factory, CheckoutFake())
+    await application.owner.mark_paid(
+        context, quote_id, paid_on=PAID_ON, method=PaymentMethod.CHECK
+    )
+    body = json.loads(checkout_event())
+    body["created"] = int(datetime(2025, 11, 1, tzinfo=UTC).timestamp())
+    raw = json.dumps(body).encode()
+    async with public_client(application, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as client:
+        response = await client.post(
+            "/webhooks/stripe", content=raw, headers={SIGNATURE_HEADER: sign(raw)}
+        )
+        assert response.status_code == 200
+    rows = {row.source: row for row in await _rows(session_factory)}
+    assert rows["manual"].duplicate and not rows["stripe"].duplicate
+
+    await application.owner.mark_unpaid(context, quote_id)
+
+    rows = {row.source: row for row in await _rows(session_factory)}
+    assert rows["manual"].voided_at is not None and not rows["stripe"].duplicate
+    assert await _quote_status(session_factory) == "paid"
+
+
+@pytest.mark.asyncio
+async def test_marking_paid_while_checkout_opens_closes_the_new_session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    checkout = CheckoutFake()
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=checkout)
+
+    async def owner_marks_paid() -> None:
+        business_id, quote = await _quote_of(session_factory)
+        context = await _context(session_factory, business_id)
+        await application.owner.mark_paid(
+            context, public_quote_id(quote), paid_on=PAID_ON, method=PaymentMethod.CASH
+        )
+
+    checkout.hook = owner_marks_paid
+    async with public_client(application) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 409
+    async with session_factory() as session:
+        payment = await session.scalar(select(QuotePayment))
+    assert payment is not None and payment.status == "expired"
+
+    await immediate_worker(application).drain()
+
+    assert checkout.expired == [SESSION_ID]
+    assert await _quote_status(session_factory) == "paid"
+
+
+@pytest.mark.asyncio
+async def test_declining_while_checkout_opens_closes_the_new_session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    checkout = CheckoutFake()
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=checkout)
+
+    async def customer_declines() -> None:
+        async with public_client(application) as other_tab:
+            response = await other_tab.post(f"/v1/quotes/{claim_token}/decline")
+            assert response.status_code == 200
+
+    checkout.hook = customer_declines
+    async with public_client(application) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 409
+    await immediate_worker(application).drain()
+
+    assert checkout.expired == [SESSION_ID]
+    assert await _quote_status(session_factory) == "declined"
+
+
+def _stripe_expiry(status_code: int, session_status: str) -> StripeCheckout:
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, json={"id": SESSION_ID, "status": session_status})
+        return httpx.Response(status_code, json={"error": {"type": "invalid_request_error"}})
+
+    settings = StripeSettings(secret_key="sk_test_secret", webhook_secret="whsec_x")  # noqa: S106
+    return StripeCheckout(settings, httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+
+
+@pytest.mark.asyncio
+async def test_stripe_expiry_is_done_only_when_the_session_is_no_longer_open() -> None:
+    with pytest.raises(PaymentCheckoutClosedError):
+        await _stripe_expiry(400, "complete").expire_checkout(SESSION_ID)
+    with pytest.raises(PaymentCheckoutClosedError):
+        await _stripe_expiry(404, "open").expire_checkout(SESSION_ID)
+    with pytest.raises(PaymentCheckoutError) as raised:
+        await _stripe_expiry(400, "open").expire_checkout(SESSION_ID)
+    assert not isinstance(raised.value, PaymentCheckoutClosedError)
