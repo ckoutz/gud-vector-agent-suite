@@ -59,6 +59,7 @@ from gvas.domain.quotes import (
 )
 from gvas.domain.reporting import normalize_email_address
 from gvas.domain.repositories import BusinessRecord, UnitOfWork
+from gvas.domain.time_zones import normalize_time_zone
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ class SettingsUpdate:
     intake_opening: str | None = None
     notification_email: str | None = None
     calendar_feed_url: str | None = None
+    timezone: str | None = None
 
 
 class OwnerService:
@@ -394,6 +396,13 @@ class OwnerService:
                     raise OwnerInputError(f"Calendar link {error}.") from error
             else:
                 fields["calendar_feed_url"] = ""
+        if update.timezone is not None:
+            try:
+                fields["timezone"] = (
+                    normalize_time_zone(update.timezone) if update.timezone.strip() else ""
+                )
+            except ValueError as error:
+                raise OwnerInputError(f"Time zone {error}.") from error
         async with self._unit_of_work_factory() as unit_of_work:
             record = await unit_of_work.businesses.configure_site(
                 context.business.business_id,

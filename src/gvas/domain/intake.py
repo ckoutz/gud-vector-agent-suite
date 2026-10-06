@@ -17,7 +17,7 @@ import hmac
 import json
 import re
 from collections.abc import Mapping
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, tzinfo
 from enum import StrEnum
 from typing import Protocol
 from uuid import UUID, uuid4, uuid5
@@ -36,6 +36,7 @@ from gvas.domain.identifiers import (
 )
 from gvas.domain.outbox import OutboxCommand
 from gvas.domain.owner_email import OwnerEmailContent, OwnerEmailDetail, OwnerEmailRequest
+from gvas.domain.time_zones import zone_label
 
 BOOKING_INTENT = WorkflowIntent("booking_decision")
 INTAKE_CHANNEL_WEB = "web"
@@ -336,9 +337,8 @@ class SupersededBooking(IntakeModel):
 
     _aware_superseded_start = field_validator("slot_start")(_aware)
 
-    @property
-    def slot_label(self) -> str:
-        return format_slot_label(self.slot_start)
+    def slot_label(self, zone: tzinfo | None) -> str:
+        return format_slot_label(self.slot_start, zone)
 
 
 class IntakeConversation(IntakeModel):
@@ -658,14 +658,18 @@ def pick_offer_slots(
     return tuple(picked)
 
 
-def format_slot_label(start: datetime) -> str:
-    """``Tue Sep 15, 9:00 AM PDT`` — business-local, as the owner reads it."""
+def format_slot_label(start: datetime, zone: tzinfo | None = None) -> str:
+    """``Tue Sep 15, 9:00 AM Pacific time`` in the business's zone.
 
-    hour = start.hour % 12 or 12
-    meridiem = "AM" if start.hour < 12 else "PM"
-    zone = start.strftime("%Z")
-    label = f"{start:%a} {start:%b} {start.day}, {hour}:{start:%M} {meridiem}"
-    return f"{label} {zone}".rstrip()
+    Stored times come back in UTC, so callers pass the business zone; without
+    one the label keeps the time's own zone.
+    """
+
+    local = start.astimezone(zone) if zone is not None else start
+    hour = local.hour % 12 or 12
+    meridiem = "AM" if local.hour < 12 else "PM"
+    label = f"{local:%a} {local:%b} {local.day}, {hour}:{local:%M} {meridiem}"
+    return f"{label} {zone_label(local)}".rstrip()
 
 
 def booking_request_notice(
@@ -676,6 +680,7 @@ def booking_request_notice(
     previous_label: str | None = None,
     previous_booked: bool = True,
     unverified_email: bool = False,
+    zone: tzinfo | None = None,
 ) -> str:
     """The owner notice posted when a customer picks a slot.
 
@@ -693,7 +698,7 @@ def booking_request_notice(
         who.append("address unknown")
     details = collected.details or "New request"
     requested = (
-        format_slot_label(conversation.requested_slot_start)
+        format_slot_label(conversation.requested_slot_start, zone)
         if conversation.requested_slot_start is not None
         else "no time picked"
     )
@@ -729,6 +734,7 @@ def booking_request_email(
     previous_label: str | None = None,
     previous_booked: bool = True,
     unverified_email: bool = False,
+    zone: tzinfo | None = None,
 ) -> OwnerEmailContent:
     """The e-mail form of ``booking_request_notice``: same facts, laid out
     as a details list with the owner-channel commands in the footer."""
@@ -751,7 +757,7 @@ def booking_request_email(
         OwnerEmailDetail(
             label="Requested",
             value=(
-                format_slot_label(conversation.requested_slot_start)
+                format_slot_label(conversation.requested_slot_start, zone)
                 if conversation.requested_slot_start is not None
                 else "no time picked"
             ),
@@ -797,6 +803,7 @@ def unverified_booking_change_notice(
     *,
     cancel: bool,
     business_name: str | None = None,
+    zone: tzinfo | None = None,
 ) -> str:
     """A chat other than the booking's own asked to cancel or move it.
 
@@ -807,7 +814,7 @@ def unverified_booking_change_notice(
     ref = holder.reference
     who = holder.collected.name or "a customer"
     when = (
-        format_slot_label(holder.requested_slot_start)
+        format_slot_label(holder.requested_slot_start, zone)
         if holder.requested_slot_start is not None
         else "their requested time"
     )
@@ -838,7 +845,10 @@ def unverified_booking_change_notice(
 
 
 def cancel_request_notice(
-    conversation: IntakeConversation, *, business_name: str | None = None
+    conversation: IntakeConversation,
+    *,
+    business_name: str | None = None,
+    zone: tzinfo | None = None,
 ) -> str:
     """The owner notice when the customer cancels their own call.
 
@@ -849,7 +859,7 @@ def cancel_request_notice(
     collected = conversation.collected
     who = collected.name or "A customer"
     when = (
-        format_slot_label(conversation.requested_slot_start)
+        format_slot_label(conversation.requested_slot_start, zone)
         if conversation.requested_slot_start is not None
         else "their requested time"
     )
@@ -880,9 +890,9 @@ def escalation_notice(conversation: IntakeConversation, summary: str) -> str:
     return text
 
 
-def slot_confirmed_reply(slot: AvailableSlot) -> str:
+def slot_confirmed_reply(slot: AvailableSlot, zone: tzinfo | None = None) -> str:
     return (
-        f"Great — I've requested {format_slot_label(slot.start)}. "
+        f"Great — I've requested {format_slot_label(slot.start, zone)}. "
         "We'll confirm by email/text once the owner approves."
     )
 

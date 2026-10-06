@@ -8,9 +8,9 @@ request that saved the approval.
 """
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from enum import StrEnum
 from uuid import UUID, uuid4
 
@@ -102,6 +102,7 @@ from gvas.domain.ports import (
 )
 from gvas.domain.quotes import normalize_customer_email
 from gvas.domain.repositories import BusinessRecord, UnitOfWork
+from gvas.domain.time_zones import business_zone, zone_key
 from gvas.domain.usage import UsageCeilingGuard, UsageKind
 from gvas.domain.workflows import WorkflowContext, WorkflowResult
 
@@ -520,7 +521,9 @@ class IntakeService:
                     collected=conversation.collected,
                     offered_slots=conversation.proposed_slots,
                     known_customer=conversation.customer_id is not None,
-                    existing_booking=self._existing_booking(holder, verified=verified),
+                    existing_booking=self._existing_booking(
+                        holder, verified=verified, zone=_zone_of(business)
+                    ),
                     brief=business.intake_profile.brief,
                     questions=business.intake_profile.questions,
                 )
@@ -656,7 +659,7 @@ class IntakeService:
 
     @staticmethod
     def _existing_booking(
-        holder: IntakeConversation | None, *, verified: bool
+        holder: IntakeConversation | None, *, verified: bool, zone: tzinfo | None
     ) -> ExistingBooking | None:
         if holder is None or holder.requested_slot_start is None:
             return None
@@ -668,7 +671,7 @@ class IntakeService:
             else ExistingBookingStatus.CONFIRMED
         )
         return ExistingBooking(
-            status=status, slot_label=format_slot_label(holder.requested_slot_start)
+            status=status, slot_label=format_slot_label(holder.requested_slot_start, zone)
         )
 
     async def _refer_booking_change(
@@ -697,6 +700,7 @@ class IntakeService:
                 conversation,
                 cancel=cancel,
                 business_name=business.display_name or business.name,
+                zone=_zone_of(business),
             ),
         )
         text = UNVERIFIED_CHANGE_REPLY if notified else UNVERIFIED_CHANGE_UNREACHABLE_REPLY
@@ -720,7 +724,9 @@ class IntakeService:
             holder.business_id,
             correlation_id=f"intake_cancel:{holder.conversation_id}",
             text=cancel_request_notice(
-                holder, business_name=business.display_name or business.name
+                holder,
+                business_name=business.display_name or business.name,
+                zone=_zone_of(business),
             ),
         )
         if not notified:
@@ -826,6 +832,7 @@ class IntakeService:
         except AvailabilityError as error:
             logger.warning("availability lookup failed for %s: %s", conversation.reference, error)
             return None
+        await self._learn_business_zone(unit_of_work, conversation.business_id, openings, now)
         offered = pick_offer_slots(tuple(openings), now=now)
         if not offered:
             return None
@@ -892,18 +899,16 @@ class IntakeService:
         # same reference — the approved event already in custody stays in
         # custody (``booking_snapshot`` only fires for an approved state).
         superseded = conversation.booking_snapshot() or conversation.superseded_booking
+        business = await self._business(unit_of_work, conversation.business_id)
+        zone = _zone_of(business) or slot.start.tzinfo
         previous_label: str | None = None
         if superseded is not None:
-            previous_label = superseded.slot_label
+            previous_label = superseded.slot_label(zone)
         elif (
             conversation.state is IntakeState.AWAITING_OWNER
             and conversation.requested_slot_start is not None
         ):
-            # Stored times come back in UTC; show the old one in the same
-            # business-local zone as the newly picked slot.
-            previous_label = format_slot_label(
-                conversation.requested_slot_start.astimezone(slot.start.tzinfo)
-            )
+            previous_label = format_slot_label(conversation.requested_slot_start, zone)
         updated = conversation.with_updates(
             now,
             state=IntakeState.AWAITING_OWNER,
@@ -923,7 +928,6 @@ class IntakeService:
             decision_reason=None,
             owner_notified_at=now,
         )
-        business = await self._business(unit_of_work, conversation.business_id)
         correlation_id = f"intake_request:{conversation.conversation_id}"
         if conversation.owner_notified_at is not None:
             # A second request from one conversation needs a fresh id or the
@@ -940,6 +944,7 @@ class IntakeService:
                 previous_label=previous_label,
                 previous_booked=superseded is not None,
                 unverified_email=unverified_email,
+                zone=zone,
             ),
             email=booking_request_email(
                 updated,
@@ -947,6 +952,7 @@ class IntakeService:
                 previous_label=previous_label,
                 previous_booked=superseded is not None,
                 unverified_email=unverified_email,
+                zone=zone,
             ),
             email_actions=self._decision_email.actions(updated),
         )
@@ -962,7 +968,7 @@ class IntakeService:
             reply = await self._reply(unit_of_work, conversation, OWNER_UNREACHABLE_REPLY, now)
             return IntakeReply(conversation, reply, conversation.proposed_slots)
         if customer_id is not None:
-            preferred = format_slot_label(slot.start)
+            preferred = format_slot_label(slot.start, zone)
             await unit_of_work.service_requests.add(
                 ServiceRequest(
                     request_id=ServiceRequestId(uuid4()),
@@ -975,9 +981,26 @@ class IntakeService:
                 )
             )
         await unit_of_work.intake_conversations.save(updated)
-        reply = slot_confirmed_reply(slot)
+        reply = slot_confirmed_reply(slot, zone)
         await self._append(unit_of_work, updated, IntakeMessageRole.AGENT, reply, now)
         return IntakeReply(updated, reply, ())
+
+    @staticmethod
+    async def _learn_business_zone(
+        unit_of_work: UnitOfWork,
+        business_id: BusinessId,
+        openings: Sequence[AvailableSlot],
+        now: datetime,
+    ) -> None:
+        """The first availability read fills in an unset business zone from
+        the calendar's own (the owner can change it in Settings)."""
+
+        key = next((key for slot in openings if (key := zone_key(slot.start))), None)
+        if key is None:
+            return
+        business = await unit_of_work.businesses.get(business_id)
+        if business is not None and business.timezone is None:
+            await unit_of_work.businesses.configure_site(business_id, timezone=key, now=now)
 
     async def _business(self, unit_of_work: UnitOfWork, business_id: BusinessId) -> BusinessRecord:
         business = await unit_of_work.businesses.get(business_id)
@@ -1077,7 +1100,7 @@ class ArrangeIntakeBookingService:
             business_name = (
                 "" if business is None else (business.display_name or business.name)
             ) or "the business"
-            slot_label = format_slot_label(conversation.requested_slot_start)
+            slot_label = format_slot_label(conversation.requested_slot_start, _zone_of(business))
             about = _booking_about(conversation.collected, business)
             if result.kind is BookingKind.BOOKED:
                 body = (
@@ -1434,6 +1457,7 @@ class IntakeBookingEventService:
         event: IntakeBookingEvent,
         now: datetime,
     ) -> IntakeBookingEventResult:
+        zone = _zone_of(await unit_of_work.businesses.get(conversation.business_id))
         if event.start == conversation.requested_slot_start:
             already_booked = conversation.booking_kind == BookingKind.BOOKED.value
             updated = conversation.with_updates(
@@ -1450,7 +1474,7 @@ class IntakeBookingEventService:
                     text=(
                         f"Booking {conversation.reference} is on the calendar: "
                         f"{conversation.collected.name or 'the customer'} confirmed "
-                        f"{format_slot_label(event.start)}."
+                        f"{format_slot_label(event.start, zone)}."
                     ),
                 )
             await unit_of_work.intake_conversations.save(updated)
@@ -1460,7 +1484,7 @@ class IntakeBookingEventService:
         # actually landed. Approving keeps the event (arrange reconciles
         # through find_booking); declining cancels it.
         original = (
-            format_slot_label(conversation.requested_slot_start)
+            format_slot_label(conversation.requested_slot_start, zone)
             if conversation.requested_slot_start is not None
             else "their requested time"
         )
@@ -1486,7 +1510,7 @@ class IntakeBookingEventService:
             text=(
                 f"Booking {conversation.reference} — "
                 f"{conversation.collected.name or 'the customer'} booked "
-                f"{format_slot_label(event.start)} instead of the requested "
+                f"{format_slot_label(event.start, zone)} instead of the requested "
                 f"{original}. Reply `approve booking {conversation.reference}` "
                 f"to keep it or `decline booking {conversation.reference} <reason>` to cancel."
             ),
@@ -1521,6 +1545,7 @@ class IntakeBookingEventService:
         if superseded is not None and superseded.event_uri:
             # The new event died on the calendar while the owner was still
             # deciding: the old booking goes back in force.
+            zone = _zone_of(await unit_of_work.businesses.get(conversation.business_id))
             updated = conversation.with_updates(
                 now,
                 state=IntakeState.APPROVED,
@@ -1541,8 +1566,8 @@ class IntakeBookingEventService:
                 event,
                 text=(
                     f"Booking {conversation.reference} — the new "
-                    f"{format_slot_label(event.start)} event was canceled on "
-                    f"Calendly; the original {superseded.slot_label} booking "
+                    f"{format_slot_label(event.start, zone)} event was canceled on "
+                    f"Calendly; the original {superseded.slot_label(zone)} booking "
                     "still stands."
                 ),
             )
@@ -1636,8 +1661,11 @@ class IntakeDecisionLinkService:
         link, conversation = resolved
         verb = "Approve" if link.action is BookingDecisionAction.APPROVE else "Decline"
         name = conversation.collected.name or "the customer"
+        async with self._unit_of_work_factory() as unit_of_work:
+            business = await unit_of_work.businesses.get(conversation.business_id)
+            await unit_of_work.commit()
         slot = (
-            format_slot_label(conversation.requested_slot_start)
+            format_slot_label(conversation.requested_slot_start, _zone_of(business))
             if conversation.requested_slot_start is not None
             else "the requested time"
         )
@@ -1746,3 +1774,7 @@ class CancelIntakeBookingService:
         if self._availability is None:
             raise IntakeAvailabilityError("no availability provider is configured")
         await self._availability.cancel_booking(business_id, event_uri)
+
+
+def _zone_of(business: BusinessRecord | None) -> tzinfo | None:
+    return business_zone(business.timezone if business is not None else None)

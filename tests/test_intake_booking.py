@@ -280,11 +280,18 @@ async def reach_awaiting_owner(
     customer_text: CustomerTextFake | None = None,
     sms_consent: bool | None = None,
     notification_email: str | None = None,
+    zone: ZoneInfo | None = None,
 ) -> tuple[Application, OwnerReplyFake, BusinessId, str]:
-    """Drives one conversation to ``awaiting_owner`` via HTTP; returns the ref."""
+    """Drives one conversation to ``awaiting_owner`` via HTTP; returns the ref.
+
+    ``zone`` serves the openings in that zone, as Calendly does."""
 
     business_id = await intake_business(session_factory, notification_email=notification_email)
     offered = slot(datetime.now(UTC))
+    if zone is not None:
+        offered = AvailableSlot(
+            start=offered.start.astimezone(zone), end=offered.end.astimezone(zone)
+        )
     availability.slots = (offered,)
     agent = agent or IntakeAgentFake(
         [
@@ -691,6 +698,33 @@ async def test_owner_approve_books_directly_and_emails_customer(
     assert email_commands
     booked_body = email_commands[0].payload["body"]
     assert isinstance(booked_body, str) and "is booked" in booked_body
+
+
+@pytest.mark.asyncio
+async def test_times_read_in_the_business_zone_learned_from_the_calendar(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    availability = AvailabilityFake(result=BookingResult(kind=BookingKind.BOOKED))
+    application, owner, business_id, reference = await reach_awaiting_owner(
+        session_factory, availability=availability, zone=ZoneInfo("America/Los_Angeles")
+    )
+    async with session_factory() as session:
+        business = await SqlBusinessRepository(session).get(business_id)
+    assert business is not None and business.timezone == "America/Los_Angeles"
+    (request,) = texts_of(owner, "Booking request")
+    assert "Pacific time" in request and "UTC" not in request
+
+    await application.ingest_service.ingest(
+        inbound(business_id, f"approve booking {reference}", message_key="approve-zone")
+    )
+    for _ in range(6):
+        await immediate_worker(application).drain()
+
+    (approved,) = texts_of(owner, "Approved booking")
+    assert "Pacific time" in approved and "UTC" not in approved
+    emails = await commands_of(session_factory, business_id, INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE)
+    body = emails[0].payload["body"]
+    assert isinstance(body, str) and "Pacific time" in body and "UTC" not in body
 
 
 @pytest.mark.asyncio
