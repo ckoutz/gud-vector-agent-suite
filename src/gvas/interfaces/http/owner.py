@@ -58,6 +58,16 @@ def _iso(value: datetime | None) -> str | None:
     return None if value is None else value.isoformat()
 
 
+def _sent_at(quote: Quote) -> datetime | None:
+    """When the quote first reached the customer by e-mail or text. A portal
+    handoff that e-mailed nobody only gave the owner a link to forward."""
+
+    receipt = quote.delivery_receipt
+    emailed_at = None if receipt is None or receipt.emailed is False else receipt.occurred_at
+    reached = [at for at in (emailed_at, quote.texted_at) if at is not None]
+    return min(reached) if reached else None
+
+
 def owner_quote_payload(quote: Quote) -> dict[str, object]:
     draft = quote.draft
     recipient = draft.recipient if draft is not None else None
@@ -89,9 +99,7 @@ def owner_quote_payload(quote: Quote) -> dict[str, object]:
         "note": draft.owner_note if draft is not None else None,
         "createdAt": _iso(quote.created_at),
         "approvedAt": _iso(quote.approved_at),
-        "sentAt": _iso(
-            quote.delivery_receipt.occurred_at if quote.delivery_receipt is not None else None
-        ),
+        "sentAt": _iso(_sent_at(quote)),
         "updatedAt": _iso(quote.updated_at),
     }
 

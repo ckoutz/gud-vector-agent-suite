@@ -260,6 +260,8 @@ class Quote(QuoteModel):
     claim_token_hash: str | None = None
     customer_status: CustomerQuoteStatus | None = None
     approved_at: datetime | None = None
+    # When the customer was first texted the link (e-mail is on the receipt).
+    texted_at: datetime | None = None
     # The portal identity the recipient e-mail resolves to within the
     # business; linked on approval, delivery or the customer's first login.
     customer_id: CustomerId | None = None
@@ -267,7 +269,7 @@ class Quote(QuoteModel):
     created_at: datetime
     updated_at: datetime
 
-    @field_validator("created_at", "updated_at", "approved_at")
+    @field_validator("created_at", "updated_at", "approved_at", "texted_at")
     @classmethod
     def timestamps_are_aware(cls, value: datetime | None) -> datetime | None:
         if value is not None and (value.tzinfo is None or value.utcoffset() is None):
@@ -619,6 +621,10 @@ class QuoteRepository(Protocol):
     async def add(self, quote: Quote) -> None: ...
 
     async def save(self, quote: Quote, *, expected_version: int) -> None: ...
+
+    async def record_texted(self, business_id: BusinessId, quote_id: QuoteId, at: datetime) -> None:
+        """Stamp the first text of the link; later calls keep the first time."""
+        ...
 
 
 class OwnerApprovalRequiredPolicy:

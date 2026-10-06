@@ -460,6 +460,7 @@ class QuoteRecord(Base):
     claim_token_hash: Mapped[str | None] = mapped_column(String(64))
     customer_status: Mapped[str | None] = mapped_column(String(50))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    texted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # A plain FK: a composite ``SET NULL`` would also null ``business_id``.
     # Repositories always pair it with ``business_id`` in their predicates.
     customer_id: Mapped[UUID | None] = mapped_column(

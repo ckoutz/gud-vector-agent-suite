@@ -760,6 +760,7 @@ class SqlQuoteRepository:
                 "claim_token_hash": row.claim_token_hash,
                 "customer_status": row.customer_status,
                 "approved_at": _aware_or_none(row.approved_at),
+                "texted_at": _aware_or_none(row.texted_at),
                 "customer_id": row.customer_id,
                 "version": row.version,
                 "created_at": created_at,
@@ -947,6 +948,18 @@ class SqlQuoteRepository:
         )
         if _rowcount(result) != 1:
             raise QuoteConcurrencyError("quote version is no longer current")
+
+    async def record_texted(self, business_id: BusinessId, quote_id: QuoteId, at: datetime) -> None:
+        await self.session.execute(
+            update(QuoteRecord)
+            .where(
+                QuoteRecord.id == quote_id,
+                QuoteRecord.business_id == business_id,
+                QuoteRecord.texted_at.is_(None),
+            )
+            .values(texted_at=at)
+            .execution_options(synchronize_session=False)
+        )
 
 
 class SqlOutboxRepository:

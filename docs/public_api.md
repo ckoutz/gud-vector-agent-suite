@@ -309,7 +309,7 @@ session), and only ever reads or changes the session's business.
 |---|---|
 | `GET /v1/owner/me` | Owner e-mail and business display name, site, booking link and time zone |
 | `DELETE /v1/owner/sessions` | Revokes the session (`204`) |
-| `GET /v1/owner/quotes` | Latest 200 quotes: status, `customerStatus` (viewed/accepted/paid/declined), `needsApproval`, customer, line items, `totalCents`, billing, `createdAt`/`approvedAt`/`sentAt` (when delivery to the customer was handed off; `null` until sent) |
+| `GET /v1/owner/quotes` | Latest 200 quotes: status, `customerStatus` (viewed/accepted/paid/declined), `needsApproval`, customer, line items, `totalCents`, billing, `createdAt`/`approvedAt`/`sentAt` (when the quote was first e-mailed or texted to the customer; `null` while it only reached the owner as a link to forward) |
 | `POST /v1/owner/quotes/{id}/approve` | Same transition as `approve` by text: links the customer and queues delivery. `404` unknown, `409` not awaiting approval |
 | `POST /v1/owner/quotes/{id}/reject` | Same as `reject` by text; nothing is sent |
 | `GET /v1/owner/customers` | Portal customers with contact details, SMS consent, quote ids and paid total |
