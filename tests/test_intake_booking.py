@@ -1562,3 +1562,19 @@ async def test_a_no_is_accepted_after_approval_and_a_new_yes_is_too(
     again = await application.intake.record_sms_consent(withdrawn, True)
     assert again.sms_consent is True, "a booked chat stays open, so consent can still change"
     assert (await customer_row(session_factory, business_id)).sms_consent is True
+
+
+@pytest.mark.asyncio
+async def test_an_adopted_zone_is_seen_by_later_reads_in_the_same_session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    async with session_factory() as session:
+        businesses = SqlBusinessRepository(session)
+        before = await businesses.get(business_id)
+        assert before is not None and before.timezone is None
+
+        assert await businesses.adopt_timezone(business_id, "America/Los_Angeles", NOW)
+        after = await businesses.get(business_id)
+        assert after is not None and after.timezone == "America/Los_Angeles"

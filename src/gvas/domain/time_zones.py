@@ -24,7 +24,7 @@ _US_ZONE_NAMES = {
 _US_ZONE_PREFIXES = ("America/", "US/", "Pacific/Honolulu")
 #: Zones under ``America/`` that reuse a US abbreviation for a different
 #: zone ("CST" is Cuba Standard Time in Havana); they read as the city.
-_CITY_NAMED_ZONES = frozenset({"America/Havana"})
+_CITY_NAMED_ZONES = frozenset({"America/Havana", "Cuba"})
 
 
 @cache

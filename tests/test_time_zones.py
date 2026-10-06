@@ -48,3 +48,9 @@ def test_unknown_zone_names_are_rejected_and_ignored() -> None:
     assert normalize_time_zone(" America/Chicago ") == "America/Chicago"
     assert business_zone("Not/AZone") is None
     assert business_zone(None) is None
+
+
+def test_the_cuba_alias_reads_as_its_name_not_a_us_abbreviation() -> None:
+    local = datetime(2026, 1, 6, 9, 0, tzinfo=ZoneInfo("Cuba"))
+
+    assert zone_label(local) == "Cuba time"

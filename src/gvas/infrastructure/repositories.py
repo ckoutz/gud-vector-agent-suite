@@ -203,7 +203,7 @@ class SqlBusinessRepository:
                 update(Business)
                 .where(Business.id == business_id, Business.timezone.is_(None))
                 .values(timezone=timezone, updated_at=now)
-                .execution_options(synchronize_session=False)
+                .execution_options(synchronize_session="fetch")
             ),
         )
         return result.rowcount == 1
