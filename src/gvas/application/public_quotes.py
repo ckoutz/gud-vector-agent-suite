@@ -479,6 +479,20 @@ class PublicQuoteService:
             collected = (
                 payment.amount_minor if event.collected_minor is None else event.collected_minor
             )
+            # A card plan that raced a manual one: keep both, count the
+            # check, and let the owner decide which to end.
+            manual_plan = None
+            if event.subscription is not None:
+                manual_plan = next(
+                    (
+                        plan
+                        for plan in await unit_of_work.quote_subscriptions.list_for_quote(
+                            payment.business_id, payment.quote_id
+                        )
+                        if plan.is_manual and plan.is_live
+                    ),
+                    None,
+                )
             if collected > 0:
                 # A zero-charge checkout (e.g. a full discount) settles the
                 # quote but collected no money, so it adds nothing to the ledger.
@@ -502,10 +516,25 @@ class PublicQuoteService:
                             else months_for(draft.interval)
                         ),
                         recorded_at=now,
+                        duplicate=manual_plan is not None,
                     )
                 )
                 if ledger_row is not None and event.subscription is None:
                     await self._flag_paid_twice(unit_of_work, quote, ledger_row)
+            if manual_plan is not None:
+                name = draft.recipient.display_name if draft is not None else None
+                await self._enqueue_owner_notice(
+                    unit_of_work,
+                    quote,
+                    correlation_id=f"quote:{quote.quote_id}:card-plan-over-manual",
+                    text=(
+                        f"Quote {public_quote_id(quote.quote_id)} for {name or 'customer'}"
+                        f" also started a card plan ({format_money(collected, payment.currency)}"
+                        " by card) after you recorded a check or cash payment. Stripe will keep"
+                        " billing the card: cancel and refund it in Stripe, or undo the manual"
+                        " payments in the dashboard."
+                    ),
+                )
             paid = quote.record_customer_payment(now)
             if event.subscription is not None:
                 paid, _ = await link_quote_customer(unit_of_work, paid, now)
@@ -591,8 +620,12 @@ class PublicQuoteService:
         quote = await unit_of_work.quotes.get(subscription.business_id, subscription.quote_id)
         if quote is None:
             return
-        customer = await unit_of_work.customers.get(
-            subscription.business_id, subscription.customer_id
+        customer = (
+            None
+            if subscription.customer_id is None
+            else await unit_of_work.customers.get(
+                subscription.business_id, subscription.customer_id
+            )
         )
         who = (customer.display_name or customer.email) if customer is not None else "customer"
         amount = format_money(updated.amount_minor, updated.currency)

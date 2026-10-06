@@ -1,9 +1,11 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -74,8 +76,21 @@ class QuoteSubscription(Base):
         UniqueConstraint(
             "stripe_subscription_id", name="uq_quote_subscriptions_stripe_subscription_id"
         ),
+        # A manual plan may be for a customer with no e-mail, so no customer row.
+        CheckConstraint(
+            "customer_id IS NOT NULL OR provider = 'manual'",
+            name="ck_quote_subscriptions_customer_unless_manual",
+        ),
         Index("ix_quote_subscriptions_business_id_customer_id", "business_id", "customer_id"),
         Index("ix_quote_subscriptions_business_id_quote_id", "business_id", "quote_id"),
+        Index(
+            "uq_quote_subscriptions_one_manual_plan",
+            "business_id",
+            "quote_id",
+            unique=True,
+            postgresql_where=text("provider = 'manual'"),
+            sqlite_where=text("provider = 'manual'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -83,7 +98,7 @@ class QuoteSubscription(Base):
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
     quote_id: Mapped[UUID] = mapped_column(nullable=False)
-    customer_id: Mapped[UUID] = mapped_column(nullable=False)
+    customer_id: Mapped[UUID | None] = mapped_column(nullable=True)
     provider: Mapped[str] = mapped_column(String(50), nullable=False)
     stripe_subscription_id: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -94,6 +109,8 @@ class QuoteSubscription(Base):
     cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    paid_from: Mapped[date | None] = mapped_column(Date)
+    paid_through: Mapped[date | None] = mapped_column(Date)
 
 
 class LedgerPaymentRow(Base):

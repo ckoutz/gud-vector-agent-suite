@@ -24,6 +24,8 @@ class OutboxCommand(BaseModel):
     dedup_key: str | None = None
     outbound_message_id: MessageId | None = None
     inbound_message_id: MessageId | None = None
+    #: Not claimable before this time; ``None`` means right away.
+    not_before: datetime | None = None
 
     @model_validator(mode="after")
     def validate_framework_links(self) -> "OutboxCommand":

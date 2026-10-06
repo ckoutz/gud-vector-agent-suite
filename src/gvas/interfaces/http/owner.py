@@ -15,6 +15,8 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from gvas.application.owner import (
+    PAYMENT_KEY_PATTERN,
+    PLAN_AMOUNT_MAX_MINOR,
     CustomerSummary,
     OwnerAuthenticationError,
     OwnerConflictError,
@@ -29,6 +31,7 @@ from gvas.domain.enums import QuoteStatus
 from gvas.domain.intake import IntakeConversation
 from gvas.domain.owner import CalendarEvent, calendar_feed_host
 from gvas.domain.payments import (
+    PLAN_MONTHS_MAX,
     LedgerPayment,
     PaymentMethod,
     QuoteSubscriptionRecord,
@@ -66,6 +69,17 @@ class MarkPaidBody(BaseModel):
 
     paidOn: date  # noqa: N815
     method: PaymentMethod
+    note: str | None = Field(default=None, max_length=500)
+
+
+class PlanPaymentBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    key: str = Field(pattern=PAYMENT_KEY_PATTERN)
+    paidOn: date  # noqa: N815
+    method: PaymentMethod
+    months: int = Field(ge=1, le=PLAN_MONTHS_MAX)
+    amountCents: int = Field(ge=0, le=PLAN_AMOUNT_MAX_MINOR)  # noqa: N815
     note: str | None = Field(default=None, max_length=500)
 
 
@@ -182,6 +196,9 @@ def owner_subscription_payload(record: QuoteSubscriptionRecord) -> dict[str, obj
         "currentPeriodEnd": _iso(record.current_period_end),
         "cancelAtPeriodEnd": record.cancel_at_period_end,
         "createdAt": _iso(record.created_at),
+        "manual": record.is_manual,
+        "paidFrom": None if record.paid_from is None else record.paid_from.isoformat(),
+        "paidThrough": None if record.paid_through is None else record.paid_through.isoformat(),
     }
 
 
@@ -368,6 +385,43 @@ def create_owner_router(
         except OwnerConflictError as error:
             return JSONResponse({"detail": str(error)}, status_code=409)
         return await _paid_quote(context, quote)
+
+    @router.post("/v1/owner/quotes/{quote_id}/plan-payments", dependencies=limited)
+    async def record_plan_payment(
+        quote_id: str, body: PlanPaymentBody, context: OwnerContext = owner
+    ) -> JSONResponse:
+        try:
+            plan = await service.record_plan_payment(
+                context,
+                quote_id,
+                key=body.key,
+                paid_on=body.paidOn,
+                method=body.method,
+                months=body.months,
+                amount_minor=body.amountCents,
+                note=body.note,
+            )
+        except OwnerNotFoundError:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        except OwnerConflictError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        except OwnerInputError as error:
+            return JSONResponse({"detail": str(error)}, status_code=422)
+        return JSONResponse({"subscription": owner_subscription_payload(plan)})
+
+    @router.post(
+        "/v1/owner/quotes/{quote_id}/plan-payments/{payment_id}/undo", dependencies=limited
+    )
+    async def undo_plan_payment(
+        quote_id: str, payment_id: str, context: OwnerContext = owner
+    ) -> JSONResponse:
+        try:
+            plan = await service.void_plan_payment(context, quote_id, payment_id)
+        except OwnerNotFoundError:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        except OwnerConflictError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        return JSONResponse({"subscription": owner_subscription_payload(plan)})
 
     async def _paid_quote(context: OwnerContext, quote: Quote) -> JSONResponse:
         paid = first_counted(await service.payments(context))

@@ -119,6 +119,8 @@ def subscription_payload(record: QuoteSubscriptionRecord) -> dict[str, object]:
         "currency": record.currency,
         "currentPeriodEnd": _iso(record.current_period_end),
         "cancelAtPeriodEnd": record.cancel_at_period_end,
+        "manual": record.is_manual,
+        "paidThrough": None if record.paid_through is None else record.paid_through.isoformat(),
     }
 
 

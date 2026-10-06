@@ -1017,7 +1017,7 @@ class SqlOutboxRepository:
             status=OutboxStatus.PENDING.value,
             attempts=0,
             max_attempts=DEFAULT_MAX_ATTEMPTS,
-            available_at=datetime.now(UTC),
+            available_at=command.not_before or datetime.now(UTC),
             dedup_key=command.dedup_key,
         )
         try:

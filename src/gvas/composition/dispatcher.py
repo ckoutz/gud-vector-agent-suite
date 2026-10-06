@@ -70,7 +70,11 @@ from gvas.domain.outbox import (
     OutboxCommand,
     OutboxRecord,
 )
-from gvas.domain.payments import CHECKOUT_EXPIRE_COMMAND_TYPE, MANUAL_RECEIPT_COMMAND_TYPE
+from gvas.domain.payments import (
+    CHECKOUT_EXPIRE_COMMAND_TYPE,
+    MANUAL_RECEIPT_COMMAND_TYPE,
+    PLAN_NUDGE_COMMAND_TYPE,
+)
 from gvas.domain.plans import PLAN_SET_COPY_COMMAND_TYPE, PlanSetUploadId
 from gvas.domain.ports import PortalLoginEmailPort
 from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE, QUOTE_TEXT_COMMAND_TYPE
@@ -219,7 +223,11 @@ class OutboxCommandDispatcher:
             return await self._send_intake_email(command)
         if command.command_type == INTAKE_CUSTOMER_TEXT_COMMAND_TYPE:
             return await self._send_intake_text(command)
-        if command.command_type in (CHECKOUT_EXPIRE_COMMAND_TYPE, MANUAL_RECEIPT_COMMAND_TYPE):
+        if command.command_type in (
+            CHECKOUT_EXPIRE_COMMAND_TYPE,
+            MANUAL_RECEIPT_COMMAND_TYPE,
+            PLAN_NUDGE_COMMAND_TYPE,
+        ):
             return await self._manual_payment_effect(command)
         if command.command_type in RETIRED_COMMAND_TYPES:
             logger.info("dropping retired %s command %s", command.command_type, command.command_id)
@@ -317,6 +325,8 @@ class OutboxCommandDispatcher:
             raise UnknownCommandTypeError("manual payments are not wired")
         if command.command_type == CHECKOUT_EXPIRE_COMMAND_TYPE:
             detail = await self._manual_payments.expire_checkout(command.payload)
+        elif command.command_type == PLAN_NUDGE_COMMAND_TYPE:
+            detail = await self._manual_payments.nudge_plan(command.business_id, command.payload)
         else:
             detail = await self._manual_payments.send_receipt(command.business_id, command.payload)
         return DispatchOutcome(command.command_type, detail)
