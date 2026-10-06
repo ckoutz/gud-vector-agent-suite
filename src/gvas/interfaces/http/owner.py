@@ -88,6 +88,9 @@ def owner_quote_payload(quote: Quote) -> dict[str, object]:
         "note": draft.owner_note if draft is not None else None,
         "createdAt": _iso(quote.created_at),
         "approvedAt": _iso(quote.approved_at),
+        "sentAt": _iso(
+            quote.delivery_receipt.occurred_at if quote.delivery_receipt is not None else None
+        ),
         "updatedAt": _iso(quote.updated_at),
     }
 
