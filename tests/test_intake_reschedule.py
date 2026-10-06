@@ -226,6 +226,7 @@ async def test_booked_chat_keeps_answering_after_the_request(
         assert booking and booking["status"] == "requested" and booking["start"]
     request = agent.requests[-1]
     assert request.existing_booking is not None
+    assert request.existing_booking.status is not None
     assert request.existing_booking.status.value == "requested"
 
 
