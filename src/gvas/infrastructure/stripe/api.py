@@ -28,6 +28,7 @@ from gvas.domain.payments import (
     BillingCustomerResult,
     BillingPortalRequest,
     BillingPortalResult,
+    PaymentCheckoutClosedError,
     PaymentCheckoutError,
     PaymentCheckoutRequest,
     PaymentCheckoutResult,
@@ -43,6 +44,10 @@ BILLING_PORTAL_SESSIONS_PATH: Final = "/billing_portal/sessions"
 
 class StripeCheckoutError(PaymentCheckoutError):
     """Raised when a checkout call should be retried or surfaced as a failure."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class _CheckoutSessionResponse(BaseModel):
@@ -148,12 +153,19 @@ class StripeCheckout:
         )
 
     async def expire_checkout(self, session_id: str) -> None:
-        await self._post(
-            f"{CHECKOUT_SESSIONS_PATH}/{quote(session_id, safe='')}/expire",
-            {},
-            idempotency_key=None,
-            what="checkout session expiry",
-        )
+        try:
+            await self._post(
+                f"{CHECKOUT_SESSIONS_PATH}/{quote(session_id, safe='')}/expire",
+                {},
+                idempotency_key=None,
+                what="checkout session expiry",
+            )
+        except StripeCheckoutError as error:
+            # Stripe answers 400 for a session already expired or completed,
+            # 404 for one it no longer knows: nothing is left to close.
+            if error.status_code in (400, 404):
+                raise PaymentCheckoutClosedError("checkout session is already closed") from error
+            raise
 
     async def create_customer(self, request: BillingCustomerRequest) -> BillingCustomerResult:
         payload = await self._post(
@@ -201,7 +213,10 @@ class StripeCheckout:
             raise StripeCheckoutError("payment provider was unreachable") from error
         if response.status_code >= 400:
             logger.warning("%s returned http %s", what, response.status_code)
-            raise StripeCheckoutError(f"payment provider returned http {response.status_code}")
+            raise StripeCheckoutError(
+                f"payment provider returned http {response.status_code}",
+                status_code=response.status_code,
+            )
         try:
             payload: object = response.json()
         except ValueError as error:

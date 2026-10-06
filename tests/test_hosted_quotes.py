@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from composition_fakes import FAKE_NOW, OwnerReplyFake, TranscriptionFake
+from composition_fakes import FAKE_NOW, CustomerDeliveryFake, OwnerReplyFake, TranscriptionFake
 from gvas.application.checklist_evidence import MarkerChecklistEvidenceAttributor
 from gvas.application.completeness_review import MarkerCompletenessReviewer
 from gvas.application.deterministic_report import DeterministicReportGenerator
@@ -183,6 +183,7 @@ async def hosted_quote(
     customer_text: CustomerTextFake | None = None,
     configure_site: bool = True,
     sms_consent: bool | None = None,
+    customer_email: CustomerDeliveryFake | None = None,
 ) -> tuple[Application, OwnerReplyFake, HostedEmailDelivery, str]:
     """A business with a site URL whose owner approves one quote end to end."""
 
@@ -209,6 +210,7 @@ async def hosted_quote(
             quote_drafting=PhoneAwareDrafting(recipient()),
             quote_delivery=delivery,
             customer_text=customer_text,
+            customer_email=customer_email,
             payment_checkout=checkout,
             transcription=TranscriptionFake({}),
             completeness_review=MarkerCompletenessReviewer(),

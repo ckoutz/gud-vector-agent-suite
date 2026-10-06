@@ -9,12 +9,19 @@ from collections.abc import Iterable
 from datetime import datetime, tzinfo
 from enum import StrEnum
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from gvas.domain.enums import BillingInterval, QuotePaymentStatus
-from gvas.domain.identifiers import BusinessId, CustomerId, QuoteId, SubscriptionId
+from gvas.domain.identifiers import (
+    BusinessId,
+    CustomerId,
+    OutboxCommandId,
+    QuoteId,
+    SubscriptionId,
+)
+from gvas.domain.outbox import OutboxCommand
 
 #: The only card-checkout provider wired today; kept as data, not code, so a
 #: second provider is a new adapter plus a new literal here.
@@ -105,6 +112,59 @@ class PaymentCheckoutError(RuntimeError):
     Adapters sanitize the message: no credentials and no raw provider
     responses; the caller maps it to a neutral reply.
     """
+
+
+class PaymentCheckoutClosedError(PaymentCheckoutError):
+    """The provider refused to close a session that can no longer be paid
+    (already expired or completed): there is nothing left to close."""
+
+
+CHECKOUT_EXPIRE_COMMAND_TYPE = "payment.checkout_expire"
+CHECKOUT_EXPIRE_COMMAND_NAMESPACE = UUID("6d0f4c1e-2b7a-4f53-9e18-3a5c7b9d1e24")
+MANUAL_RECEIPT_COMMAND_TYPE = "payment.manual_receipt"
+MANUAL_RECEIPT_COMMAND_NAMESPACE = UUID("a3e9b7d2-5c41-4e86-8f0a-7b2d4c6e9f13")
+
+
+def checkout_expire_command(business_id: BusinessId, session_id: str) -> OutboxCommand:
+    """Close an open hosted checkout from the worker, so a provider outage
+    is retried instead of leaving the session payable."""
+
+    return OutboxCommand(
+        command_id=OutboxCommandId(uuid5(CHECKOUT_EXPIRE_COMMAND_NAMESPACE, session_id)),
+        business_id=business_id,
+        command_type=CHECKOUT_EXPIRE_COMMAND_TYPE,
+        payload={"session_id": session_id},
+        dedup_key=f"checkout_expire:{session_id}",
+    )
+
+
+def manual_receipt_command(
+    *,
+    business_id: BusinessId,
+    quote_id: QuoteId,
+    payment_id: UUID,
+    to: str,
+    subject: str,
+    body: str,
+) -> OutboxCommand:
+    """The customer's receipt for a manual payment; the worker drops it when
+    the payment was voided before delivery."""
+
+    key = f"manual-receipt:{payment_id}"
+    return OutboxCommand(
+        command_id=OutboxCommandId(uuid5(MANUAL_RECEIPT_COMMAND_NAMESPACE, key)),
+        business_id=business_id,
+        command_type=MANUAL_RECEIPT_COMMAND_TYPE,
+        payload={
+            "to": to,
+            "subject": subject,
+            "body": body,
+            "idempotency_key": key,
+            "quote_id": str(quote_id),
+            "payment_id": str(payment_id),
+        },
+        dedup_key=key,
+    )
 
 
 class PaymentEventOutcome(StrEnum):

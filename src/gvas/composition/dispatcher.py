@@ -15,6 +15,7 @@ from gvas.application.intake import (
     SendIntakeCustomerTextService,
     SendOwnerEmailService,
 )
+from gvas.application.manual_payments import ManualPaymentEffectsService
 from gvas.application.outbox_service import OutboxService
 from gvas.application.owner_reply_delivery import (
     DeliverOwnerReplyService,
@@ -69,6 +70,7 @@ from gvas.domain.outbox import (
     OutboxCommand,
     OutboxRecord,
 )
+from gvas.domain.payments import CHECKOUT_EXPIRE_COMMAND_TYPE, MANUAL_RECEIPT_COMMAND_TYPE
 from gvas.domain.plans import PLAN_SET_COPY_COMMAND_TYPE, PlanSetUploadId
 from gvas.domain.ports import PortalLoginEmailPort
 from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE, QUOTE_TEXT_COMMAND_TYPE
@@ -154,8 +156,10 @@ class OutboxCommandDispatcher:
         intake_text: SendIntakeCustomerTextService | None = None,
         intake_booking_cancel: CancelIntakeBookingService | None = None,
         owner_email: SendOwnerEmailService | None = None,
+        manual_payments: ManualPaymentEffectsService | None = None,
     ) -> None:
         self._owner_email = owner_email
+        self._manual_payments = manual_payments
         self._quote_text = quote_text
         self._portal_login_email = portal_login_email
         self._intake_booking = intake_booking
@@ -215,6 +219,8 @@ class OutboxCommandDispatcher:
             return await self._send_intake_email(command)
         if command.command_type == INTAKE_CUSTOMER_TEXT_COMMAND_TYPE:
             return await self._send_intake_text(command)
+        if command.command_type in (CHECKOUT_EXPIRE_COMMAND_TYPE, MANUAL_RECEIPT_COMMAND_TYPE):
+            return await self._manual_payment_effect(command)
         if command.command_type in RETIRED_COMMAND_TYPES:
             logger.info("dropping retired %s command %s", command.command_type, command.command_id)
             return DispatchOutcome(command.command_type, "retired")
@@ -305,6 +311,15 @@ class OutboxCommandDispatcher:
             raise UnknownCommandTypeError("intake customer e-mail is not wired")
         await self._intake_email.send(command.business_id, command.payload)
         return DispatchOutcome(command.command_type, "sent")
+
+    async def _manual_payment_effect(self, command: OutboxCommand) -> DispatchOutcome:
+        if self._manual_payments is None:
+            raise UnknownCommandTypeError("manual payments are not wired")
+        if command.command_type == CHECKOUT_EXPIRE_COMMAND_TYPE:
+            detail = await self._manual_payments.expire_checkout(command.payload)
+        else:
+            detail = await self._manual_payments.send_receipt(command.business_id, command.payload)
+        return DispatchOutcome(command.command_type, detail)
 
     async def _send_intake_text(self, command: OutboxCommand) -> DispatchOutcome:
         if self._intake_text is None:
