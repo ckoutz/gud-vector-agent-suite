@@ -534,7 +534,8 @@ async def test_a_plan_works_for_a_quote_with_no_customer_email(
         )
         assert row is not None and row.draft is not None
         draft = dict(row.draft)
-        recipient = dict(draft["recipient"])  # type: ignore[arg-type]
+        original = dict(draft["recipient"])  # type: ignore[arg-type]
+        recipient = dict(original)
         recipient.update(address_kind=RecipientAddressKind.PHONE.value, address="+15415550123")
         draft["recipient"] = recipient
         row.draft = draft
@@ -560,6 +561,29 @@ async def test_a_plan_works_for_a_quote_with_no_customer_email(
         "paid_through": plan.paid_through.isoformat(),
     }
     assert await _effects(session_factory, []).nudge_plan(portal.business_id, payload) == "sent"
+
+    # Once the quote has an e-mail, the next payment links the plan to the customer.
+    async with session_factory() as session:
+        row = await session.scalar(
+            select(QuoteRecord).where(QuoteRecord.business_id == portal.business_id)
+        )
+        assert row is not None and row.draft is not None
+        row.draft = {**row.draft, "recipient": original}
+        await session.commit()
+    await owner.record_plan_payment(
+        context,
+        quote_id,
+        key="no-email-third",
+        paid_on=today,
+        method=PaymentMethod.CASH,
+        months=1,
+        amount_minor=9_900,
+    )
+    async with session_factory() as session:
+        stored = await session.scalar(
+            select(QuoteSubscription).where(QuoteSubscription.business_id == portal.business_id)
+        )
+    assert stored is not None and stored.customer_id is not None
 
     other = await _plan_quote(session_factory)
     with pytest.raises(OwnerNotFoundError):

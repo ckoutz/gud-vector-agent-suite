@@ -276,6 +276,7 @@ class SqlQuoteSubscriptionRepository:
                 QuoteSubscription.business_id == record.business_id,
             )
             .values(
+                customer_id=record.customer_id,
                 paid_from=record.paid_from,
                 paid_through=record.paid_through,
                 status=record.status,

@@ -28,18 +28,18 @@ def upgrade() -> None:
         postgresql_where=MANUAL,
         sqlite_where=MANUAL,
     )
-    op.alter_column("quote_subscriptions", "customer_id", nullable=True)
-    op.create_check_constraint(
-        CUSTOMER_UNLESS_MANUAL,
-        "quote_subscriptions",
-        "customer_id IS NOT NULL OR provider = 'manual'",
-    )
+    with op.batch_alter_table("quote_subscriptions") as batch:
+        batch.alter_column("customer_id", existing_type=sa.Uuid(), nullable=True)
+        batch.create_check_constraint(
+            CUSTOMER_UNLESS_MANUAL, "customer_id IS NOT NULL OR provider = 'manual'"
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint(CUSTOMER_UNLESS_MANUAL, "quote_subscriptions", type_="check")
     op.execute("DELETE FROM quote_subscriptions WHERE customer_id IS NULL")
-    op.alter_column("quote_subscriptions", "customer_id", nullable=False)
+    with op.batch_alter_table("quote_subscriptions") as batch:
+        batch.drop_constraint(CUSTOMER_UNLESS_MANUAL, type_="check")
+        batch.alter_column("customer_id", existing_type=sa.Uuid(), nullable=False)
     op.drop_index("uq_quote_subscriptions_one_manual_plan", table_name="quote_subscriptions")
     op.drop_column("quote_subscriptions", "paid_through")
     op.drop_column("quote_subscriptions", "paid_from")
