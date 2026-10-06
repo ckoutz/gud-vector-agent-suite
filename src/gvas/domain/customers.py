@@ -225,6 +225,19 @@ class CustomerRepository(Protocol):
         blank stored details are filled from the arguments, never overwritten."""
         ...
 
+    async def create(
+        self,
+        business_id: BusinessId,
+        email: str,
+        *,
+        display_name: str | None,
+        phone: str | None,
+        now: datetime,
+    ) -> CustomerRecord | None:
+        """A new customer for ``(business_id, email)``, or ``None`` when one
+        already exists — that record is left untouched."""
+        ...
+
     async def set_stripe_customer_id(
         self, business_id: BusinessId, customer_id: CustomerId, stripe_customer_id: str
     ) -> None: ...

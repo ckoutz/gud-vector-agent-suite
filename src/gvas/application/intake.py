@@ -100,6 +100,7 @@ from gvas.domain.ports import (
     IntakeAgentPort,
     OwnerEmailPort,
 )
+from gvas.domain.quotes import normalize_customer_email
 from gvas.domain.repositories import BusinessRecord, UnitOfWork
 from gvas.domain.usage import UsageCeilingGuard, UsageKind
 from gvas.domain.workflows import WorkflowContext, WorkflowResult
@@ -508,7 +509,7 @@ class IntakeService:
         )
         business = await self._business(unit_of_work, conversation.business_id)
         holder = await self._live_booking_holder(unit_of_work, conversation)
-        verified = self._holder_verified(conversation, holder)
+        verified = await self._holder_verified(unit_of_work, conversation, holder)
         try:
             turn = await self._agent.turn(
                 IntakeTurnRequest(
@@ -621,13 +622,15 @@ class IntakeService:
         return other
 
     @staticmethod
-    def _holder_verified(
-        conversation: IntakeConversation, holder: IntakeConversation | None
+    async def _holder_verified(
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        holder: IntakeConversation | None,
     ) -> bool:
         """Whether this chat may act on ``holder``'s booking itself.
 
         Its own booking, yes. Another chat's only from a verified portal
-        session for the same customer record: an e-mail typed into an
+        session for the customer who owns it: an e-mail typed into an
         anonymous chat proves nothing.
         """
 
@@ -635,10 +638,20 @@ class IntakeService:
             return False
         if holder.conversation_id == conversation.conversation_id:
             return True
+        if conversation.channel != INTAKE_CHANNEL_PORTAL or conversation.customer_id is None:
+            return False
+        if holder.customer_id is not None:
+            return holder.customer_id == conversation.customer_id
+        # An anonymous request typed with this customer's address was left
+        # unlinked; the portal sign-in proved the address, so it is theirs.
+        customer = await unit_of_work.customers.get(
+            conversation.business_id, conversation.customer_id
+        )
+        email = holder.collected.email
         return (
-            conversation.channel == INTAKE_CHANNEL_PORTAL
-            and conversation.customer_id is not None
-            and holder.customer_id == conversation.customer_id
+            customer is not None
+            and email is not None
+            and normalize_customer_email(email) == customer.email
         )
 
     @staticmethod
@@ -647,13 +660,13 @@ class IntakeService:
     ) -> ExistingBooking | None:
         if holder is None or holder.requested_slot_start is None:
             return None
+        if not verified:
+            return ExistingBooking(verified=False)
         status = (
             ExistingBookingStatus.REQUESTED
             if holder.state is IntakeState.AWAITING_OWNER
             else ExistingBookingStatus.CONFIRMED
         )
-        if not verified:
-            return ExistingBooking(status=status, verified=False)
         return ExistingBooking(
             status=status, slot_label=format_slot_label(holder.requested_slot_start)
         )
@@ -857,19 +870,16 @@ class IntakeService:
         if customer_id is None and collected.email:
             # A typed e-mail proves nothing: it may start a new customer
             # record, but never links to (or fills in) an existing one.
-            existing = await unit_of_work.customers.find_by_email(
-                conversation.business_id, collected.email
+            customer = await unit_of_work.customers.create(
+                conversation.business_id,
+                collected.email,
+                display_name=collected.name,
+                phone=collected.phone,
+                now=now,
             )
-            if existing is not None:
+            if customer is None:
                 unverified_email = True
             else:
-                customer = await unit_of_work.customers.upsert(
-                    conversation.business_id,
-                    collected.email,
-                    display_name=collected.name,
-                    phone=collected.phone,
-                    now=now,
-                )
                 customer_id = customer.customer_id
         if customer_id is not None and conversation.sms_consent is not None:
             await unit_of_work.customers.set_sms_consent(

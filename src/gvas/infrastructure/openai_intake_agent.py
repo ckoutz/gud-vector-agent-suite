@@ -263,7 +263,11 @@ def _user_content(request: IntakeTurnRequest) -> str:
                 None
                 if request.existing_booking is None
                 else {
-                    "status": request.existing_booking.status.value,
+                    "status": (
+                        None
+                        if request.existing_booking.status is None
+                        else request.existing_booking.status.value
+                    ),
                     "slot": request.existing_booking.slot_label,
                     "verified": request.existing_booking.verified,
                 }

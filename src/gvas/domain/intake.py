@@ -1141,10 +1141,11 @@ class ExistingBooking(IntakeModel):
     instead of starting over.
 
     ``verified`` is false when only a typed e-mail links this chat to the
-    booking: its time is withheld and a move or cancel goes to the owner.
+    booking: its status and time are withheld and a move or cancel goes to
+    the owner.
     """
 
-    status: ExistingBookingStatus
+    status: ExistingBookingStatus | None = None
     slot_label: str | None = None
     verified: bool = True
 

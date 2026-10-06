@@ -492,6 +492,7 @@ async def test_a_typed_email_cannot_move_or_cancel_another_chats_request(
     request = agent.requests[-2]  # the "can we move it?" turn
     assert request.existing_booking is not None
     assert request.existing_booking.verified is False
+    assert request.existing_booking.status is None, "nor whether it is confirmed"
     assert request.existing_booking.slot_label is None, "an unverified chat learns no details"
 
 
@@ -641,6 +642,83 @@ async def test_a_typed_email_never_links_to_or_fills_in_an_existing_customer(
     assert customer is not None
     assert customer.display_name is None and customer.phone is None
     assert [t for t in texts_of(owner, "Booking request") if UNVERIFIED_EMAIL_NOTE in t]
+
+
+@pytest.mark.asyncio
+async def test_the_portal_customer_can_cancel_a_request_typed_with_their_email(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    availability = AvailabilityFake()
+    agent = IntakeAgentFake(
+        [
+            collected_turn(name="Jane Doe", email=EMAIL, phone="+15555550100", problem="leak"),
+            collected_turn(address="1 Main St"),
+            IntakeTurn(reply="Great, here are openings.", ready_for_slots=True),
+            collected_turn(name="Jane", email=EMAIL, phone="+15555550100", problem="drip"),
+            collected_turn(address="1 Main St"),
+            IntakeTurn(reply="Here are openings.", ready_for_slots=True),
+            IntakeTurn(reply="Okay.", wants_cancel=True),
+        ]
+    )
+    application, owner, business_id, reference, _first, _t = await drive(
+        session_factory, availability=availability, agent=agent
+    )
+    assert application.intake is not None
+    await application.ingest_service.ingest(
+        inbound(business_id, f"decline booking {reference} busy", message_key="decline-1")
+    )
+    for _ in range(8):
+        await immediate_worker(application).drain()
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        token = created.json()["conversationToken"]
+        anonymous_id = created.json()["conversationId"]
+        await post(client, anonymous_id, token, "drip")
+        await post(client, anonymous_id, token, "1 Main St")
+        await post(client, anonymous_id, token, "times?")
+        start = availability.slots[0].start.isoformat()
+        picked = await post(client, anonymous_id, token, f"slot:{start}")
+        assert picked.json()["state"] == "awaiting_owner"
+    anonymous = await row_by_id(session_factory, business_id, anonymous_id)
+    assert anonymous.customer_id is None
+
+    async with application.unit_of_work_factory() as unit_of_work:
+        business = await unit_of_work.businesses.get(business_id)
+        customer = await unit_of_work.customers.find_by_email(business_id, EMAIL)
+    assert business is not None and customer is not None
+    portal = await application.intake.start_portal_conversation(business, customer)
+    async with http_client(application) as client:
+        cancelled = await post(
+            client, str(portal.conversation.conversation_id), portal.token, "cancel it"
+        )
+        assert "canceled" in cancelled.json()["reply"]
+    anonymous = await row_by_id(session_factory, business_id, anonymous_id)
+    assert anonymous.state == "closed", "the portal sign-in proved the address"
+
+
+@pytest.mark.asyncio
+async def test_customer_create_never_touches_an_existing_record(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, _owner, business_id, _ref, _cid, _t = await drive(
+        session_factory, availability=AvailabilityFake()
+    )
+    now = datetime.now(UTC)
+    async with application.unit_of_work_factory() as unit_of_work:
+        existing = await unit_of_work.customers.find_by_email(business_id, EMAIL)
+        assert existing is not None
+        again = await unit_of_work.customers.create(
+            business_id, EMAIL.upper(), display_name="Mallory", phone="+15555550199", now=now
+        )
+        fresh = await unit_of_work.customers.create(
+            business_id, "new@example.com", display_name="New", phone=None, now=now
+        )
+        await unit_of_work.commit()
+    assert again is None
+    assert fresh is not None and fresh.email == "new@example.com"
+    async with application.unit_of_work_factory() as unit_of_work:
+        unchanged = await unit_of_work.customers.get(business_id, existing.customer_id)
+    assert unchanged == existing
 
 
 @pytest.mark.asyncio
