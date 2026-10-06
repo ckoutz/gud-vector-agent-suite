@@ -7,11 +7,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from gvas.domain.enums import BillingInterval, QuotePaymentStatus
 from gvas.domain.identifiers import BusinessId, CustomerId, QuoteId, SubscriptionId
 from gvas.domain.payments import (
+    LedgerPayment,
+    PaymentKind,
+    PaymentMethod,
+    PaymentSource,
     QuotePaymentConflictError,
     QuotePaymentRecord,
     QuoteSubscriptionRecord,
 )
 from gvas.infrastructure.payment_models import (
+    LedgerPaymentRow,
     PaymentProviderEvent,
     QuotePayment,
     QuoteSubscription,
@@ -261,3 +266,103 @@ class SqlPaymentEventRepository:
         except IntegrityError:
             return False
         return True
+
+
+class SqlPaymentLedgerRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    @staticmethod
+    def _payment(row: LedgerPaymentRow) -> LedgerPayment:
+        return LedgerPayment(
+            payment_id=row.id,
+            business_id=BusinessId(row.business_id),
+            quote_id=QuoteId(row.quote_id),
+            kind=PaymentKind(row.kind),
+            source=PaymentSource(row.source),
+            method=PaymentMethod(row.method),
+            reference=row.reference,
+            amount_minor=row.amount_cents,
+            currency=row.currency,
+            paid_at=_aware(row.paid_at),
+            months_covered=row.months_covered,
+            recorded_by=row.recorded_by,
+            recorded_at=_aware(row.recorded_at),
+            note=row.note,
+            voided_at=_aware_or_none(row.voided_at),
+            voided_by=row.voided_by,
+            duplicate=row.duplicate,
+        )
+
+    async def _insert(self, payment: LedgerPayment) -> bool:
+        row = LedgerPaymentRow(
+            id=payment.payment_id,
+            business_id=payment.business_id,
+            quote_id=payment.quote_id,
+            kind=payment.kind.value,
+            source=payment.source.value,
+            method=payment.method.value,
+            reference=payment.reference,
+            amount_cents=payment.amount_minor,
+            currency=payment.currency,
+            paid_at=payment.paid_at,
+            months_covered=payment.months_covered,
+            recorded_by=payment.recorded_by,
+            recorded_at=payment.recorded_at,
+            note=payment.note,
+            voided_at=payment.voided_at,
+            voided_by=payment.voided_by,
+            duplicate=payment.duplicate,
+        )
+        try:
+            async with self.session.begin_nested():
+                self.session.add(row)
+                await self.session.flush()
+        except IntegrityError:
+            return False
+        return True
+
+    async def record(self, payment: LedgerPayment) -> LedgerPayment | None:
+        if await self._insert(payment):
+            return payment
+        known = await self.session.scalar(
+            select(LedgerPaymentRow.id).where(
+                LedgerPaymentRow.source == payment.source.value,
+                LedgerPaymentRow.reference == payment.reference,
+            )
+        )
+        if known is not None or payment.kind is not PaymentKind.ONE_OFF or payment.duplicate:
+            return None
+        # The quote already has an active payment: keep the money on record
+        # for the owner to refund, but never count it twice. The one that
+        # settled first counts, whichever webhook arrived first.
+        active = await self.session.scalar(
+            select(LedgerPaymentRow)
+            .where(
+                LedgerPaymentRow.business_id == payment.business_id,
+                LedgerPaymentRow.quote_id == payment.quote_id,
+                LedgerPaymentRow.kind == PaymentKind.ONE_OFF.value,
+                LedgerPaymentRow.voided_at.is_(None),
+                LedgerPaymentRow.duplicate.is_(False),
+            )
+            .with_for_update()
+        )
+        if active is not None and payment.paid_at < _aware(active.paid_at):
+            async with self.session.begin_nested():
+                active.duplicate = True
+                await self.session.flush()
+            if await self._insert(payment):
+                return payment
+        flagged = payment.model_copy(update={"duplicate": True})
+        return flagged if await self._insert(flagged) else None
+
+    async def list_for_business(
+        self, business_id: BusinessId, *, since: datetime | None = None
+    ) -> tuple[LedgerPayment, ...]:
+        query = select(LedgerPaymentRow).where(LedgerPaymentRow.business_id == business_id)
+        if since is not None:
+            query = query.where(LedgerPaymentRow.paid_at >= since)
+        rows = await self.session.scalars(
+            query.order_by(LedgerPaymentRow.paid_at.desc(), LedgerPaymentRow.id)
+        )
+        return tuple(self._payment(row) for row in rows)

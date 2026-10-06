@@ -309,10 +309,11 @@ session), and only ever reads or changes the session's business.
 |---|---|
 | `GET /v1/owner/me` | Owner e-mail and business display name, site, booking link and time zone |
 | `DELETE /v1/owner/sessions` | Revokes the session (`204`) |
-| `GET /v1/owner/quotes` | Latest 200 quotes: status, `customerStatus` (viewed/accepted/paid/declined), `needsApproval`, customer, line items, `totalCents`, billing, `createdAt`/`approvedAt`/`sentAt` (when the quote was first e-mailed or texted to the customer; `null` while it only reached the owner as a link to forward) |
+| `GET /v1/owner/quotes` | Latest 200 quotes: status, `customerStatus` (viewed/accepted/paid/declined), `needsApproval`, customer, line items, `totalCents`, billing, `createdAt`/`approvedAt`/`sentAt` (when the quote was first e-mailed or texted to the customer; `null` while it only reached the owner as a link to forward), `paidOn` (the earliest counted payment in the ledger; `null` while unpaid) |
 | `POST /v1/owner/quotes/{id}/approve` | Same transition as `approve` by text: links the customer and queues delivery. `404` unknown, `409` not awaiting approval |
 | `POST /v1/owner/quotes/{id}/reject` | Same as `reject` by text; nothing is sent |
 | `GET /v1/owner/customers` | Portal customers with contact details, SMS consent, quote ids and paid total |
+| `GET /v1/owner/payments` | The payments ledger, newest first: one row per settled payment (`kind` one_off/plan, `source` stripe/manual, `method`, `amountCents`, `currency`, `paidOn` = the provider's settle time, `monthsCovered`, `recordedBy`/`recordedAt`, `note`, `voidedAt`/`voidedBy`, `duplicate`, `counts`), plus `month` (`YYYY-MM` in the business's zone) and `paidThisMonth` (cents per currency, before fees; voided and duplicate rows excluded) |
 | `GET /v1/owner/subscriptions` | Recurring quotes: Stripe status, interval, amount, `currentPeriodEnd` |
 | `GET /v1/owner/bookings` | Website booking requests (latest 100); `needsDecision` while awaiting the owner |
 | `POST /v1/owner/bookings/{ref}/approve` | Same as `approve booking <ref>`: `{"applied", "message"}` with the text the owner channel would get |

@@ -5,7 +5,8 @@ know a vendor's API. The checkout port lives in ``gvas.domain.ports``; these
 are the values it moves.
 """
 
-from datetime import datetime
+from collections.abc import Iterable
+from datetime import datetime, tzinfo
 from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
@@ -136,6 +137,8 @@ class SubscriptionEventData(PaymentModel):
     currency: str | None = None
     current_period_end: datetime | None = None
     cancel_at_period_end: bool | None = None
+    #: The provider's invoice behind a renewal; one ledger row per invoice.
+    invoice_ref: str | None = None
 
 
 class PaymentWebhookEvent(PaymentModel):
@@ -151,6 +154,11 @@ class PaymentWebhookEvent(PaymentModel):
     # Present on a subscription-mode checkout completion and on every
     # subscription lifecycle event.
     subscription: SubscriptionEventData | None = None
+    #: When the provider says it happened (its settle time for a payment).
+    occurred_at: datetime | None = None
+    #: What a completed checkout actually collected, in minor units; zero
+    #: when nothing was charged (e.g. a full discount).
+    collected_minor: int | None = Field(default=None, ge=0)
 
 
 class QuotePaymentRecord(PaymentModel):
@@ -355,3 +363,111 @@ class PaymentEventRepository(Protocol):
     async def try_record(self, provider: str, event_id: str, now: datetime) -> bool:
         """True when this delivery recorded the event; False on a replay."""
         ...
+
+
+class PaymentSource(StrEnum):
+    STRIPE = "stripe"
+    MANUAL = "manual"
+
+
+class PaymentMethod(StrEnum):
+    CARD = "card"
+    CHECK = "check"
+    CASH = "cash"
+    OTHER = "other"
+
+
+class PaymentKind(StrEnum):
+    """A one-off quote is paid once; a plan is paid again every period."""
+
+    ONE_OFF = "one_off"
+    PLAN = "plan"
+
+
+class LedgerPayment(PaymentModel):
+    """One settled payment: money that arrived, on the day it arrived.
+
+    ``reference`` is unique per ``source``: the provider's own id (checkout
+    session, renewal invoice) for card payments, the form's one-time key for
+    manual ones. A second active one-off payment for the same quote is kept
+    but flagged ``duplicate`` and left out of totals.
+    """
+
+    payment_id: UUID
+    business_id: BusinessId
+    quote_id: QuoteId
+    kind: PaymentKind
+    source: PaymentSource
+    method: PaymentMethod
+    reference: str = Field(min_length=1, max_length=255)
+    amount_minor: int = Field(ge=0)
+    currency: str = Field(min_length=3, max_length=3)
+    paid_at: datetime
+    months_covered: int | None = Field(default=None, ge=1)
+    recorded_by: str | None = None
+    recorded_at: datetime
+    note: str | None = Field(default=None, max_length=500)
+    voided_at: datetime | None = None
+    voided_by: str | None = None
+    duplicate: bool = False
+
+    @field_validator("currency")
+    @classmethod
+    def upper_currency(cls, value: str) -> str:
+        return value.upper()
+
+    @field_validator("paid_at", "recorded_at", "voided_at")
+    @classmethod
+    def timestamps_are_aware(cls, value: datetime | None) -> datetime | None:
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("payment timestamps must be timezone-aware")
+        return value
+
+    @property
+    def counts(self) -> bool:
+        return self.voided_at is None and not self.duplicate
+
+
+class PaymentLedgerRepository(Protocol):
+    async def record(self, payment: LedgerPayment) -> LedgerPayment | None:
+        """Add the payment; ``None`` when its ``(source, reference)`` is
+        already recorded. A second active one-off payment for the quote is
+        stored with ``duplicate`` set and returned that way."""
+        ...
+
+    async def list_for_business(
+        self, business_id: BusinessId, *, since: datetime | None = None
+    ) -> tuple[LedgerPayment, ...]:
+        """Newest first by ``paid_at``."""
+        ...
+
+
+def months_for(interval: BillingInterval | None) -> int | None:
+    if interval is None:
+        return None
+    return 12 if interval is BillingInterval.YEAR else 1
+
+
+def month_totals(payments: Iterable[LedgerPayment], zone: tzinfo, now: datetime) -> dict[str, int]:
+    """Money that arrived in ``now``'s calendar month in ``zone``, per
+    currency, before fees; voided and duplicate payments don't count."""
+
+    current = now.astimezone(zone)
+    totals: dict[str, int] = {}
+    for payment in payments:
+        local = payment.paid_at.astimezone(zone)
+        if payment.counts and (local.year, local.month) == (current.year, current.month):
+            totals[payment.currency] = totals.get(payment.currency, 0) + payment.amount_minor
+    return totals
+
+
+def first_paid_at(payments: Iterable[LedgerPayment]) -> dict[QuoteId, datetime]:
+    """Each quote's earliest counted payment: when it was paid."""
+
+    paid: dict[QuoteId, datetime] = {}
+    for payment in payments:
+        if payment.counts and (
+            payment.quote_id not in paid or payment.paid_at < paid[payment.quote_id]
+        ):
+            paid[payment.quote_id] = payment.paid_at
+    return paid

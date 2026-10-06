@@ -48,7 +48,7 @@ from gvas.domain.owner_actions import (
     decide_booking,
     reject_quote,
 )
-from gvas.domain.payments import QuoteSubscriptionRecord
+from gvas.domain.payments import LedgerPayment, QuoteSubscriptionRecord
 from gvas.domain.ports import BookedEventsPort, CalendarFeedPort
 from gvas.domain.quotes import (
     InvalidQuoteTransitionError,
@@ -221,6 +221,10 @@ class OwnerService:
                     )
                 )
         return tuple(summaries)
+
+    async def payments(self, context: OwnerContext) -> tuple[LedgerPayment, ...]:
+        async with self._unit_of_work_factory() as unit_of_work:
+            return await unit_of_work.payments.list_for_business(context.business.business_id)
 
     async def subscriptions(self, context: OwnerContext) -> tuple[QuoteSubscriptionRecord, ...]:
         async with self._unit_of_work_factory() as unit_of_work:

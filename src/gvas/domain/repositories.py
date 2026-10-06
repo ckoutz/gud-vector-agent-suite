@@ -42,6 +42,7 @@ from gvas.domain.outbox import OutboxCommand, OutboxRecord
 from gvas.domain.owner import OwnerLoginTokenRepository, OwnerSessionRepository
 from gvas.domain.payments import (
     PaymentEventRepository,
+    PaymentLedgerRepository,
     QuotePaymentRepository,
     QuoteSubscriptionRepository,
 )
@@ -343,6 +344,7 @@ class UnitOfWork(Protocol):
     outbox: OutboxRepository
     quotes: QuoteRepository
     quote_payments: QuotePaymentRepository
+    payments: PaymentLedgerRepository
     payment_events: PaymentEventRepository
     customers: CustomerRepository
     portal_login_tokens: PortalLoginTokenRepository

@@ -17,6 +17,7 @@ from gvas.domain.intake import IntakeConversationRepository, IntakeMessageReposi
 from gvas.domain.owner import OwnerLoginTokenRepository, OwnerSessionRepository
 from gvas.domain.payments import (
     PaymentEventRepository,
+    PaymentLedgerRepository,
     QuotePaymentRepository,
     QuoteSubscriptionRepository,
 )
@@ -56,6 +57,7 @@ from gvas.infrastructure.intake_repositories import (
 )
 from gvas.infrastructure.payment_repositories import (
     SqlPaymentEventRepository,
+    SqlPaymentLedgerRepository,
     SqlQuotePaymentRepository,
     SqlQuoteSubscriptionRepository,
 )
@@ -86,6 +88,7 @@ class SqlUnitOfWork:
     outbox: OutboxRepository
     quotes: QuoteRepository
     quote_payments: QuotePaymentRepository
+    payments: PaymentLedgerRepository
     payment_events: PaymentEventRepository
     customers: CustomerRepository
     portal_login_tokens: PortalLoginTokenRepository
@@ -113,6 +116,7 @@ class SqlUnitOfWork:
         self.outbox = SqlOutboxRepository(self._session)
         self.quotes = SqlQuoteRepository(self._session)
         self.quote_payments = SqlQuotePaymentRepository(self._session)
+        self.payments = SqlPaymentLedgerRepository(self._session)
         self.payment_events = SqlPaymentEventRepository(self._session)
         self.customers = SqlCustomerRepository(self._session)
         self.portal_login_tokens = SqlPortalLoginTokenRepository(self._session)
