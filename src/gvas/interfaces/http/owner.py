@@ -8,7 +8,7 @@ The owner's calendar link is write-only: responses carry its host, never the
 link.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -28,9 +28,15 @@ from gvas.application.owner import (
 from gvas.domain.enums import QuoteStatus
 from gvas.domain.intake import IntakeConversation
 from gvas.domain.owner import CalendarEvent, calendar_feed_host
-from gvas.domain.payments import QuoteSubscriptionRecord
+from gvas.domain.payments import (
+    LedgerPayment,
+    QuoteSubscriptionRecord,
+    first_paid_at,
+    month_totals,
+)
 from gvas.domain.quotes import Quote, public_quote_id
 from gvas.domain.repositories import BusinessRecord
+from gvas.domain.time_zones import business_zone
 from gvas.interfaces.http.portal import GENERIC_UNAUTHORIZED, bearer_token
 from gvas.interfaces.http.public import PerIpRateLimiter, client_ip
 
@@ -68,7 +74,7 @@ def _sent_at(quote: Quote) -> datetime | None:
     return min(reached) if reached else None
 
 
-def owner_quote_payload(quote: Quote) -> dict[str, object]:
+def owner_quote_payload(quote: Quote, *, paid_at: datetime | None = None) -> dict[str, object]:
     draft = quote.draft
     recipient = draft.recipient if draft is not None else None
     return {
@@ -100,6 +106,7 @@ def owner_quote_payload(quote: Quote) -> dict[str, object]:
         "createdAt": _iso(quote.created_at),
         "approvedAt": _iso(quote.approved_at),
         "sentAt": _iso(_sent_at(quote)),
+        "paidOn": _iso(paid_at),
         "updatedAt": _iso(quote.updated_at),
     }
 
@@ -122,6 +129,27 @@ def owner_customer_payload(summary: CustomerSummary) -> dict[str, object]:
         "paidCents": sum(quote.draft.total_minor for quote in paid if quote.draft is not None),
         "lastQuoteAt": _iso(max((quote.created_at for quote in quotes), default=None)),
         "quoteIds": [public_quote_id(quote.quote_id) for quote in quotes],
+    }
+
+
+def owner_payment_payload(payment: LedgerPayment) -> dict[str, object]:
+    return {
+        "id": str(payment.payment_id),
+        "quoteId": public_quote_id(payment.quote_id),
+        "kind": payment.kind.value,
+        "source": payment.source.value,
+        "method": payment.method.value,
+        "amountCents": payment.amount_minor,
+        "currency": payment.currency,
+        "paidOn": _iso(payment.paid_at),
+        "monthsCovered": payment.months_covered,
+        "recordedBy": payment.recorded_by,
+        "recordedAt": _iso(payment.recorded_at),
+        "note": payment.note,
+        "voidedAt": _iso(payment.voided_at),
+        "voidedBy": payment.voided_by,
+        "duplicate": payment.duplicate,
+        "counts": payment.counts,
     }
 
 
@@ -257,7 +285,28 @@ def create_owner_router(
     @router.get("/v1/owner/quotes", dependencies=limited)
     async def quotes(context: OwnerContext = owner) -> JSONResponse:
         records = await service.quotes(context)
-        return JSONResponse({"quotes": [owner_quote_payload(quote) for quote in records]})
+        paid = first_paid_at(await service.payments(context))
+        return JSONResponse(
+            {
+                "quotes": [
+                    owner_quote_payload(quote, paid_at=paid.get(quote.quote_id))
+                    for quote in records
+                ]
+            }
+        )
+
+    @router.get("/v1/owner/payments", dependencies=limited)
+    async def payments(context: OwnerContext = owner) -> JSONResponse:
+        records = await service.payments(context)
+        zone = business_zone(context.business.timezone) or UTC
+        now = datetime.now(UTC)
+        return JSONResponse(
+            {
+                "payments": [owner_payment_payload(payment) for payment in records],
+                "month": now.astimezone(zone).strftime("%Y-%m"),
+                "paidThisMonth": month_totals(records, zone, now),
+            }
+        )
 
     @router.post("/v1/owner/quotes/{quote_id}/approve", dependencies=limited)
     async def approve_quote(quote_id: str, context: OwnerContext = owner) -> JSONResponse:

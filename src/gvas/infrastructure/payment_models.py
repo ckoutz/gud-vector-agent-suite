@@ -8,8 +8,11 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     String,
     UniqueConstraint,
+    false,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -93,6 +96,51 @@ class QuoteSubscription(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class LedgerPaymentRow(Base):
+    """One settled payment, card or manual; see ``LedgerPayment``."""
+
+    __tablename__ = "payments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["business_id", "quote_id"],
+            ["quotes.business_id", "quotes.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("source", "reference", name="uq_payments_source_reference"),
+        Index("ix_payments_business_id_paid_at", "business_id", "paid_at"),
+        Index(
+            "uq_payments_one_active_one_off",
+            "business_id",
+            "quote_id",
+            unique=True,
+            postgresql_where=text("kind = 'one_off' AND voided_at IS NULL AND NOT duplicate"),
+            sqlite_where=text("kind = 'one_off' AND voided_at IS NULL AND NOT duplicate"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    quote_id: Mapped[UUID] = mapped_column(nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    method: Mapped[str] = mapped_column(String(20), nullable=False)
+    reference: Mapped[str] = mapped_column(String(255), nullable=False)
+    amount_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    months_covered: Mapped[int | None] = mapped_column(Integer)
+    recorded_by: Mapped[str | None] = mapped_column(String(320))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    note: Mapped[str | None] = mapped_column(String(500))
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    voided_by: Mapped[str | None] = mapped_column(String(320))
+    duplicate: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+
+
 class PaymentProviderEvent(Base):
     """Replay ledger for payment webhooks: ``(provider, event_id)`` recorded in
     the same transaction as its effects, so a retried delivery answers from the
@@ -105,4 +153,4 @@ class PaymentProviderEvent(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-__all__ = ["PaymentProviderEvent", "QuotePayment", "QuoteSubscription"]
+__all__ = ["LedgerPaymentRow", "PaymentProviderEvent", "QuotePayment", "QuoteSubscription"]

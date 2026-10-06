@@ -147,6 +147,7 @@ class _StripeEvent(BaseModel):
 
     id: str
     type: str
+    created: int | None = None
     data: _StripeEventData
 
 
@@ -159,7 +160,9 @@ def parse_checkout_event(body: bytes) -> PaymentWebhookEvent:
         raise StripeEventError("stripe event is not readable") from error
     record = parsed.data.object
     if parsed.type in SUBSCRIPTION_EVENTS:
-        return _subscription_event(parsed.id, parsed.type, record)
+        return _subscription_event(parsed.id, parsed.type, record).model_copy(
+            update={"occurred_at": _timestamp(parsed.created)}
+        )
     if parsed.type == CHECKOUT_COMPLETED and (
         record.payment_status not in SETTLED_PAYMENT_STATUSES
     ):
@@ -187,6 +190,7 @@ def parse_checkout_event(body: bytes) -> PaymentWebhookEvent:
         payment_intent_id=record.payment_intent,
         metadata=record.metadata,
         subscription=subscription,
+        occurred_at=_timestamp(parsed.created),
     )
 
 
@@ -226,6 +230,7 @@ def _subscription_event(
             paid_minor=paid,
             currency=record.currency,
             current_period_end=period_end,
+            invoice_ref=record.id,
         )
     else:
         metadata = record.metadata

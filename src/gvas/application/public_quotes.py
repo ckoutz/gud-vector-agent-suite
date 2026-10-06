@@ -19,14 +19,19 @@ from gvas.domain.money import format_money
 from gvas.domain.payments import (
     STRIPE_PROVIDER,
     BillingCustomerRequest,
+    LedgerPayment,
     PaymentCheckoutRequest,
     PaymentEventOutcome,
+    PaymentKind,
     PaymentLineItem,
+    PaymentMethod,
+    PaymentSource,
     PaymentWebhookEvent,
     QuotePaymentConflictError,
     QuotePaymentRecord,
     QuoteSubscriptionRecord,
     SubscriptionEventData,
+    months_for,
 )
 from gvas.domain.ports import BillingAccountPort, PaymentCheckoutPort
 from gvas.domain.quotes import (
@@ -437,6 +442,27 @@ class PublicQuoteService:
             if quote is None:
                 await unit_of_work.commit()
                 return True
+            draft = quote.draft
+            await unit_of_work.payments.record(
+                LedgerPayment(
+                    payment_id=uuid4(),
+                    business_id=payment.business_id,
+                    quote_id=payment.quote_id,
+                    kind=PaymentKind.ONE_OFF if event.subscription is None else PaymentKind.PLAN,
+                    source=PaymentSource.STRIPE,
+                    method=PaymentMethod.CARD,
+                    reference=payment.checkout_session_id,
+                    amount_minor=payment.amount_minor,
+                    currency=payment.currency,
+                    paid_at=event.occurred_at or now,
+                    months_covered=(
+                        None
+                        if event.subscription is None or draft is None
+                        else months_for(draft.interval)
+                    ),
+                    recorded_at=now,
+                )
+            )
             paid = quote.record_customer_payment(now)
             if event.subscription is not None:
                 paid, _ = await link_quote_customer(unit_of_work, paid, now)
@@ -529,6 +555,22 @@ class PublicQuoteService:
         amount = format_money(updated.amount_minor, updated.currency)
         if event.outcome is PaymentEventOutcome.SUBSCRIPTION_RENEWED:
             paid = data.paid_minor if data.paid_minor is not None else updated.amount_minor
+            await unit_of_work.payments.record(
+                LedgerPayment(
+                    payment_id=uuid4(),
+                    business_id=updated.business_id,
+                    quote_id=updated.quote_id,
+                    kind=PaymentKind.PLAN,
+                    source=PaymentSource.STRIPE,
+                    method=PaymentMethod.CARD,
+                    reference=data.invoice_ref or event.event_id,
+                    amount_minor=paid,
+                    currency=data.currency or updated.currency,
+                    paid_at=event.occurred_at or now,
+                    months_covered=months_for(updated.interval),
+                    recorded_at=now,
+                )
+            )
             text = f"Subscription for {who} renewed {format_money(paid, updated.currency)}"
         elif event.outcome is PaymentEventOutcome.SUBSCRIPTION_PAYMENT_FAILED:
             text = f"Subscription for {who} payment failed ({amount} {updated.interval.value}ly)"
