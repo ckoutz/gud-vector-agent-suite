@@ -710,14 +710,19 @@ class OwnerService:
                     update={"status": "canceled", "paid_through": None, "updated_at": now}
                 )
                 await unit_of_work.quote_subscriptions.save(plan)
-                # A card plan that raced the manual one counts instead, and
-                # keeps the quote paid.
-                for row in ledger:
-                    if row.source is PaymentSource.STRIPE and row.duplicate:
+                # A card payment that raced the manual plan counts instead, and
+                # keeps the quote paid even if that card plan has since ended.
+                card = [
+                    row
+                    for row in ledger
+                    if row.source is PaymentSource.STRIPE and row.voided_at is None
+                ]
+                for row in card:
+                    if row.duplicate:
                         await unit_of_work.payments.mark_duplicate(
                             business_id, row.payment_id, False
                         )
-                if any(not p.is_manual and p.is_live for p in plans):
+                if card or any(not p.is_manual and p.is_live for p in plans):
                     await unit_of_work.commit()
                     return plan
                 before = next(

@@ -507,7 +507,16 @@ async def test_a_card_plan_racing_a_manual_one_is_kept_uncounted_and_the_owner_t
             amount_minor=9_900,
         )
 
-    # Undoing the check leaves the card plan as the one that counts.
+    # Undoing the check leaves the card payment as the one that counts, even
+    # once the card plan has ended.
+    async with session_factory() as session:
+        await session.execute(
+            update(QuoteSubscription)
+            .where(QuoteSubscription.provider == "stripe")
+            .where(QuoteSubscription.business_id == portal.business_id)
+            .values(status="canceled")
+        )
+        await session.commit()
     await owner.void_plan_payment(context, quote_id, str(manual.id))
     after = {r.source: r for r in await _rows(session_factory, portal)}
     assert after["manual"].voided_at is not None and not after["stripe"].duplicate
