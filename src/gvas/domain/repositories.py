@@ -231,6 +231,11 @@ class BusinessRepository(Protocol):
         leave stored values and an empty ``calendar_feed_url`` clears it."""
         ...
 
+    async def adopt_timezone(self, business_id: BusinessId, timezone: str, now: datetime) -> bool:
+        """Set the zone only while it is still unset, in one conditional
+        write, so an owner's own choice is never overwritten."""
+        ...
+
 
 class OwnerChannelEndpointRepository(Protocol):
     async def get(self, endpoint_id: EndpointId) -> OwnerChannelEndpointRecord | None: ...

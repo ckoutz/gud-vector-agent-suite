@@ -22,6 +22,9 @@ _US_ZONE_NAMES = {
     "HDT": "Hawaii time",
 }
 _US_ZONE_PREFIXES = ("America/", "US/", "Pacific/Honolulu")
+#: Zones under ``America/`` that reuse a US abbreviation for a different
+#: zone ("CST" is Cuba Standard Time in Havana); they read as the city.
+_CITY_NAMED_ZONES = frozenset({"America/Havana", "Cuba"})
 
 
 @cache
@@ -62,10 +65,16 @@ def zone_label(local: datetime) -> str:
 
     abbreviation = local.strftime("%Z")
     key = zone_key(local)
+    if key in _CITY_NAMED_ZONES:
+        return _city_label(key)
     if key is not None and key.startswith(_US_ZONE_PREFIXES) and abbreviation in _US_ZONE_NAMES:
         return _US_ZONE_NAMES[abbreviation]
     if abbreviation.isalpha():
         return abbreviation
     if key is not None:
-        return f"{key.rsplit('/', 1)[-1].replace('_', ' ')} time"
+        return _city_label(key)
     return abbreviation
+
+
+def _city_label(key: str) -> str:
+    return f"{key.rsplit('/', 1)[-1].replace('_', ' ')} time"

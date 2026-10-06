@@ -701,6 +701,24 @@ async def test_owner_approve_books_directly_and_emails_customer(
 
 
 @pytest.mark.asyncio
+async def test_the_calendar_zone_never_overwrites_one_the_owner_set(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    now = datetime.now(UTC)
+    async with session_factory() as session, session.begin():
+        repository = SqlBusinessRepository(session)
+        # The learner read the zone as unset; the owner saves one before it writes.
+        await repository.configure_site(business_id, timezone="America/Chicago", now=now)
+        adopted = await repository.adopt_timezone(business_id, "America/Los_Angeles", now)
+    assert adopted is False
+    async with session_factory() as session:
+        business = await SqlBusinessRepository(session).get(business_id)
+    assert business is not None and business.timezone == "America/Chicago"
+
+
+@pytest.mark.asyncio
 async def test_times_read_in_the_business_zone_learned_from_the_calendar(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -1544,3 +1562,19 @@ async def test_a_no_is_accepted_after_approval_and_a_new_yes_is_too(
     again = await application.intake.record_sms_consent(withdrawn, True)
     assert again.sms_consent is True, "a booked chat stays open, so consent can still change"
     assert (await customer_row(session_factory, business_id)).sms_consent is True
+
+
+@pytest.mark.asyncio
+async def test_an_adopted_zone_is_seen_by_later_reads_in_the_same_session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    async with session_factory() as session:
+        businesses = SqlBusinessRepository(session)
+        before = await businesses.get(business_id)
+        assert before is not None and before.timezone is None
+
+        assert await businesses.adopt_timezone(business_id, "America/Los_Angeles", NOW)
+        after = await businesses.get(business_id)
+        assert after is not None and after.timezone == "America/Los_Angeles"

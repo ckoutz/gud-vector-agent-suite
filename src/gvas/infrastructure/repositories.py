@@ -196,6 +196,18 @@ class SqlBusinessRepository:
             ) from error
         return self._record(row)
 
+    async def adopt_timezone(self, business_id: BusinessId, timezone: str, now: datetime) -> bool:
+        result = cast(
+            CursorResult[Any],
+            await self.session.execute(
+                update(Business)
+                .where(Business.id == business_id, Business.timezone.is_(None))
+                .values(timezone=timezone, updated_at=now)
+                .execution_options(synchronize_session="fetch")
+            ),
+        )
+        return result.rowcount == 1
+
 
 class BusinessNotFoundError(ValueError):
     pass
