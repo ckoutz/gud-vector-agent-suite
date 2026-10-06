@@ -506,3 +506,9 @@ async def test_a_card_plan_racing_a_manual_one_is_kept_uncounted_and_the_owner_t
             months=1,
             amount_minor=9_900,
         )
+
+    # Undoing the check leaves the card plan as the one that counts.
+    await owner.void_plan_payment(context, quote_id, str(manual.id))
+    after = {r.source: r for r in await _rows(session_factory, portal)}
+    assert after["manual"].voided_at is not None and not after["stripe"].duplicate
+    assert await _status(session_factory, portal) == "paid"

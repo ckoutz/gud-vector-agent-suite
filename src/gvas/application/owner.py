@@ -679,10 +679,9 @@ class OwnerService:
                 business_id, found.subscription_id, for_update=True
             )
             assert plan is not None
+            ledger = await unit_of_work.payments.list_for_quote(business_id, quote.quote_id)
             manual = [
-                p
-                for p in await unit_of_work.payments.list_for_quote(business_id, quote.quote_id)
-                if p.kind is PaymentKind.PLAN and p.source is PaymentSource.MANUAL
+                p for p in ledger if p.kind is PaymentKind.PLAN and p.source is PaymentSource.MANUAL
             ]
             target = next((p for p in manual if str(p.payment_id) == payment_id), None)
             if target is None:
@@ -711,6 +710,16 @@ class OwnerService:
                     update={"status": "canceled", "paid_through": None, "updated_at": now}
                 )
                 await unit_of_work.quote_subscriptions.save(plan)
+                # A card plan that raced the manual one counts instead, and
+                # keeps the quote paid.
+                for row in ledger:
+                    if row.source is PaymentSource.STRIPE and row.duplicate:
+                        await unit_of_work.payments.mark_duplicate(
+                            business_id, row.payment_id, False
+                        )
+                if any(not p.is_manual and p.is_live for p in plans):
+                    await unit_of_work.commit()
+                    return plan
                 before = next(
                     (
                         p.customer_status_before
