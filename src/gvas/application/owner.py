@@ -528,8 +528,17 @@ class OwnerService:
             )
             payments = await unit_of_work.payments.list_for_quote(business_id, quote.quote_id)
             plan = next((p for p in plans if p.is_manual), None)
-            if any(p.reference == reference and p.source is PaymentSource.MANUAL for p in payments):
-                if plan is None:
+            known = next(
+                (
+                    p
+                    for p in payments
+                    if p.reference == reference and p.source is PaymentSource.MANUAL
+                ),
+                None,
+            )
+            if known is not None:
+                # A retry of a payment undone since is not a new payment.
+                if plan is None or known.voided_at is not None:
                     raise OwnerConflictError("This payment changed; refresh and try again.")
                 return plan
             if any(not p.is_manual and p.is_live for p in plans):
@@ -627,8 +636,6 @@ class OwnerService:
             email = draft.recipient.email_address
             if email is not None:
                 business = context.business.display_name or context.business.name
-                through = plan.paid_through
-                assert through is not None
                 await unit_of_work.outbox.enqueue(
                     manual_receipt_command(
                         business_id=business_id,
@@ -642,10 +649,10 @@ class OwnerService:
                                 f" {format_money(amount_minor, draft.currency)}"
                                 f"{_RECEIPT_METHOD.get(method, '')}"
                                 f" on {paid_on:%B} {paid_on.day}, {paid_on.year}.",
-                                f"Your plan is paid through {through:%B} {through.day},"
-                                f" {through.year}. Keep this e-mail as your receipt.",
+                                "Keep this e-mail as your receipt.",
                             ]
                         ),
+                        subscription_id=plan.subscription_id,
                     )
                 )
             await unit_of_work.commit()

@@ -155,9 +155,11 @@ def manual_receipt_command(
     to: str,
     subject: str,
     body: str,
+    subscription_id: SubscriptionId | None = None,
 ) -> OutboxCommand:
     """The customer's receipt for a manual payment; the worker drops it when
-    the payment was voided before delivery."""
+    the payment was voided before delivery. For a plan payment it adds the
+    plan's paid-through date as it stands when the receipt goes out."""
 
     key = f"manual-receipt:{payment_id}"
     return OutboxCommand(
@@ -171,6 +173,7 @@ def manual_receipt_command(
             "idempotency_key": key,
             "quote_id": str(quote_id),
             "payment_id": str(payment_id),
+            **({} if subscription_id is None else {"subscription_id": str(subscription_id)}),
         },
         dedup_key=key,
     )

@@ -2,6 +2,7 @@
 moves a paid-through date; a one-time key stops double submits, undo keeps
 a trail, and the owner is nudged a week before the plan runs out."""
 
+from collections.abc import Mapping
 from datetime import UTC, date, datetime, time, timedelta
 from uuid import uuid4
 
@@ -9,6 +10,7 @@ import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.application.manual_payments import ManualPaymentEffectsService
 from gvas.application.owner import (
     OwnerConflictError,
     OwnerContext,
@@ -16,7 +18,7 @@ from gvas.application.owner import (
     OwnerNotFoundError,
 )
 from gvas.domain.enums import BillingInterval
-from gvas.domain.identifiers import CustomerId, QuoteId, SubscriptionId
+from gvas.domain.identifiers import BusinessId, CustomerId, QuoteId, SubscriptionId
 from gvas.domain.payments import (
     MANUAL_RECEIPT_COMMAND_TYPE,
     PLAN_NUDGE_COMMAND_TYPE,
@@ -29,22 +31,39 @@ from gvas.domain.payments import (
 from gvas.domain.quotes import public_quote_id
 from gvas.domain.time_zones import business_zone
 from gvas.infrastructure.models import OutboxMessage, QuoteRecord
-from gvas.infrastructure.payment_models import LedgerPaymentRow
+from gvas.infrastructure.payment_models import LedgerPaymentRow, QuoteSubscription
 from gvas.infrastructure.payment_repositories import (
     SqlPaymentLedgerRepository,
     SqlQuoteSubscriptionRepository,
 )
-from test_customer_portal import Portal, portal_business
+from gvas.infrastructure.stripe import StripeWebhookVerifier
+from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
+from test_customer_portal import (
+    BillingFake,
+    Portal,
+    client,
+    portal_business,
+    post_event,
+    subscription_checkout_event,
+)
+from test_hosted_quotes import WEBHOOK_SECRET, CheckoutFake
 from test_mark_paid import OWNER, _context
 from test_owner_dashboard import bearer, http_client, owner_business, sign_in
 from test_pilot_runtime import immediate_worker, texts_of
 
 
 async def _plan_quote(
-    session_factory: async_sessionmaker[AsyncSession], *, recurring: bool = True
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    recurring: bool = True,
+    checkout: CheckoutFake | None = None,
 ) -> tuple[Portal, OwnerContext, str, date]:
     portal = await portal_business(
-        session_factory, recurring=recurring, public_key=f"gvb_plan_{uuid4().hex[:12]}"
+        session_factory,
+        recurring=recurring,
+        public_key=f"gvb_plan_{uuid4().hex[:12]}",
+        checkout=checkout,
+        billing=BillingFake() if checkout is not None else None,
     )
     async with session_factory() as session:
         row = await session.scalar(
@@ -153,7 +172,9 @@ async def test_a_prepay_starts_a_plan_a_retry_records_once_and_later_payments_ex
     receipts = await _commands(session_factory, MANUAL_RECEIPT_COMMAND_TYPE)
     assert len(receipts) == 2
     body = str(receipts[-1].payload["body"])
-    assert "USD 99.00 by check" in body and "paid through" in body
+    assert "USD 99.00 by check" in body
+    # The paid-through line is added when the receipt goes out.
+    assert receipts[-1].payload["subscription_id"] == str(plan.subscription_id)
     assert "1043" not in body
 
 
@@ -177,6 +198,18 @@ async def test_undo_moves_paid_through_back_and_the_last_undo_ends_the_plan(
 
     plan = await owner.void_plan_payment(context, quote_id, str(second.id))
     assert plan.status == "active" and plan.paid_through == paid_through(today, 2)
+    # Re-sending the undone payment's form is not a new payment.
+    with pytest.raises(OwnerConflictError):
+        await owner.record_plan_payment(
+            context,
+            quote_id,
+            key="undo-second-key",
+            paid_on=today,
+            method=PaymentMethod.CASH,
+            months=1,
+            amount_minor=9_900,
+        )
+    assert len(await _rows(session_factory, portal)) == 2
     with pytest.raises(OwnerConflictError):
         await owner.void_plan_payment(context, quote_id, str(second.id))
     with pytest.raises(OwnerNotFoundError):
@@ -353,3 +386,123 @@ async def test_the_owner_api_validates_and_scopes_plan_payments(
             f"{url}/00000000-0000-0000-0000-000000000000/undo", headers=bearer(owner)
         )
         assert undo.status_code == 404
+
+
+def _effects(
+    session_factory: async_sessionmaker[AsyncSession], sent: list[dict[str, object]]
+) -> ManualPaymentEffectsService:
+    async def receipts(_: BusinessId, payload: Mapping[str, object]) -> None:
+        sent.append(dict(payload))
+
+    return ManualPaymentEffectsService(
+        SqlUnitOfWorkFactory(session_factory), checkout=None, receipts=receipts
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_shows_the_paid_through_date_as_it_is_when_it_goes_out(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    portal, context, quote_id, today = await _plan_quote(session_factory)
+    owner = portal.application.owner
+    for key, months in (("receipt-first-key", 2), ("receipt-second-key", 1)):
+        await owner.record_plan_payment(
+            context,
+            quote_id,
+            key=key,
+            paid_on=today,
+            method=PaymentMethod.CHECK,
+            months=months,
+            amount_minor=9_900 * months,
+        )
+    first, second = await _rows(session_factory, portal)
+    await owner.void_plan_payment(context, quote_id, str(first.id))
+    payloads = {
+        str(r.payload["payment_id"]): r.payload
+        for r in await _commands(session_factory, MANUAL_RECEIPT_COMMAND_TYPE)
+        if isinstance(r.payload, dict)
+    }
+    sent: list[dict[str, object]] = []
+    effects = _effects(session_factory, sent)
+
+    assert await effects.send_receipt(portal.business_id, payloads[str(first.id)]) == "voided"
+    assert await effects.send_receipt(portal.business_id, payloads[str(second.id)]) == "sent"
+    [receipt] = sent
+    now_through = paid_through(today, 1)
+    body = str(receipt["body"])
+    assert f"paid through {now_through:%B} {now_through.day}, {now_through.year}." in body
+    stale = paid_through(today, 3)
+    assert f"{stale:%B} {stale.day}, {stale.year}" not in body
+
+
+@pytest.mark.asyncio
+async def test_a_nudge_that_runs_after_the_plan_lapsed_is_dropped(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    portal, context, quote_id, today = await _plan_quote(session_factory)
+    plan = await portal.application.owner.record_plan_payment(
+        context,
+        quote_id,
+        key="lapsed-nudge-key",
+        paid_on=today,
+        method=PaymentMethod.CHECK,
+        months=1,
+        amount_minor=9_900,
+    )
+    effects = _effects(session_factory, [])
+    lapsed = today - timedelta(days=2)
+    async with session_factory() as session:
+        await session.execute(
+            update(QuoteSubscription)
+            .where(QuoteSubscription.business_id == portal.business_id)
+            .values(paid_through=lapsed)
+        )
+        await session.commit()
+    payload = {"subscription_id": str(plan.subscription_id), "paid_through": lapsed.isoformat()}
+    assert await effects.nudge_plan(portal.business_id, payload) == "lapsed"
+    assert texts_of(portal.owner_replies, "Jane Doe's plan") == []
+
+
+@pytest.mark.asyncio
+async def test_a_card_plan_racing_a_manual_one_is_kept_uncounted_and_the_owner_told(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    portal, context, quote_id, today = await _plan_quote(session_factory, checkout=CheckoutFake())
+    owner = portal.application.owner
+    async with client(portal, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as http:
+        assert (await http.post(f"/v1/quotes/{portal.claim_token}/accept")).status_code == 200
+        await owner.record_plan_payment(
+            context,
+            quote_id,
+            key="race-manual-key",
+            paid_on=today,
+            method=PaymentMethod.CHECK,
+            months=2,
+            amount_minor=19_800,
+        )
+        # The customer was already on Stripe's page and subscribed anyway.
+        completed = await post_event(http, subscription_checkout_event())
+        assert completed.status_code == 200
+    rows = await _rows(session_factory, portal)
+    [manual] = [r for r in rows if r.source == "manual"]
+    [card] = [r for r in rows if r.source == "stripe"]
+    assert not manual.duplicate and card.duplicate
+    async with session_factory() as session:
+        plans = (
+            await session.scalars(
+                select(QuoteSubscription).where(QuoteSubscription.business_id == portal.business_id)
+            )
+        ).all()
+    assert sorted(p.provider for p in plans) == ["manual", "stripe"]
+    await immediate_worker(portal.application).drain()
+    assert any("also started a card plan" in str(m) for _, m in portal.owner_replies.sent)
+    with pytest.raises(OwnerConflictError, match="card"):
+        await owner.record_plan_payment(
+            context,
+            quote_id,
+            key="race-second-key",
+            paid_on=today,
+            method=PaymentMethod.CHECK,
+            months=1,
+            amount_minor=9_900,
+        )
