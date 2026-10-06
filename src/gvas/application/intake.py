@@ -29,6 +29,7 @@ from gvas.domain.identifiers import (
 from gvas.domain.intake import (
     BOOKING_DECISION_PATH,
     BOOKING_INTENT,
+    INTAKE_CHANNEL_PORTAL,
     INTAKE_CHANNEL_WEB,
     INTAKE_CONVERSATION_TTL,
     INTAKE_MAX_USER_MESSAGES,
@@ -76,6 +77,7 @@ from gvas.domain.intake import (
     scrub_agent_reply,
     slot_confirmed_reply,
     slot_message_start,
+    unverified_booking_change_notice,
 )
 from gvas.domain.messages import (
     CustomerDeliveryRequest,
@@ -98,6 +100,7 @@ from gvas.domain.ports import (
     IntakeAgentPort,
     OwnerEmailPort,
 )
+from gvas.domain.quotes import normalize_customer_email
 from gvas.domain.repositories import BusinessRecord, UnitOfWork
 from gvas.domain.usage import UsageCeilingGuard, UsageKind
 from gvas.domain.workflows import WorkflowContext, WorkflowResult
@@ -139,6 +142,13 @@ RESCHEDULE_UNAVAILABLE_REPLY = (
     "find a new time with you."
 )
 CANCEL_CONFIRMED_REPLY = "Done — your call is canceled and the team has been told."
+UNVERIFIED_CHANGE_REPLY = (
+    "I've passed that to the owner. I can't confirm who you are from this chat, "
+    "so they'll check with the contact on the booking before anything changes."
+)
+UNVERIFIED_CHANGE_UNREACHABLE_REPLY = (
+    "I couldn't reach the owner just now — please try again in a little while."
+)
 SLOT_HELD_REPLY = (
     "That time is already with the team for approval — we'll confirm by email or text."
 )
@@ -326,7 +336,7 @@ class IntakeService:
             customer_id=None if customer_record is None else customer_record.customer_id,
             reference=new_reference(),
             token_hash=conversation_token_hash(token),
-            channel=INTAKE_CHANNEL_WEB,
+            channel=INTAKE_CHANNEL_WEB if customer_record is None else INTAKE_CHANNEL_PORTAL,
             collected=collected,
             sms_consent=sms_consent,
             sms_consent_at=consent_at,
@@ -499,6 +509,7 @@ class IntakeService:
         )
         business = await self._business(unit_of_work, conversation.business_id)
         holder = await self._live_booking_holder(unit_of_work, conversation)
+        verified = await self._holder_verified(unit_of_work, conversation, holder)
         try:
             turn = await self._agent.turn(
                 IntakeTurnRequest(
@@ -509,7 +520,7 @@ class IntakeService:
                     collected=conversation.collected,
                     offered_slots=conversation.proposed_slots,
                     known_customer=conversation.customer_id is not None,
-                    existing_booking=self._existing_booking(holder),
+                    existing_booking=self._existing_booking(holder, verified=verified),
                     brief=business.intake_profile.brief,
                     questions=business.intake_profile.questions,
                 )
@@ -526,6 +537,10 @@ class IntakeService:
         await unit_of_work.intake_conversations.save(current)
 
         if holder is not None:
+            if (turn.wants_cancel or turn.wants_reschedule) and not verified:
+                return await self._refer_booking_change(
+                    unit_of_work, current, holder, business, now, cancel=turn.wants_cancel
+                )
             if turn.wants_cancel:
                 return await self._cancel_booking(unit_of_work, current, holder, business, now)
             if turn.wants_reschedule:
@@ -607,9 +622,46 @@ class IntakeService:
         return other
 
     @staticmethod
-    def _existing_booking(holder: IntakeConversation | None) -> ExistingBooking | None:
+    async def _holder_verified(
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        holder: IntakeConversation | None,
+    ) -> bool:
+        """Whether this chat may act on ``holder``'s booking itself.
+
+        Its own booking, yes. Another chat's only from a verified portal
+        session for the customer who owns it: an e-mail typed into an
+        anonymous chat proves nothing.
+        """
+
+        if holder is None:
+            return False
+        if holder.conversation_id == conversation.conversation_id:
+            return True
+        if conversation.channel != INTAKE_CHANNEL_PORTAL or conversation.customer_id is None:
+            return False
+        if holder.customer_id is not None:
+            return holder.customer_id == conversation.customer_id
+        # An anonymous request typed with this customer's address was left
+        # unlinked; the portal sign-in proved the address, so it is theirs.
+        customer = await unit_of_work.customers.get(
+            conversation.business_id, conversation.customer_id
+        )
+        email = holder.collected.email
+        return (
+            customer is not None
+            and email is not None
+            and normalize_customer_email(email) == customer.email
+        )
+
+    @staticmethod
+    def _existing_booking(
+        holder: IntakeConversation | None, *, verified: bool
+    ) -> ExistingBooking | None:
         if holder is None or holder.requested_slot_start is None:
             return None
+        if not verified:
+            return ExistingBooking(verified=False)
         status = (
             ExistingBookingStatus.REQUESTED
             if holder.state is IntakeState.AWAITING_OWNER
@@ -619,6 +671,38 @@ class IntakeService:
             status=status, slot_label=format_slot_label(holder.requested_slot_start)
         )
 
+    async def _refer_booking_change(
+        self,
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        holder: IntakeConversation,
+        business: BusinessRecord,
+        now: datetime,
+        *,
+        cancel: bool,
+    ) -> IntakeReply:
+        """A chat linked to another chat's booking only by a typed e-mail
+        asked to cancel or move it: the owner is told and nothing changes —
+        the booking, its calendar event and its chat stay as they are."""
+
+        kind = "cancel" if cancel else "move"
+        notified = await enqueue_intake_owner_notice(
+            unit_of_work,
+            holder.business_id,
+            correlation_id=(
+                f"intake_unverified_{kind}:{conversation.conversation_id}:{holder.reference}"
+            ),
+            text=unverified_booking_change_notice(
+                holder,
+                conversation,
+                cancel=cancel,
+                business_name=business.display_name or business.name,
+            ),
+        )
+        text = UNVERIFIED_CHANGE_REPLY if notified else UNVERIFIED_CHANGE_UNREACHABLE_REPLY
+        reply = await self._reply(unit_of_work, conversation, text, now)
+        return IntakeReply(conversation, reply, ())
+
     async def _cancel_booking(
         self,
         unit_of_work: UnitOfWork,
@@ -627,8 +711,9 @@ class IntakeService:
         business: BusinessRecord,
         now: datetime,
     ) -> IntakeReply:
-        """The customer drops their own call — no owner approval needed; the
-        owner hears about it and any calendar event is cancelled."""
+        """The customer drops their own call (this chat's, or a verified portal
+        customer's) — no owner approval needed; the owner hears about it and
+        any calendar event is cancelled."""
 
         notified = await enqueue_intake_owner_notice(
             unit_of_work,
@@ -694,7 +779,7 @@ class IntakeService:
         now: datetime,
     ) -> IntakeConversation:
         """Move an approved booking from a previous conversation into this one
-        (same customer e-mail); the old chat closes."""
+        (same verified portal customer); the old chat closes."""
 
         adopted = conversation.with_updates(
             now,
@@ -781,15 +866,21 @@ class IntakeService:
 
         collected = conversation.collected
         customer_id = conversation.customer_id
+        unverified_email = False
         if customer_id is None and collected.email:
-            customer = await unit_of_work.customers.upsert(
+            # A typed e-mail proves nothing: it may start a new customer
+            # record, but never links to (or fills in) an existing one.
+            customer = await unit_of_work.customers.create(
                 conversation.business_id,
                 collected.email,
                 display_name=collected.name,
                 phone=collected.phone,
                 now=now,
             )
-            customer_id = customer.customer_id
+            if customer is None:
+                unverified_email = True
+            else:
+                customer_id = customer.customer_id
         if customer_id is not None and conversation.sms_consent is not None:
             await unit_of_work.customers.set_sms_consent(
                 conversation.business_id,
@@ -848,12 +939,14 @@ class IntakeService:
                 profile=business.intake_profile,
                 previous_label=previous_label,
                 previous_booked=superseded is not None,
+                unverified_email=unverified_email,
             ),
             email=booking_request_email(
                 updated,
                 profile=business.intake_profile,
                 previous_label=previous_label,
                 previous_booked=superseded is not None,
+                unverified_email=unverified_email,
             ),
             email_actions=self._decision_email.actions(updated),
         )
@@ -1099,7 +1192,9 @@ class BookingDecisionHandler:
         decision = booking_decision(_booking_text(message))
         if decision is None:
             return self._result(
-                message, "Reply `approve booking <id>` or `decline booking <id> <reason>`."
+                message,
+                "Reply `approve booking <id>`, `decline booking <id> <reason>` "
+                "or `cancel booking <id>`.",
             )
         async with self._unit_of_work_factory() as unit_of_work:
             endpoint = await unit_of_work.conversations.find_endpoint(message.conversation_ref)

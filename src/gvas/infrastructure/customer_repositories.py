@@ -118,6 +118,34 @@ class SqlCustomerRepository:
             await self.session.flush()
         return self._record(row)
 
+    async def create(
+        self,
+        business_id: BusinessId,
+        email: str,
+        *,
+        display_name: str | None,
+        phone: str | None,
+        now: datetime,
+    ) -> CustomerRecord | None:
+        normalized = normalize_customer_email(email)
+        if await self._row_by_email(business_id, normalized) is not None:
+            return None
+        row = Customer(
+            business_id=business_id,
+            email=normalized,
+            display_name=display_name,
+            phone=phone,
+            created_at=now,
+        )
+        try:
+            async with self.session.begin_nested():
+                self.session.add(row)
+                await self.session.flush()
+        except IntegrityError:
+            # A concurrent writer created it first; theirs stays untouched.
+            return None
+        return self._record(row)
+
     async def set_stripe_customer_id(
         self, business_id: BusinessId, customer_id: CustomerId, stripe_customer_id: str
     ) -> None:

@@ -70,6 +70,10 @@ async def decide_booking(
             "use the newest booking e-mail's link.",
             applied=False,
         )
+    if decision.action is BookingDecisionAction.CANCEL:
+        if request_epoch is not None:
+            return BookingDecisionOutcome("Links can't cancel a booking.", applied=False)
+        return await _cancel_booking(unit_of_work, business_id, conversation, now)
     if conversation.state is IntakeState.APPROVED:
         return BookingDecisionOutcome(f"Booking {reference} is already approved.", applied=False)
     if conversation.state is IntakeState.DECLINED:
@@ -232,6 +236,69 @@ async def _decline_reschedule(
         f"Declined booking {updated.reference} — the original time {kept} stands; {notified}.",
         applied=True,
     )
+
+
+async def _cancel_booking(
+    unit_of_work: UnitOfWork,
+    business_id: BusinessId,
+    conversation: IntakeConversation,
+    now: datetime,
+) -> BookingDecisionOutcome:
+    """``cancel booking <ref>``: the owner drops a live booking — the way a
+    cancel asked for from an unverified chat goes ahead once the owner has
+    checked with the customer. Every calendar event it holds is cancelled."""
+
+    reference = conversation.reference
+    if not conversation.has_live_booking:
+        return BookingDecisionOutcome(
+            f"Booking {reference} isn't active, so there's nothing to cancel.", applied=False
+        )
+    superseded = conversation.superseded_booking
+    if superseded is not None:
+        standing: str | None = superseded.slot_label
+    elif conversation.requested_slot_start is not None:
+        standing = format_slot_label(conversation.requested_slot_start)
+    else:
+        standing = None
+    updated = conversation.with_updates(
+        now,
+        state=IntakeState.CLOSED,
+        decision_at=now,
+        superseded_booking=None,
+        reschedule_offered_at=None,
+    )
+    await unit_of_work.intake_conversations.save(updated)
+    events = {conversation.booked_event_uri, superseded.event_uri if superseded else None}
+    for event_uri in sorted(uri for uri in events if uri):
+        await unit_of_work.outbox.enqueue(intake_booking_cancel_command(updated, event_uri))
+    business = await unit_of_work.businesses.get(business_id)
+    email = updated.collected.email
+    notified = "the customer has been notified"
+    if email:
+        business_name = (
+            "" if business is None else (business.display_name or business.name)
+        ) or "the business"
+        when = f" for {standing}" if standing else ""
+        await unit_of_work.outbox.enqueue(
+            intake_customer_email_command(
+                IntakeCustomerEmail(
+                    business_id=business_id,
+                    to=email,
+                    subject="Your appointment is canceled",
+                    body=(
+                        f"Your {business_name} appointment{when} has been canceled. "
+                        "If that's a mistake or you'd like a new time, reply here."
+                    ),
+                    idempotency_key=f"intake_owner_cancel:{conversation.conversation_id}",
+                )
+            )
+        )
+    else:
+        notified = "no customer email was collected, so nothing was sent"
+    if events - {None}:
+        notified = f"{notified}, and the calendar event is being canceled"
+    await unit_of_work.commit()
+    return BookingDecisionOutcome(f"Canceled booking {reference}; {notified}.", applied=True)
 
 
 def decline_body(conversation: IntakeConversation, booking_link: str | None) -> str:
