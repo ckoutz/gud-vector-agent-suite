@@ -20,7 +20,7 @@ from gvas.composition.production import (
     load_production_settings,
 )
 from gvas.domain.enums import DeliveryStatus, OutboxStatus, RecipientAddressKind
-from gvas.domain.identifiers import BusinessId
+from gvas.domain.identifiers import BusinessId, QuoteId
 from gvas.domain.messages import (
     CustomerDeliveryLineItem,
     CustomerDeliveryRequest,
@@ -38,7 +38,7 @@ from gvas.domain.quotes import (
 )
 from gvas.infrastructure.calendly.api import CalendlyAppointmentLookup
 from gvas.infrastructure.customer_repositories import SqlCustomerRepository
-from gvas.infrastructure.models import OutboxMessage
+from gvas.infrastructure.models import OutboxMessage, QuoteRecord
 from gvas.infrastructure.portal import (
     InMemoryPortalHandoffLedger,
     PortalDeliveryError,
@@ -46,6 +46,7 @@ from gvas.infrastructure.portal import (
     PortalSettings,
     SqlPortalHandoffLedger,
 )
+from gvas.infrastructure.repositories import SqlQuoteRepository
 from gvas.infrastructure.resend import ResendQuoteDeliveryAdapter
 from gvas.infrastructure.telnyx.customer_text import TelnyxCustomerTextAdapter
 from gvas.infrastructure.telnyx.delivery import (
@@ -56,6 +57,7 @@ from gvas.infrastructure.telnyx.delivery import (
     TelnyxSendResult,
 )
 from gvas.infrastructure.telnyx.installations import TelnyxInstallation
+from gvas.interfaces.http.owner import owner_quote_payload
 from test_calendly_lookup import EVENT_A, Recorder, event, invitee
 from test_calendly_lookup import WINDOW as CALENDLY_WINDOW
 from test_calendly_lookup import client as calendly_client
@@ -473,6 +475,53 @@ async def command_statuses(
             )
         ).all()
     return [row.status for row in rows]
+
+
+async def owner_sent_at(session_factory: async_sessionmaker[AsyncSession]) -> object:
+    async with session_factory() as session:
+        (row,) = (await session.scalars(select(QuoteRecord))).all()
+        quote = await SqlQuoteRepository(session).get(BusinessId(row.business_id), QuoteId(row.id))
+    assert quote is not None
+    return owner_quote_payload(quote)["sentAt"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("email", "emailed", "sms_consent", "text_fails", "sent"),
+    [
+        ("jane@example.test", True, True, False, True),
+        ("jane@example.test", True, None, False, True),
+        ("jane@example.test", False, True, False, True),
+        ("jane@example.test", False, None, False, False),
+        ("jane@example.test", False, True, True, False),
+        (None, False, None, False, False),
+    ],
+    ids=[
+        "emailed-and-texted",
+        "emailed-only",
+        "texted-only",
+        "link-to-forward",
+        "text-failed",
+        "phone-only",
+    ],
+)
+async def test_a_quote_counts_as_sent_only_once_it_reached_the_customer(
+    session_factory: async_sessionmaker[AsyncSession],
+    email: str | None,
+    emailed: bool,
+    sms_consent: bool | None,
+    text_fails: bool,
+    sent: bool,
+) -> None:
+    await approved_quote(
+        session_factory,
+        customer=recipient(email=email),
+        emailed=emailed,
+        text=CustomerTextFake(fail=text_fails),
+        sms_consent=sms_consent,
+    )
+
+    assert await owner_sent_at(session_factory) == (FAKE_NOW.isoformat() if sent else None)
 
 
 @pytest.mark.asyncio

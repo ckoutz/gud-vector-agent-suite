@@ -278,6 +278,8 @@ async def test_owner_sees_only_their_own_business(
         assert quotes_a[0]["status"] in {"delivery_pending", "delivered"}
         assert not quotes_a[0]["needsApproval"]
         assert quotes_a[0]["totalCents"] == 25_000
+        assert quotes_a[0]["sentAt"] is not None
+        assert quotes_b[0]["sentAt"] is None
 
         customers = (await http.get("/v1/owner/customers", headers=bearer(owner_a))).json()
         assert [row["email"] for row in customers["customers"]] == [CUSTOMER_EMAIL]

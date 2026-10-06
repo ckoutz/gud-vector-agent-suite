@@ -594,6 +594,11 @@ class TextDeliveredQuoteService:
         )
         if sent.status is DeliveryStatus.FAILED:
             raise QuoteTextError(sent.detail or "customer text failed")
+        async with self._unit_of_work_factory() as unit_of_work:
+            await unit_of_work.quotes.record_texted(
+                quote.business_id, quote.quote_id, sent.occurred_at
+            )
+            await unit_of_work.commit()
         return QuoteTextOutcome(QuoteTextStatus.SENT, quote_id)
 
 
