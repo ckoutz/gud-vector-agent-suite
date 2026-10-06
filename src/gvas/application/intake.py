@@ -16,7 +16,6 @@ from uuid import UUID, uuid4
 
 from gvas.domain.customer_linking import (
     enqueue_intake_owner_notice,
-    enqueue_owner_thread_notice,
 )
 from gvas.domain.customers import CustomerRecord, ServiceRequest
 from gvas.domain.enums import DeliveryStatus, RecipientAddressKind, WorkflowRunStatus
@@ -88,11 +87,9 @@ from gvas.domain.messages import (
 )
 from gvas.domain.owner_actions import decide_booking
 from gvas.domain.owner_email import (
+    OWNER_EMAIL_SOURCE_NAMESPACE,
     OwnerEmailAction,
     OwnerEmailRequest,
-    OwnerEmailThread,
-    owner_reply_thread,
-    owner_reply_token,
 )
 from gvas.domain.ports import (
     AvailabilityPort,
@@ -192,22 +189,19 @@ class IntakeReply:
 
 
 class OwnerDecisionEmail:
-    """E-mail affordances for an owner decision on one booking request: the
-    signed one-click buttons and the per-request reply address. Each is off
-    until its secret and origin/domain are configured; both are minted only
-    once ``owner_notified_at`` is set on the conversation passed in."""
+    """The signed one-click Approve/Decline buttons for one booking request.
+    Off until the secret and origin are configured; minted only once
+    ``owner_notified_at`` is set on the conversation passed in."""
 
     def __init__(
         self,
         *,
         secret: str = "",
         origin: str = "",
-        reply_domain: str = "",
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._secret = secret
         self._origin = origin.rstrip("/")
-        self._reply_domain = reply_domain.strip().lower()
         self._now = now
 
     def actions(self, conversation: IntakeConversation) -> tuple[OwnerEmailAction, ...]:
@@ -230,18 +224,6 @@ class OwnerDecisionEmail:
             )
         return tuple(actions)
 
-    def thread(self, conversation: IntakeConversation) -> OwnerEmailThread | None:
-        if not self._secret or not self._reply_domain or conversation.owner_notified_at is None:
-            return None
-        token = owner_reply_token(
-            self._secret,
-            business_id=conversation.business_id,
-            conversation_id=conversation.conversation_id,
-            reference=conversation.reference,
-            request_epoch=int(conversation.owner_notified_at.timestamp()),
-        )
-        return owner_reply_thread(token, self._reply_domain)
-
 
 class IntakeService:
     def __init__(
@@ -255,7 +237,6 @@ class IntakeService:
         max_user_messages: int = INTAKE_MAX_USER_MESSAGES,
         decision_link_secret: str = "",
         decision_link_base_url: str = "",
-        owner_reply_domain: str = "",
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
@@ -263,7 +244,6 @@ class IntakeService:
         self._decision_email = OwnerDecisionEmail(
             secret=decision_link_secret,
             origin=decision_link_base_url,
-            reply_domain=owner_reply_domain,
             now=now,
         )
         self._availability = availability
@@ -876,7 +856,6 @@ class IntakeService:
                 previous_booked=superseded is not None,
             ),
             email_actions=self._decision_email.actions(updated),
-            email_thread=self._decision_email.thread(updated),
         )
         if not notified:
             # There is no owner thread to deliver the decision request to:
@@ -1110,11 +1089,9 @@ class BookingDecisionHandler:
         self,
         unit_of_work_factory: UnitOfWorkFactory,
         *,
-        mirrored_namespaces: frozenset[str] = frozenset(),
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
-        self._mirrored_namespaces = mirrored_namespaces
         self._now = now
 
     async def handle(self, context: WorkflowContext) -> WorkflowResult:
@@ -1125,48 +1102,17 @@ class BookingDecisionHandler:
                 message, "Reply `approve booking <id>` or `decline booking <id> <reason>`."
             )
         async with self._unit_of_work_factory() as unit_of_work:
-            outcome = await decide_booking(
-                unit_of_work,
-                message.business_id,
-                decision,
-                self._now(),
-                request_epoch=await self._request_epoch(unit_of_work, message),
-            )
-            if outcome.applied and self._mirrored_namespaces:
-                await self._mirror(unit_of_work, message, outcome.text)
+            endpoint = await unit_of_work.conversations.find_endpoint(message.conversation_ref)
+            if endpoint is not None and endpoint.source_namespace == OWNER_EMAIL_SOURCE_NAMESPACE:
+                # A reply-by-e-mail queued before the channel was retired: it
+                # can no longer prove which request it answered, and there is
+                # nowhere to send a reply, so it decides nothing.
+                return WorkflowResult(
+                    status=WorkflowRunStatus.SUCCEEDED,
+                    detail="e-mail replies no longer decide bookings",
+                )
+            outcome = await decide_booking(unit_of_work, message.business_id, decision, self._now())
         return self._result(message, outcome.text)
-
-    async def _request_epoch(
-        self, unit_of_work: UnitOfWork, message: NormalizedOwnerMessage
-    ) -> int | None:
-        """A reply to a notice e-mail carries the stamp of the request it
-        answers; ``decide_booking`` refuses it once the request was replaced."""
-
-        if not self._mirrored_namespaces:
-            return None
-        endpoint = await unit_of_work.conversations.find_endpoint(message.conversation_ref)
-        if endpoint is None or endpoint.source_namespace not in self._mirrored_namespaces:
-            return None
-        routing = await unit_of_work.conversations.find_routing(message.conversation_ref)
-        epoch = None if routing is None else routing.get("request_epoch")
-        return epoch if isinstance(epoch, int) else None
-
-    async def _mirror(
-        self, unit_of_work: UnitOfWork, message: NormalizedOwnerMessage, text: str
-    ) -> None:
-        """Decisions taken on a reply-only channel (e-mail) are also posted
-        to the owner thread, like the one-click links do."""
-
-        endpoint = await unit_of_work.conversations.find_endpoint(message.conversation_ref)
-        if endpoint is None or endpoint.source_namespace not in self._mirrored_namespaces:
-            return
-        await enqueue_owner_thread_notice(
-            unit_of_work,
-            message.business_id,
-            correlation_id=f"intake_decided:{message.message_key}",
-            text=text,
-        )
-        await unit_of_work.commit()
 
     @staticmethod
     def _result(message: NormalizedOwnerMessage, text: str) -> WorkflowResult:
@@ -1201,8 +1147,8 @@ class SendIntakeCustomerEmailService:
 
 
 class SendOwnerEmailService:
-    """Delivers one owner notice e-mail as text + HTML with its reply
-    routing; the layout is rendered before the command is queued."""
+    """Delivers one owner notice e-mail as text + HTML; the layout is
+    rendered before the command is queued."""
 
     def __init__(self, delivery: OwnerEmailPort) -> None:
         self._delivery = delivery
@@ -1296,14 +1242,12 @@ class IntakeBookingEventService:
         *,
         decision_link_secret: str = "",
         decision_link_origin: str = "",
-        owner_reply_domain: str = "",
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._decision_email = OwnerDecisionEmail(
             secret=decision_link_secret,
             origin=decision_link_origin,
-            reply_domain=owner_reply_domain,
             now=now,
         )
         self._now = now
@@ -1452,7 +1396,6 @@ class IntakeBookingEventService:
                 f"to keep it or `decline booking {conversation.reference} <reason>` to cancel."
             ),
             email_actions=self._decision_email.actions(updated),
-            email_thread=self._decision_email.thread(updated),
         )
         await unit_of_work.intake_conversations.save(updated)
         return IntakeBookingEventResult.REROUTED
@@ -1533,7 +1476,6 @@ class IntakeBookingEventService:
         *,
         text: str,
         email_actions: tuple[OwnerEmailAction, ...] = (),
-        email_thread: OwnerEmailThread | None = None,
     ) -> None:
         notified = await enqueue_intake_owner_notice(
             unit_of_work,
@@ -1541,7 +1483,6 @@ class IntakeBookingEventService:
             correlation_id=f"intake_booking_event:{event.kind.value}:{event.event_uri}",
             text=text,
             email_actions=email_actions,
-            email_thread=email_thread,
         )
         if not notified:
             logger.warning(

@@ -168,16 +168,6 @@ class IntakeSettings(BaseSettings):
     def decision_link_origin(self) -> str:
         return self.decision_link_base_url.rstrip("/")
 
-    # Reply-by-e-mail: booking-request notices set Reply-To to
-    # ``owner+<signed token>@<this domain>`` (signed with
-    # ``decision_link_secret``); replies arrive through the receiving webhook.
-    # Leave unset to send notices without a reply address.
-    owner_reply_domain: str = ""
-
-    @property
-    def owner_replies_enabled(self) -> bool:
-        return bool(self.decision_link_secret and self.owner_reply_domain.strip())
-
 
 class ResendSettings(BaseSettings):
     """Resend delivers approved customer quotes by email."""
@@ -190,18 +180,10 @@ class ResendSettings(BaseSettings):
     reply_to_address: str = ""
     portal_url: str = "https://gudvector.com/portal/login"
     timeout_seconds: float = Field(default=30.0, gt=0)
-    # Signing secret (``whsec_…``) of the ``email.received`` webhook; the
-    # receiving route is mounted only when it is set.
-    webhook_secret: str = ""
-    webhook_tolerance_seconds: int = Field(default=300, ge=30)
 
     @property
     def is_configured(self) -> bool:
         return bool(self.api_key and self.from_address)
-
-    @property
-    def receiving_configured(self) -> bool:
-        return self.is_configured and bool(self.webhook_secret)
 
 
 class WorkerSettings(BaseSettings):

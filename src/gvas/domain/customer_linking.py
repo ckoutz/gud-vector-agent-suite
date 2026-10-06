@@ -17,7 +17,6 @@ from gvas.domain.owner_email import (
     OWNER_CHANNEL_FOOTER,
     OwnerEmailAction,
     OwnerEmailContent,
-    OwnerEmailThread,
     owner_notice_content,
     render_owner_email_html,
     render_owner_email_text,
@@ -71,7 +70,6 @@ async def enqueue_intake_owner_notice(
     text: str,
     email: OwnerEmailContent | None = None,
     email_actions: tuple[OwnerEmailAction, ...] = (),
-    email_thread: OwnerEmailThread | None = None,
 ) -> bool:
     """Queue ``text`` for the owner in their latest channel conversation,
     plus the notification e-mail copy.
@@ -80,8 +78,8 @@ async def enqueue_intake_owner_notice(
     to inherit — see ``enqueue_owner_thread_notice``. Idempotent on
     ``correlation_id``; False when nothing reached the owner — no owner
     thread to anchor to *and* no notification e-mail. ``email`` (the
-    structured layout), ``email_actions`` (the one-click decision buttons) and
-    ``email_thread`` (reply-by-e-mail routing) shape the e-mail copy only.
+    structured layout) and ``email_actions`` (the one-click decision buttons)
+    shape the e-mail copy only.
     """
 
     emailed = await enqueue_owner_email_copy(
@@ -91,13 +89,12 @@ async def enqueue_intake_owner_notice(
         text=text,
         content=email,
         actions=email_actions,
-        thread=email_thread,
     )
     threaded = await enqueue_owner_thread_notice(
         unit_of_work, business_id, correlation_id=correlation_id, text=text
     )
-    # The e-mail copy alone still lets the owner act (decision links and
-    # replies), so it counts as notified.
+    # The e-mail copy alone still lets the owner act (decision links), so it
+    # counts as notified.
     return threaded or emailed
 
 
@@ -138,14 +135,12 @@ async def enqueue_owner_email_copy(
     text: str,
     content: OwnerEmailContent | None = None,
     actions: tuple[OwnerEmailAction, ...] = (),
-    thread: OwnerEmailThread | None = None,
 ) -> bool:
     """Queue a copy of an owner notice to the business's ``notification_email``.
 
     Every notice renders through the one owner e-mail layout (text + HTML);
     ``content`` is the notice's structured form when it has one, otherwise
-    ``text`` is laid out generically. ``thread`` routes replies back for a
-    decision. Idempotent on ``correlation_id``; False when no notification
+    ``text`` is laid out generically. Idempotent on ``correlation_id``; False when no notification
     e-mail is configured.
     """
 
@@ -155,11 +150,7 @@ async def enqueue_owner_email_copy(
     name = business.display_name or business.name
     layout = (content or owner_notice_content(text)).model_copy(update={"business_name": name})
     layout = layout.with_actions(actions, "Each button works once.")
-    if thread is not None:
-        layout = layout.with_footer(
-            "Or just reply to this e-mail: “approve”, or “decline” with a reason."
-        )
-    elif layout.footer is None:
+    if layout.footer is None:
         layout = layout.with_footer(OWNER_CHANNEL_FOOTER)
     email = IntakeCustomerEmail(
         business_id=business_id,
@@ -167,8 +158,6 @@ async def enqueue_owner_email_copy(
         subject=layout.email_subject(),
         body=render_owner_email_text(layout),
         html=render_owner_email_html(layout),
-        reply_to=thread.reply_to if thread is not None else None,
-        references=(thread.anchor,) if thread is not None else (),
         idempotency_key=f"owner_copy:{business_id}:{correlation_id}",
     )
     await unit_of_work.outbox.enqueue(owner_notice_email_command(email))

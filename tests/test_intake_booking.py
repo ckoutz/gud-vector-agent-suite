@@ -657,6 +657,9 @@ async def test_booking_request_is_copied_to_the_notification_email(
     assert isinstance(html, str) and f"New booking request #{reference}" in html
     assert "max-width:34rem" in html and "<img" not in html.lower()
     assert "Jane Doe" in html
+    # Reply-to-decide is gone: no per-request reply address, no reply prompt.
+    assert "reply_to" not in payload and "references" not in payload
+    assert "just reply" not in body.lower() and "just reply" not in html.lower()
 
 
 @pytest.mark.asyncio
