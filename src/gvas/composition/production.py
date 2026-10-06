@@ -45,7 +45,6 @@ from gvas.config import (
     WorkerSettings,
     require_managed_postgres_url,
 )
-from gvas.domain.owner_email import OWNER_EMAIL_SOURCE_NAMESPACE
 from gvas.domain.ports import (
     CustomerQuoteDeliveryPort,
     CustomerTextDeliveryPort,
@@ -69,10 +68,8 @@ from gvas.infrastructure.object_storage import R2ObjectStorage
 from gvas.infrastructure.openai_checklist_evidence import OpenAIChecklistEvidenceAnnotator
 from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGuard
 from gvas.infrastructure.openai_intake_agent import OpenAIIntakeAgent
-from gvas.infrastructure.openai_owner_understanding import OpenAIOwnerIntentInterpreter
 from gvas.infrastructure.openai_quote_drafting import OpenAIFreeTextQuoteDrafter
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
-from gvas.infrastructure.owner_email_channel import EmailOwnerReplyAdapter
 from gvas.infrastructure.owner_reply_routing import ChannelOwnerReplyRouter
 from gvas.infrastructure.portal import PortalQuoteDelivery, PortalSettings, SqlPortalHandoffLedger
 from gvas.infrastructure.quote_drafting import (
@@ -85,10 +82,8 @@ from gvas.infrastructure.resend import (
     ResendOwnerEmailAdapter,
     ResendPortalLoginEmailAdapter,
     ResendQuoteDeliveryAdapter,
-    ResendReceivingClient,
     ResendReportEmailAdapter,
 )
-from gvas.infrastructure.resend_inbound import ResendReceivingIngress, SvixWebhookVerifier
 from gvas.infrastructure.slack.api import (
     SlackFileAttachmentAccess,
     SlackWebApiChatPoster,
@@ -127,7 +122,6 @@ from gvas.interfaces.http.app import create_app
 from gvas.interfaces.http.owner import create_owner_router
 from gvas.interfaces.http.portal import create_portal_router
 from gvas.interfaces.http.public import PerIpRateLimiter, create_public_router
-from gvas.interfaces.http.resend import create_resend_webhook_router
 from gvas.interfaces.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -398,9 +392,6 @@ def build_production_ports(
         )
     resend_quotes = ResendQuoteDeliveryAdapter(settings.resend, client)
     owner_email = ResendOwnerEmailAdapter(settings.resend, client)
-    owner_replies[OWNER_EMAIL_SOURCE_NAMESPACE] = EmailOwnerReplyAdapter(
-        owner_email, session_factory, ledger
-    )
     portal_quotes: CustomerQuoteDeliveryPort | None = None
     if settings.portal.is_configured:
         portal_quotes = PortalQuoteDelivery(
@@ -442,11 +433,6 @@ def build_production_ports(
         )
     else:
         logger.warning("openai not configured; quotes accept the structured format only")
-    owner_intent_interpreter = (
-        OpenAIOwnerIntentInterpreter(settings.openai, client, usage_ledger=usage_ledger)
-        if settings.openai.is_configured
-        else None
-    )
     return ApplicationPorts(
         owner_replies=ChannelOwnerReplyRouter(session_factory, owner_replies),
         quote_drafting=quote_drafting,
@@ -458,7 +444,6 @@ def build_production_ports(
         intake_agent=intake_agent,
         customer_email=resend_quotes,
         owner_email=owner_email,
-        owner_intent_interpreter=owner_intent_interpreter,
         quote_delivery=quote_delivery,
         customer_text=customer_text,
         payment_checkout=payment_checkout,
@@ -496,34 +481,11 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
         session_factory=session_factory,
         lease_ttl=timedelta(seconds=resolved.worker.lease_seconds),
         ceilings=resolved.usage_ceilings(),
-        intake_settings=(
-            resolved.intake
-            if resolved.resend.receiving_configured
-            else resolved.intake.model_copy(update={"owner_reply_domain": ""})
-        ),
+        intake_settings=resolved.intake,
     )
     routers = [build_slack_event_router(application.ingest_service, resolved.slack)]
     if resolved.telnyx.is_configured:
         routers.append(build_telnyx_webhook_router(application.ingest_service, resolved.telnyx))
-    if resolved.resend.webhook_secret:
-        if application.owner_email_replies is None:
-            logger.warning(
-                "resend webhook secret set without GVAS_INTAKE_OWNER_REPLY_DOMAIN and "
-                "GVAS_INTAKE_DECISION_LINK_SECRET; owner e-mail replies are off"
-            )
-        else:
-            routers.append(
-                create_resend_webhook_router(
-                    ResendReceivingIngress(
-                        SvixWebhookVerifier(
-                            resolved.resend.webhook_secret,
-                            tolerance_seconds=resolved.resend.webhook_tolerance_seconds,
-                        ),
-                        ResendReceivingClient(resolved.resend, client),
-                        application.owner_email_replies,
-                    )
-                )
-            )
     if resolved.calendly.webhook_signing_key:
         routers.append(
             build_calendly_webhook_router(application.intake_booking_events, resolved.calendly)

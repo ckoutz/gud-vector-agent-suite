@@ -297,7 +297,7 @@ the pair unset to keep the e-mail informational only. The secret is minted
 per environment (e.g. `openssl rand -hex 32`) and never appears in the
 e-mail body, the page output, or logs.
 
-### Owner notification e-mails: layout and reply-to-decide
+### Owner notification e-mails: layout
 
 Every owner notice copied to `notification_email` (booking request, updated
 booking request, escalation, portal service request, quote accepted/paid) is
@@ -310,69 +310,10 @@ muted footer with the owner-channel commands. Discovery notes are merged
 fact-by-fact at the source, so a reschedule or a re-reported summary never
 repeats them.
 
-With `GVAS_INTAKE_OWNER_REPLY_DOMAIN` (e.g. `reply.gudvector.com`),
-`GVAS_INTAKE_DECISION_LINK_SECRET` and `GVAS_RESEND_WEBHOOK_SECRET` all set,
-booking notices also carry `Reply-To: owner+<token>@reply.gudvector.com`
-and a stable `References` thread id. The token is an HMAC (same secret as the
-decision links) over business, request, reference and request stamp — no raw
-ids — so the owner can simply answer the e-mail:
-
-- Exact commands (`approve booking <ref>`, `decline booking <ref> <reason>`,
-  `unavailable 8-12`) and short replies ("yes", "ok book it", "go ahead",
-  "no", "can't make it, out of town") are understood deterministically; other
-  wording goes to the review model, which may only answer approve, decline or
-  unclear (review-token ceiling applies). The understanding step is the shared
-  `application/owner_understanding.py`, not an e-mail parser.
-- Unclear replies get an e-mail asking for "approve" or "decline"; nothing
-  changes. A reply to a superseded request (older stamp) is refused like a
-  stale link.
-- Every decision runs `decide_booking`, exactly as Slack, the dashboard and
-  the links do; GVAS e-mails a short confirmation and posts the usual
-  owner-thread update. Nothing ever books without the owner.
-- Only replies to a signed notice (token in the reply address or the
-  thread headers), from the business's `notification_email` or
-  `owner_email`, with a DMARC pass, are heard; anything else is dropped
-  silently. `gudvector.com` publishes `v=DMARC1; p=none;`, which is enough
-  for Gmail/Workspace mail from `info@gudvector.com` to pass.
-
-Notices only get the Reply-To address when the webhook is mounted. Leave any
-of the three unset to keep e-mails one-way (the HTML layout still
-applies).
-
-#### One-time setup (owner)
-
-1. **Resend → add the receiving domain.** <https://resend.com/domains> →
-   **Add Domain** → `reply.gudvector.com` → **Add**. Open the domain, turn on
-   **Receiving** (toggle in the Receiving section). Resend lists the records
-   to add: the sending records (DKIM `TXT`, `send.reply` `MX` + `TXT`) and
-   the receiving `MX` record for `reply`.
-2. **Namecheap → add the records.** <https://ap.www.namecheap.com> →
-   **Domain List** → `gudvector.com` → **Manage** → **Advanced DNS**.
-   For each record Resend shows, **Add New Record** with Host = Resend's name
-   without `.gudvector.com`:
-
-   | Type | Host | Value | Priority | TTL |
-   | --- | --- | --- | --- | --- |
-   | MX | `reply` | the receiving MX value Resend shows (copy exactly) | `10` | Automatic |
-   | TXT | `resend._domainkey.reply` | DKIM value from Resend | – | Automatic |
-   | MX | `send.reply` | `feedback-smtp.<region>.amazonses.com` (from Resend) | `10` | Automatic |
-   | TXT | `send.reply` | `"v=spf1 include:amazonses.com ~all"` (from Resend) | – | Automatic |
-
-   MX rows go under **Mail Settings → Custom MX** only if the dropdown is
-   already Custom MX; otherwise add them as host records. These are all on
-   `reply` / `send.reply`, so the existing `gudvector.com` inbox
-   (`info@gudvector.com`) is untouched. **Save all changes**, then in Resend
-   click **I've added the record** / **Verify** and wait for "verified".
-3. **Resend → add the webhook.** <https://resend.com/webhooks> →
-   **Add Webhook** → URL `https://<gvas-host>/v1/webhooks/resend` → event
-   `email.received` → **Add**. Open the webhook and copy its **Signing
-   secret** (`whsec_…`).
-4. **Railway → GVAS web service → Variables**: set
-   `GVAS_RESEND_WEBHOOK_SECRET=<whsec_… from step 3>` and
-   `GVAS_INTAKE_OWNER_REPLY_DOMAIN=reply.gudvector.com` (on the worker too),
-   and confirm `GVAS_INTAKE_DECISION_LINK_SECRET` is set. Redeploy.
-5. Test: start a booking on the website, then reply "approve" to the
-   notification e-mail from `info@gudvector.com`.
+Notices are one-way: the owner decides with the signed buttons, the
+dashboard, or the Slack/SMS commands. Replying to a notice e-mail does
+nothing (reply-to-decide was removed), so notices carry no per-request
+reply address.
 
 `GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY`
 (default 50) and `GVAS_INTAKE_MAX_MESSAGES_PER_CONVERSATION` (default 30) cap
@@ -580,8 +521,6 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_RESEND_FROM_ADDRESS` | Required; verified sending domain |
 | `GVAS_RESEND_REPLY_TO_ADDRESS` | Optional |
 | `GVAS_RESEND_PORTAL_URL` | Default `https://gudvector.com/portal/login` |
-| `GVAS_RESEND_WEBHOOK_SECRET` | Optional; `whsec_…` signing secret of the Resend `email.received` webhook — mounts `POST /v1/webhooks/resend` (with `GVAS_INTAKE_OWNER_REPLY_DOMAIN`) |
-| `GVAS_RESEND_WEBHOOK_TOLERANCE_SECONDS` | Default 300; max age of a signed webhook delivery |
 | `GVAS_WORKER_BATCH_SIZE`, `_POLL_SECONDS`, `_RETRY_SECONDS`, `_LEASE_SECONDS` | Worker only |
 | `GVAS_WORKER_ID_PREFIX` | Worker only; hostname and pid are appended per replica |
 | `GVAS_TELNYX_PUBLIC_KEY` | Optional set; base64 Ed25519 public key for webhook verification |
@@ -602,7 +541,6 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_INTAKE_MAX_MESSAGES_PER_CONVERSATION` | Default 30 customer messages; `0` is unlimited |
 | `GVAS_INTAKE_DECISION_LINK_SECRET` | Optional set with the base URL; HMAC key for the owner e-mail approve/decline links — never sent anywhere |
 | `GVAS_INTAKE_DECISION_LINK_BASE_URL` | Optional set; public origin of the web service the links point at (e.g. `https://<gvas-host>`) |
-| `GVAS_INTAKE_OWNER_REPLY_DOMAIN` | Optional; Resend receiving domain for reply-to-decide (e.g. `reply.gudvector.com`); needs the decision-link secret |
 | `GVAS_CALENDLY_TOKEN` | Optional set; personal access token, bearer header only |
 | `GVAS_CALENDLY_INSTALLATIONS` | Optional set; `business_uuid=https://api.calendly.com/users/<uuid>` |
 | `GVAS_CALENDLY_API_BASE_URL`, `GVAS_CALENDLY_API_TIMEOUT_SECONDS`, `GVAS_CALENDLY_PAGE_SIZE` | Defaults suffice |

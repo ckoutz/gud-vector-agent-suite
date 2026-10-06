@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.engine import CursorResult, Result
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -115,22 +115,6 @@ class SqlBusinessRepository:
             select(Business).where(Business.id == business_id).with_for_update()
         )
         return None if row is None else self._record(row)
-
-    async def find_by_owner_address(self, address: str) -> tuple[BusinessRecord, ...]:
-        normalized = address.strip().lower()
-        if not normalized:
-            return ()
-        rows = await self.session.scalars(
-            select(Business)
-            .where(
-                or_(
-                    func.lower(Business.notification_email) == normalized,
-                    func.lower(Business.owner_email) == normalized,
-                )
-            )
-            .order_by(Business.created_at)
-        )
-        return tuple(self._record(row) for row in rows)
 
     async def ensure(
         self, business_id: BusinessId, slug: str, name: str, *, now: datetime
@@ -338,18 +322,6 @@ class SqlConversationRepository:
             external_endpoint_id=endpoint.external_endpoint_id,
         )
 
-    async def find_routing(self, reference: ConversationRef) -> RoutingData | None:
-        routing = await self.session.scalar(
-            select(Conversation.routing)
-            .where(
-                Conversation.business_id == reference.business_id,
-                Conversation.external_conversation_id == reference.external_conversation_id,
-            )
-            .order_by(Conversation.id)
-            .limit(1)
-        )
-        return None if routing is None else dict(routing)
-
 
 class SqlInboundMessageRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -450,8 +422,8 @@ class SqlInboundMessageRepository:
             .join(OwnerChannelEndpoint, OwnerChannelEndpoint.id == Conversation.endpoint_id)
             .where(
                 InboundMessage.business_id == business_id,
-                # E-mail replies are reply-only threads, never the owner
-                # thread new notices anchor to.
+                # Leftover endpoints of the retired e-mail reply channel are
+                # never the owner thread new notices anchor to.
                 OwnerChannelEndpoint.source_namespace != OWNER_EMAIL_SOURCE_NAMESPACE,
             )
             .order_by(InboundMessage.received_at.desc())

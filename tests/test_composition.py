@@ -538,6 +538,36 @@ async def test_unknown_command_fails_explicitly_and_stays_retryable(
 
 
 @pytest.mark.asyncio
+async def test_retired_owner_email_reply_command_is_dropped_not_dead_lettered(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    application = build(
+        session_factory,
+        owner_replies=OwnerReplyFake(),
+        quote_drafting=QuoteDraftingFake(),
+        quote_delivery=CustomerDeliveryFake(),
+        transcription=TranscriptionFake({}),
+        report_generation=ReportGenerationFake(),
+    )
+    await application.outbox.enqueue(
+        OutboxCommand(
+            command_id=OutboxCommandId(uuid4()),
+            business_id=business_id,
+            command_type="owner_email.reply",
+            payload={"text": "approve"},
+            dedup_key="queued-before-retirement",
+        )
+    )
+
+    report = await application.worker.run_once()
+    assert report.failed == 0
+    rows = await outbox_rows(session_factory, "owner_email.reply")
+    assert [row.status for row in rows] == [OutboxStatus.SUCCEEDED.value]
+
+
+@pytest.mark.asyncio
 async def test_postgres_backed_quote_and_field_note_paths(
     postgres_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
