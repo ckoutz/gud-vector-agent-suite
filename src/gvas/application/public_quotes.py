@@ -449,7 +449,7 @@ class PublicQuoteService:
             if collected > 0:
                 # A zero-charge checkout (e.g. a full discount) settles the
                 # quote but collected no money, so it adds nothing to the ledger.
-                await unit_of_work.payments.record(
+                ledger_row = await unit_of_work.payments.record(
                     LedgerPayment(
                         payment_id=uuid4(),
                         business_id=payment.business_id,
@@ -471,6 +471,8 @@ class PublicQuoteService:
                         recorded_at=now,
                     )
                 )
+                if ledger_row is not None and event.subscription is None:
+                    await self._flag_paid_twice(unit_of_work, quote, ledger_row)
             paid = quote.record_customer_payment(now)
             if event.subscription is not None:
                 paid, _ = await link_quote_customer(unit_of_work, paid, now)
@@ -611,6 +613,34 @@ class PublicQuoteService:
             quote,
             correlation_id=f"quote:{quote.quote_id}:paid",
             text=f"Quote {public_quote_id(quote.quote_id)}{customer}{total}",
+        )
+
+    async def _flag_paid_twice(
+        self, unit_of_work: UnitOfWork, quote: Quote, payment: LedgerPayment
+    ) -> None:
+        """A card payment that raced a payment the owner marked: both are
+        kept, one counts, and the owner decides which to refund."""
+
+        active = [
+            row
+            for row in await unit_of_work.payments.list_for_quote(
+                payment.business_id, payment.quote_id
+            )
+            if row.kind is PaymentKind.ONE_OFF and row.voided_at is None
+        ]
+        if len(active) < 2:
+            return
+        name = quote.draft.recipient.display_name if quote.draft is not None else None
+        await self._enqueue_owner_notice(
+            unit_of_work,
+            quote,
+            correlation_id=f"quote:{quote.quote_id}:paid-twice:{payment.reference}",
+            text=(
+                f"Quote {public_quote_id(quote.quote_id)} for {name or 'customer'} was paid"
+                f" twice: {format_money(payment.amount_minor, payment.currency)} by card"
+                " as well as the payment you marked. It counts once."
+                " Refund one of them in Stripe."
+            ),
         )
 
     @staticmethod

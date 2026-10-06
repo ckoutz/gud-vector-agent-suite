@@ -145,6 +145,10 @@ class CheckoutFake:
         self.sessions = list(sessions or [(SESSION_ID, CHECKOUT_URL, None)])
         self.hook = hook
         self.requests: list[PaymentCheckoutRequest] = []
+        self.expired: list[str] = []
+
+    async def expire_checkout(self, session_id: str) -> None:
+        self.expired.append(session_id)
 
     async def create_checkout(self, request: PaymentCheckoutRequest) -> PaymentCheckoutResult:
         self.requests.append(request)

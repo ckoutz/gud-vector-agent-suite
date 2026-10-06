@@ -486,6 +486,21 @@ class Quote(QuoteModel):
             }
         )
 
+    def undo_customer_payment(self, now: datetime) -> "Quote":
+        """The owner voided the payment that settled the quote: it is
+        accepted and unpaid again."""
+
+        self._require_claimable()
+        if self.customer_status is not CustomerQuoteStatus.PAID:
+            return self
+        return self.model_copy(
+            update={
+                "customer_status": CustomerQuoteStatus.ACCEPTED,
+                "updated_at": now,
+                "version": self.version + 1,
+            }
+        )
+
     def record_customer_payment(self, now: datetime) -> "Quote":
         """A confirmed payment wins over every earlier customer status."""
 

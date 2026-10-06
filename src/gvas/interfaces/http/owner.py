@@ -8,7 +8,7 @@ The owner's calendar link is write-only: responses carry its host, never the
 link.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -30,8 +30,9 @@ from gvas.domain.intake import IntakeConversation
 from gvas.domain.owner import CalendarEvent, calendar_feed_host
 from gvas.domain.payments import (
     LedgerPayment,
+    PaymentMethod,
     QuoteSubscriptionRecord,
-    first_paid_at,
+    first_counted,
     month_totals,
 )
 from gvas.domain.quotes import Quote, public_quote_id
@@ -60,6 +61,14 @@ class SettingsBody(BaseModel):
     timezone: str | None = Field(default=None, max_length=64)
 
 
+class MarkPaidBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    paidOn: date  # noqa: N815
+    method: PaymentMethod
+    note: str | None = Field(default=None, max_length=500)
+
+
 def _iso(value: datetime | None) -> str | None:
     return None if value is None else value.isoformat()
 
@@ -74,7 +83,7 @@ def _sent_at(quote: Quote) -> datetime | None:
     return min(reached) if reached else None
 
 
-def owner_quote_payload(quote: Quote, *, paid_at: datetime | None = None) -> dict[str, object]:
+def owner_quote_payload(quote: Quote, *, payment: LedgerPayment | None = None) -> dict[str, object]:
     draft = quote.draft
     recipient = draft.recipient if draft is not None else None
     return {
@@ -106,7 +115,16 @@ def owner_quote_payload(quote: Quote, *, paid_at: datetime | None = None) -> dic
         "createdAt": _iso(quote.created_at),
         "approvedAt": _iso(quote.approved_at),
         "sentAt": _iso(_sent_at(quote)),
-        "paidOn": _iso(paid_at),
+        "paidOn": _iso(payment.paid_at if payment is not None else None),
+        "paidBy": (
+            None
+            if payment is None
+            else {
+                "source": payment.source.value,
+                "method": payment.method.value,
+                "note": payment.note,
+            }
+        ),
         "updatedAt": _iso(quote.updated_at),
     }
 
@@ -285,11 +303,11 @@ def create_owner_router(
     @router.get("/v1/owner/quotes", dependencies=limited)
     async def quotes(context: OwnerContext = owner) -> JSONResponse:
         records = await service.quotes(context)
-        paid = first_paid_at(await service.payments(context))
+        paid = first_counted(await service.payments(context))
         return JSONResponse(
             {
                 "quotes": [
-                    owner_quote_payload(quote, paid_at=paid.get(quote.quote_id))
+                    owner_quote_payload(quote, payment=paid.get(quote.quote_id))
                     for quote in records
                 ]
             }
@@ -324,6 +342,36 @@ def create_owner_router(
         except OwnerConflictError as error:
             return JSONResponse({"detail": str(error)}, status_code=409)
         return JSONResponse({"quote": owner_quote_payload(quote)})
+
+    @router.post("/v1/owner/quotes/{quote_id}/mark-paid", dependencies=limited)
+    async def mark_quote_paid(
+        quote_id: str, body: MarkPaidBody, context: OwnerContext = owner
+    ) -> JSONResponse:
+        try:
+            quote = await service.mark_paid(
+                context, quote_id, paid_on=body.paidOn, method=body.method, note=body.note
+            )
+        except OwnerNotFoundError:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        except OwnerConflictError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        except OwnerInputError as error:
+            return JSONResponse({"detail": str(error)}, status_code=422)
+        return await _paid_quote(context, quote)
+
+    @router.post("/v1/owner/quotes/{quote_id}/mark-unpaid", dependencies=limited)
+    async def mark_quote_unpaid(quote_id: str, context: OwnerContext = owner) -> JSONResponse:
+        try:
+            quote = await service.mark_unpaid(context, quote_id)
+        except OwnerNotFoundError:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        except OwnerConflictError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        return await _paid_quote(context, quote)
+
+    async def _paid_quote(context: OwnerContext, quote: Quote) -> JSONResponse:
+        paid = first_counted(await service.payments(context))
+        return JSONResponse({"quote": owner_quote_payload(quote, payment=paid.get(quote.quote_id))})
 
     @router.get("/v1/owner/customers", dependencies=limited)
     async def customers(context: OwnerContext = owner) -> JSONResponse:

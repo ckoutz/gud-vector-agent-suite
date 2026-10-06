@@ -10,7 +10,7 @@ or the owner channel (``gvas.domain.owner_actions``).
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from uuid import uuid4
 
 from gvas.domain.customers import (
@@ -20,7 +20,7 @@ from gvas.domain.customers import (
     new_portal_token,
     portal_token_matches,
 )
-from gvas.domain.enums import QuoteStatus
+from gvas.domain.enums import CustomerQuoteStatus, QuoteBilling, QuoteStatus
 from gvas.domain.identifiers import MessageKey
 from gvas.domain.intake import (
     INTAKE_BRIEF_MAX_CHARS,
@@ -29,8 +29,11 @@ from gvas.domain.intake import (
     BookingDecision,
     BookingDecisionAction,
     IntakeConversation,
+    IntakeCustomerEmail,
+    intake_customer_email_command,
     sanitize_owner_reason,
 )
+from gvas.domain.money import format_money
 from gvas.domain.owner import (
     CALENDAR_WINDOW_MAX_DAYS,
     DISPLAY_NAME_MAX_CHARS,
@@ -48,8 +51,15 @@ from gvas.domain.owner_actions import (
     decide_booking,
     reject_quote,
 )
-from gvas.domain.payments import LedgerPayment, QuoteSubscriptionRecord
-from gvas.domain.ports import BookedEventsPort, CalendarFeedPort
+from gvas.domain.payments import (
+    LedgerPayment,
+    PaymentCheckoutError,
+    PaymentKind,
+    PaymentMethod,
+    PaymentSource,
+    QuoteSubscriptionRecord,
+)
+from gvas.domain.ports import BookedEventsPort, CalendarFeedPort, PaymentCheckoutPort
 from gvas.domain.quotes import (
     InvalidQuoteTransitionError,
     Quote,
@@ -59,7 +69,7 @@ from gvas.domain.quotes import (
 )
 from gvas.domain.reporting import normalize_email_address
 from gvas.domain.repositories import BusinessRecord, UnitOfWork
-from gvas.domain.time_zones import normalize_time_zone
+from gvas.domain.time_zones import business_zone, normalize_time_zone
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +77,9 @@ QUOTE_LIST_LIMIT = 500
 BOOKING_LIST_LIMIT = 200
 REQUEST_LIST_LIMIT = 200
 DUPLICATE_WINDOW = timedelta(minutes=1)
+PAYMENT_NOTE_MAX_CHARS = 500
+MANUAL_PAYMENT_METHODS = frozenset({PaymentMethod.CHECK, PaymentMethod.CASH, PaymentMethod.OTHER})
+_RECEIPT_METHOD = {PaymentMethod.CHECK: " by check", PaymentMethod.CASH: " in cash"}
 
 
 class OwnerAuthenticationError(PermissionError):
@@ -133,9 +146,11 @@ class OwnerService:
         *,
         booked_events: BookedEventsPort | None = None,
         calendar_feed: CalendarFeedPort | None = None,
+        checkout: PaymentCheckoutPort | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
+        self._checkout = checkout
         self._booked_events = booked_events
         self._calendar_feed = calendar_feed
         self._now = now
@@ -353,6 +368,156 @@ class OwnerService:
             except (InvalidQuoteTransitionError, QuoteConcurrencyError) as error:
                 raise OwnerConflictError("This quote changed; refresh and try again.") from error
         return decided
+
+    async def mark_paid(
+        self,
+        context: OwnerContext,
+        quote_id: str,
+        *,
+        paid_on: date,
+        method: PaymentMethod,
+        note: str | None = None,
+    ) -> Quote:
+        """Record a check, cash or other payment for the full amount of an
+        accepted one-off quote. The ledger keeps one active payment per
+        quote, an open card checkout is closed, and the customer is e-mailed
+        a short receipt."""
+
+        if method not in MANUAL_PAYMENT_METHODS:
+            raise OwnerInputError("Pick check, cash or other.")
+        note = (note or "").strip() or None
+        if note is not None and len(note) > PAYMENT_NOTE_MAX_CHARS:
+            raise OwnerInputError(f"Keep the note under {PAYMENT_NOTE_MAX_CHARS} characters.")
+        now = self._now()
+        zone = business_zone(context.business.timezone) or UTC
+        if paid_on > now.astimezone(zone).date():
+            raise OwnerInputError("The paid date can't be in the future.")
+        business_id = context.business.business_id
+        open_session: str | None = None
+        async with self._unit_of_work_factory() as unit_of_work:
+            quote = await self._find_quote(unit_of_work, context, quote_id)
+            draft = quote.draft
+            if draft is None or draft.billing is not QuoteBilling.ONE_TIME:
+                raise OwnerConflictError("Only one-off quotes can be marked paid.")
+            if quote.customer_status is CustomerQuoteStatus.PAID:
+                raise OwnerConflictError("This quote is already paid.")
+            if quote.customer_status is not CustomerQuoteStatus.ACCEPTED:
+                raise OwnerConflictError("Only accepted quotes can be marked paid.")
+            payment_id = uuid4()
+            recorded = await unit_of_work.payments.record(
+                LedgerPayment(
+                    payment_id=payment_id,
+                    business_id=business_id,
+                    quote_id=quote.quote_id,
+                    kind=PaymentKind.ONE_OFF,
+                    source=PaymentSource.MANUAL,
+                    method=method,
+                    reference=f"manual:{payment_id}",
+                    amount_minor=draft.total_minor,
+                    currency=draft.currency,
+                    # Midday in the business's zone keeps the day stable.
+                    paid_at=datetime.combine(paid_on, time(12), tzinfo=zone).astimezone(UTC),
+                    recorded_by=context.session.email,
+                    recorded_at=now,
+                    note=note,
+                )
+            )
+            if recorded is None or recorded.duplicate:
+                raise OwnerConflictError("This quote already has a payment; refresh.")
+            paid = quote.record_customer_payment(now)
+            try:
+                await unit_of_work.quotes.save(paid, expected_version=quote.version)
+            except QuoteConcurrencyError as error:
+                raise OwnerConflictError("This quote changed; refresh and try again.") from error
+            checkout = await unit_of_work.quote_payments.find_open(business_id, quote.quote_id)
+            if checkout is not None:
+                await unit_of_work.quote_payments.save(
+                    checkout.mark_expired(now), expected_from=checkout.status
+                )
+                open_session = checkout.checkout_session_id
+            email = draft.recipient.email_address
+            if email is not None:
+                business = context.business.display_name or context.business.name
+                work = ", ".join(item.description for item in draft.line_items)
+                await unit_of_work.outbox.enqueue(
+                    intake_customer_email_command(
+                        IntakeCustomerEmail(
+                            business_id=business_id,
+                            to=email,
+                            subject=f"Receipt from {business}",
+                            body="\n\n".join(
+                                [
+                                    f"Thanks! {business} received your payment of"
+                                    f" {format_money(draft.total_minor, draft.currency)}"
+                                    f"{_RECEIPT_METHOD.get(method, '')}"
+                                    f" on {paid_on:%B} {paid_on.day}, {paid_on.year}.",
+                                    f"For: {work}" if work else "",
+                                    "This quote is paid in full. Keep this e-mail as your receipt.",
+                                ]
+                            ).replace("\n\n\n\n", "\n\n"),
+                            idempotency_key=f"manual-receipt:{payment_id}",
+                        )
+                    )
+                )
+            await unit_of_work.commit()
+        if open_session is not None and self._checkout is not None:
+            try:
+                await self._checkout.expire_checkout(open_session)
+            except PaymentCheckoutError:
+                logger.warning("could not close the open checkout of a quote marked paid")
+        return paid
+
+    async def mark_unpaid(self, context: OwnerContext, quote_id: str) -> Quote:
+        """Void the manual payment of a one-off quote, keeping who voided it
+        and when. Card payments are refunded in Stripe, never undone here."""
+
+        now = self._now()
+        business_id = context.business.business_id
+        async with self._unit_of_work_factory() as unit_of_work:
+            quote = await self._find_quote(unit_of_work, context, quote_id)
+            payments = [
+                payment
+                for payment in await unit_of_work.payments.list_for_quote(
+                    business_id, quote.quote_id
+                )
+                if payment.kind is PaymentKind.ONE_OFF and payment.voided_at is None
+            ]
+            active = next((payment for payment in payments if not payment.duplicate), None)
+            if active is None:
+                raise OwnerConflictError("This quote has no payment to undo.")
+            if active.source is not PaymentSource.MANUAL:
+                raise OwnerConflictError("Card payments can't be undone here. Refund it in Stripe.")
+            if not await unit_of_work.payments.void_manual(
+                business_id, active.payment_id, by=context.session.email, at=now
+            ):
+                raise OwnerConflictError("This payment changed; refresh and try again.")
+            # A card payment that raced the manual one now counts instead.
+            standby = next((payment for payment in payments if payment.duplicate), None)
+            if standby is not None:
+                await unit_of_work.payments.mark_duplicate(
+                    business_id, standby.payment_id, duplicate=False
+                )
+                updated = quote
+            else:
+                updated = quote.undo_customer_payment(now)
+                try:
+                    await unit_of_work.quotes.save(updated, expected_version=quote.version)
+                except QuoteConcurrencyError as error:
+                    raise OwnerConflictError(
+                        "This quote changed; refresh and try again."
+                    ) from error
+            await unit_of_work.commit()
+        return updated
+
+    async def _find_quote(
+        self, unit_of_work: UnitOfWork, context: OwnerContext, quote_id: str
+    ) -> Quote:
+        for candidate in await unit_of_work.quotes.list_for_business(
+            context.business.business_id, limit=QUOTE_LIST_LIMIT
+        ):
+            if public_quote_id(candidate.quote_id) == quote_id:
+                return candidate
+        raise OwnerNotFoundError("quote not found")
 
     async def update_settings(
         self, context: OwnerContext, update: SettingsUpdate
