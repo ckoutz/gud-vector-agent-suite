@@ -1,4 +1,4 @@
-"""Mark paid: a check, cash or other payment for an accepted one-off quote,
+"""Mark paid: a check, cash or other payment for a sent one-off quote,
 one active payment per quote, an undo with a trail, the open card checkout
 closed, a card payment that races it flagged, and a receipt e-mail."""
 
@@ -283,20 +283,20 @@ async def test_the_owner_api_validates_and_scopes_mark_paid(
         payment = {"paidOn": PAID_ON.isoformat(), "method": "check"}
 
         assert (await http.post(url, json=payment)).status_code == 401
-        # Sent but not accepted yet.
-        assert (await http.post(url, json=payment, headers=bearer(owner))).status_code == 409
         bad = {"paidOn": PAID_ON.isoformat(), "method": "bitcoin"}
         assert (await http.post(url, json=bad, headers=bearer(owner))).status_code == 422
         future = {"paidOn": "2030-01-01", "method": "cash"}
-        assert (await http.post(url, json=future, headers=bearer(owner))).status_code in (409, 422)
+        assert (await http.post(url, json=future, headers=bearer(owner))).status_code == 422
         unknown = await http.post(
             "/v1/owner/quotes/gvq_unknown/mark-paid", json=payment, headers=bearer(owner)
         )
         assert unknown.status_code == 404
-        unpaid = await http.post(
-            f"/v1/owner/quotes/{quote['id']}/mark-unpaid", headers=bearer(owner)
-        )
-        assert unpaid.status_code == 409
+        unpaid_url = f"/v1/owner/quotes/{quote['id']}/mark-unpaid"
+        assert (await http.post(unpaid_url, headers=bearer(owner))).status_code == 409
+        # Sent but not accepted yet: it can still be marked paid.
+        assert (await http.post(url, json=payment, headers=bearer(owner))).status_code == 200
+        assert (await http.post(url, json=payment, headers=bearer(owner))).status_code == 409
+        assert (await http.post(unpaid_url, headers=bearer(owner))).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -468,3 +468,76 @@ async def test_stripe_expiry_is_done_only_when_the_session_is_no_longer_open() -
     with pytest.raises(PaymentCheckoutError) as raised:
         await _stripe_expiry(400, "open").expire_checkout(SESSION_ID)
     assert not isinstance(raised.value, PaymentCheckoutClosedError)
+
+
+async def _sent(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> tuple[Application, OwnerContext, str, str]:
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=CheckoutFake())
+    business_id, quote_id = await _quote_of(session_factory)
+    context = await _context(session_factory, business_id)
+    return application, context, public_quote_id(quote_id), claim_token
+
+
+@pytest.mark.asyncio
+async def test_a_sent_quote_can_be_marked_paid_and_undo_puts_it_back_to_sent(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, context, quote_id, claim_token = await _sent(session_factory)
+    assert await _quote_status(session_factory) is None
+
+    await application.owner.mark_paid(
+        context, quote_id, paid_on=PAID_ON, method=PaymentMethod.CHECK
+    )
+    assert await _quote_status(session_factory) == "paid"
+    [row] = await _rows(session_factory)
+    assert row.customer_status_before == "sent"
+    with pytest.raises(OwnerConflictError):
+        await application.owner.mark_paid(
+            context, quote_id, paid_on=PAID_ON, method=PaymentMethod.CASH
+        )
+    async with public_client(application) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 409
+
+    quote = await application.owner.mark_unpaid(context, quote_id)
+
+    assert quote.customer_status is None
+    assert await _quote_status(session_factory) is None
+
+
+@pytest.mark.asyncio
+async def test_a_viewed_quote_goes_back_to_viewed_and_a_declined_one_cannot_be_marked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, context, quote_id, claim_token = await _sent(session_factory)
+    async with public_client(application) as client:
+        assert (await client.get(f"/v1/quotes/{claim_token}")).status_code == 200
+    assert await _quote_status(session_factory) == "viewed"
+
+    await application.owner.mark_paid(context, quote_id, paid_on=PAID_ON, method=PaymentMethod.CASH)
+    await application.owner.mark_unpaid(context, quote_id)
+    assert await _quote_status(session_factory) == "viewed"
+
+    async with public_client(application) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/decline")).status_code == 200
+    with pytest.raises(OwnerConflictError):
+        await application.owner.mark_paid(
+            context, quote_id, paid_on=PAID_ON, method=PaymentMethod.CASH
+        )
+    assert sum(r.voided_at is None for r in await _rows(session_factory)) == 0
+
+
+@pytest.mark.asyncio
+async def test_another_business_owner_cannot_mark_a_sent_quote_paid(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, _, quote_id, _ = await _sent(session_factory)
+    _, other_business = await owner_business(session_factory)
+    intruder = await _context(session_factory, other_business)
+
+    with pytest.raises(OwnerNotFoundError):
+        await application.owner.mark_paid(
+            intruder, quote_id, paid_on=PAID_ON, method=PaymentMethod.CHECK
+        )
+    assert await _rows(session_factory) == []
+    assert await _quote_status(session_factory) is None

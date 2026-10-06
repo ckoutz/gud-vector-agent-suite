@@ -8,7 +8,7 @@ are the values it moves.
 from collections.abc import Iterable
 from datetime import datetime, tzinfo
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -470,6 +470,9 @@ class LedgerPayment(PaymentModel):
     voided_at: datetime | None = None
     voided_by: str | None = None
     duplicate: bool = False
+    # Where "Mark unpaid" puts the quote back: what the customer had done
+    # before the owner marked it paid. None on rows that predate it.
+    customer_status_before: Literal["sent", "viewed", "accepted"] | None = None
 
     @field_validator("currency")
     @classmethod

@@ -293,6 +293,7 @@ class SqlPaymentLedgerRepository:
             voided_at=_aware_or_none(row.voided_at),
             voided_by=row.voided_by,
             duplicate=row.duplicate,
+            customer_status_before=row.customer_status_before,
         )
 
     async def _insert(self, payment: LedgerPayment) -> bool:
@@ -314,6 +315,7 @@ class SqlPaymentLedgerRepository:
             voided_at=payment.voided_at,
             voided_by=payment.voided_by,
             duplicate=payment.duplicate,
+            customer_status_before=payment.customer_status_before,
         )
         try:
             async with self.session.begin_nested():
