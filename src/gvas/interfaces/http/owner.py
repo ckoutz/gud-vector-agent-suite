@@ -51,6 +51,7 @@ class SettingsBody(BaseModel):
     intakeOpening: str | None = Field(default=None, max_length=5000)  # noqa: N815
     notificationEmail: str | None = Field(default=None, max_length=320)  # noqa: N815
     calendarFeedUrl: str | None = Field(default=None, max_length=4096)  # noqa: N815
+    timezone: str | None = Field(default=None, max_length=64)
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -196,6 +197,7 @@ def settings_payload(business: BusinessRecord) -> dict[str, object]:
         "intakeOpening": profile.opening,
         "notificationEmail": business.notification_email,
         "ownerEmail": business.owner_email,
+        "timezone": business.timezone,
         "calendarFeed": {
             "connected": bool(business.calendar_feed_url),
             "host": calendar_feed_host(business.calendar_feed_url),
@@ -234,6 +236,7 @@ def create_owner_router(
                     "displayName": context.business.display_name or context.business.name,
                     "siteUrl": context.business.site_url,
                     "calendlyUrl": context.business.calendly_url,
+                    "timezone": context.business.timezone,
                 },
             }
         )
@@ -335,6 +338,7 @@ def create_owner_router(
                     intake_opening=body.intakeOpening,
                     notification_email=body.notificationEmail,
                     calendar_feed_url=body.calendarFeedUrl,
+                    timezone=body.timezone,
                 ),
             )
         except OwnerInputError as error:

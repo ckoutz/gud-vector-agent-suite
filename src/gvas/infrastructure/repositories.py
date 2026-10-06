@@ -104,6 +104,7 @@ class SqlBusinessRepository:
             notification_email=row.notification_email,
             owner_email=row.owner_email,
             calendar_feed_url=row.calendar_feed_url,
+            timezone=row.timezone,
         )
 
     async def get(self, business_id: BusinessId) -> BusinessRecord | None:
@@ -155,6 +156,7 @@ class SqlBusinessRepository:
         notification_email: str | None = None,
         owner_email: str | None = None,
         calendar_feed_url: str | None = None,
+        timezone: str | None = None,
         now: datetime,
     ) -> BusinessRecord:
         row = await self.session.scalar(select(Business).where(Business.id == business_id))
@@ -182,6 +184,8 @@ class SqlBusinessRepository:
             row.owner_email = owner_email
         if calendar_feed_url is not None:
             row.calendar_feed_url = calendar_feed_url or None
+        if timezone is not None:
+            row.timezone = timezone or None
         row.updated_at = now
         try:
             async with self.session.begin_nested():

@@ -43,6 +43,7 @@ from gvas.domain.repositories import (
     is_local_host,
     normalize_site_url,
 )
+from gvas.domain.time_zones import normalize_time_zone
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
 
@@ -70,6 +71,7 @@ class ConfigureBusinessRequest:
     intake_opening: str | None = None
     notification_email: str | None = None
     owner_email: str | None = None
+    timezone: str | None = None
 
 
 def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
@@ -129,10 +131,17 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         if normalized_owner is None:
             raise ConfigureBusinessInputError("--owner-email must be an e-mail address")
         owner_email = normalized_owner
+    timezone = _optional(getattr(arguments, "timezone", None))
+    if timezone is not None:
+        try:
+            timezone = normalize_time_zone(timezone)
+        except ValueError as error:
+            raise ConfigureBusinessInputError(f"--timezone {error}") from error
     if all(
         value is None
         for value in (
             site_url,
+            timezone,
             notification_email,
             owner_email,
             _optional(arguments.display_name),
@@ -162,6 +171,7 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         intake_opening=intake_opening,
         notification_email=notification_email,
         owner_email=owner_email,
+        timezone=timezone,
     )
 
 
@@ -206,6 +216,7 @@ async def run_configure(request: ConfigureBusinessRequest) -> BusinessRecord:
                 intake_opening=request.intake_opening,
                 notification_email=request.notification_email,
                 owner_email=request.owner_email,
+                timezone=request.timezone,
                 now=datetime.now(UTC),
             )
             await unit_of_work.commit()
@@ -244,6 +255,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--owner-email",
         help="the address that signs in to the owner dashboard through the portal login",
     )
+    parser.add_argument(
+        "--timezone", help="IANA zone the business works in, e.g. America/Los_Angeles"
+    )
     try:
         request = build_request(parser.parse_args(argv))
         business = asyncio.run(run_configure(request))
@@ -255,7 +269,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"public_key {business.public_key} "
         f"intake_profile {'custom' if business.intake_profile.is_configured else 'default'} "
         f"notification_email {business.notification_email} "
-        f"owner_email {business.owner_email}"
+        f"owner_email {business.owner_email} "
+        f"timezone {business.timezone}"
     )
     return 0
 

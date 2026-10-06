@@ -443,6 +443,7 @@ async def test_settings_update_and_the_calendar_link_is_never_returned(
                 "intakeBrief": "Plumbing repairs in the East Bay.",
                 "notificationEmail": "Office@Example.test",
                 "calendarFeedUrl": FEED_URL.replace("https://", "webcal://"),
+                "timezone": " America/Chicago ",
             },
             headers=bearer(owner),
         )
@@ -453,6 +454,9 @@ async def test_settings_update_and_the_calendar_link_is_never_returned(
         assert settings["intakeBrief"] == "Plumbing repairs in the East Bay."
         assert settings["notificationEmail"] == "office@example.test"
         assert settings["calendarFeed"] == {"connected": True, "host": "calendar.example.com"}
+        assert settings["timezone"] == "America/Chicago"
+        me = (await http.get("/v1/owner/me", headers=bearer(owner))).json()
+        assert me["business"]["timezone"] == "America/Chicago"
         assert (
             "private-abc123"
             not in (await http.get("/v1/owner/settings", headers=bearer(owner))).text
@@ -469,15 +473,17 @@ async def test_settings_update_and_the_calendar_link_is_never_returned(
             {"calendlyUrl": "http://calendly.com/x"},
             {"displayName": "   "},
             {"notificationEmail": "not-an-email"},
+            {"timezone": "Pacific"},
         ):
             rejected = await http.patch("/v1/owner/settings", json=body, headers=bearer(owner))
             assert rejected.status_code == 422, body
 
         cleared = await http.patch(
             "/v1/owner/settings",
-            json={"calendarFeedUrl": "", "intakeBrief": ""},
+            json={"calendarFeedUrl": "", "intakeBrief": "", "timezone": ""},
             headers=bearer(owner),
         )
+        assert cleared.json()["settings"]["timezone"] is None
         assert cleared.json()["settings"]["calendarFeed"]["connected"] is False
         assert cleared.json()["settings"]["intakeBrief"] is None
 

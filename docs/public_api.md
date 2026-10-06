@@ -307,7 +307,7 @@ session), and only ever reads or changes the session's business.
 
 | Route | What it does |
 |---|---|
-| `GET /v1/owner/me` | Owner e-mail and business display name, site and booking link |
+| `GET /v1/owner/me` | Owner e-mail and business display name, site, booking link and time zone |
 | `DELETE /v1/owner/sessions` | Revokes the session (`204`) |
 | `GET /v1/owner/quotes` | Latest 200 quotes: status, `customerStatus` (viewed/accepted/paid/declined), `needsApproval`, customer, line items, `totalCents`, billing, `createdAt`/`approvedAt`/`sentAt` (when delivery to the customer was handed off; `null` until sent) |
 | `POST /v1/owner/quotes/{id}/approve` | Same transition as `approve` by text: links the customer and queues delivery. `404` unknown, `409` not awaiting approval |
@@ -319,7 +319,7 @@ session), and only ever reads or changes the session's business.
 | `POST /v1/owner/bookings/{ref}/decline` | Body `{"reason"?}`; same as `decline booking <ref> [reason]` |
 | `GET /v1/owner/requests` | Portal service requests (latest 100) |
 | `GET /v1/owner/calendar?start=…&end=…` | Calendly bookings, pending booking requests and the owner's own calendar feed merged (max 62 days). `{"events", "problems"}`; a failing source adds a plain-language problem instead of failing the call |
-| `GET /v1/owner/settings` / `PATCH /v1/owner/settings` | Display name, booking link, intake brief/questions/opening, notification e-mail and the calendar feed. `""` clears a field; `422` on invalid input |
+| `GET /v1/owner/settings` / `PATCH /v1/owner/settings` | Display name, booking link, intake brief/questions/opening, notification e-mail, the calendar feed and `timezone` (an IANA name such as `America/Los_Angeles`; filled from Calendly the first time availability is read, and every time label renders in it). `""` clears a field; `422` on invalid input |
 
 **Calendar feed.** Calendly stays the booking backend (connect Google,
 Outlook/Microsoft 365, iCloud or Exchange in Calendly so bookings land in the
