@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import logging
 import signal
+import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
@@ -45,11 +46,25 @@ def build_worker(runtime: ProductionRuntime) -> OutboxWorker:
     )
 
 
+async def _sweep_sandboxes(runtime: ProductionRuntime) -> None:
+    if runtime.sandboxes is None:
+        return
+    try:
+        await runtime.sandboxes.sweep()
+    except Exception:
+        logger.exception("demo sandbox sweep failed; retrying next round")
+
+
 async def run_worker(runtime: ProductionRuntime, stopping: asyncio.Event) -> int:
     worker = build_worker(runtime)
     poll_seconds = runtime.settings.worker.poll_seconds
+    sweep_every = runtime.settings.demo.sandbox_sweep_minutes * 60
+    next_sweep = time.monotonic()
     batches = 0
     while not stopping.is_set():
+        if time.monotonic() >= next_sweep:
+            await _sweep_sandboxes(runtime)
+            next_sweep = time.monotonic() + sweep_every
         report: WorkerBatchReport = await worker.run_once()
         batches += 1
         if report.claimed == 0:

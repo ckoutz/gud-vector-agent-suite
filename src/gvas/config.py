@@ -238,6 +238,17 @@ class DemoSettings(BaseSettings):
     slot_minutes: int = Field(default=60, ge=15, le=240)
     day_start_hour: int = Field(default=8, ge=0, le=23)
     day_end_hour: int = Field(default=17, ge=1, le=24)
+    # Visitor sandboxes: each visitor gets a fresh copy of this business
+    # (by slug); empty turns them off. Deleted after ``sandbox_idle_minutes``
+    # without a chat message or a dashboard request.
+    sandbox_template_slug: str = ""
+    sandbox_idle_minutes: int = Field(default=120, ge=5)
+    sandbox_max_live: int = Field(default=200, ge=1)
+    sandbox_per_ip_per_hour: int = Field(default=3, ge=1)
+    # Gus messages one sandbox gets, and the whole demo gets per UTC day.
+    sandbox_messages_per_visitor: int = Field(default=30, ge=1)
+    sandbox_messages_per_day: int = Field(default=500, ge=1)
+    sandbox_sweep_minutes: int = Field(default=10, ge=1)
 
     @field_validator("timezone")
     @classmethod

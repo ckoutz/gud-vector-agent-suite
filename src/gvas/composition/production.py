@@ -18,6 +18,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import timedelta
+from typing import TYPE_CHECKING
 
 import httpx
 from fastapi import FastAPI
@@ -136,6 +137,9 @@ from gvas.interfaces.http.owner import create_owner_router
 from gvas.interfaces.http.portal import create_portal_router
 from gvas.interfaces.http.public import PerIpRateLimiter, create_public_router
 from gvas.interfaces.logging_setup import configure_logging
+
+if TYPE_CHECKING:
+    from gvas.interfaces.demo_sandboxes import DemoSandboxes
 
 logger = logging.getLogger(__name__)
 
@@ -433,6 +437,7 @@ class ProductionRuntime:
     app: FastAPI
     http_client: httpx.AsyncClient
     engine: AsyncEngine
+    sandboxes: "DemoSandboxes | None" = None
 
     async def aclose(self) -> None:
         await self.http_client.aclose()
@@ -628,6 +633,12 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
     session_factory = create_session_factory(engine)
     # Redirects are refused so a provider cannot move an authenticated request.
     client = httpx.AsyncClient(follow_redirects=False)
+    sandboxes = None
+    if resolved.demo.mode and resolved.demo.sandbox_template_slug:
+        # Imported here: sandboxes reuse the demo seed, which imports this module.
+        from gvas.interfaces.demo_sandboxes import DemoSandboxes
+
+        sandboxes = DemoSandboxes(resolved.demo, session_factory)
     application = build_application(
         build_production_ports(resolved, client, session_factory),
         resolved.app,
@@ -636,7 +647,10 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
         ceilings=resolved.usage_ceilings(),
         intake_settings=resolved.intake,
         payment_deployment=resolved.stripe.deployment,
+        intake_message_budget=None if sandboxes is None else sandboxes.refusal,
+        payments_off=None if sandboxes is None else sandboxes.is_sandbox,
     )
+    on_activity = None if sandboxes is None else sandboxes.touch
     # A demo has no Slack workspace, so it mounts no Slack Request URL.
     routers = (
         []
@@ -666,6 +680,7 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
             rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
             intake=application.intake,
             decision_links=application.intake_decision_links,
+            on_activity=on_activity,
         )
     )
     routers.append(
@@ -680,14 +695,26 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
         create_owner_router(
             application.owner,
             rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
+            on_activity=on_activity,
         )
     )
+    if sandboxes is not None:
+        from gvas.interfaces.http.sandbox import create_sandbox_router
+
+        routers.append(
+            create_sandbox_router(
+                sandboxes,
+                per_ip_per_hour=resolved.demo.sandbox_per_ip_per_hour,
+                rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
+            )
+        )
     return ProductionRuntime(
         settings=resolved,
         application=application,
         app=create_app(resolved.app, tuple(routers), cors_origins=cors_origins),
         http_client=client,
         engine=engine,
+        sandboxes=sandboxes,
     )
 
 

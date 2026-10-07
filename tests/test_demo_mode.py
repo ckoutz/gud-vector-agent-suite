@@ -256,14 +256,15 @@ async def test_customer_mail_texts_and_owner_messages_are_logged_not_sent(
     assert email.provider_message_id is not None
     assert email.provider_message_id.startswith("demo-")
     logged = caplog.text
-    assert "not sent: customer e-mail to dana@example.test" in logged
-    assert "not sent: text to +15105550142" in logged
-    assert "Booking request #abc123" in logged
-    # Links carry bearer tokens (quote claims, decisions), so only hosts are logged.
+    assert "not sent: customer e-mail" in logged
+    assert "not sent: text" in logged
+    assert "dana@example.test" not in logged
+    assert "+15105550142" not in logged
+    assert "not sent: owner message" in logged
+    # Neither what was written nor its links (bearer tokens) reach the log.
+    assert "Booking request #abc123" not in logged
     assert "/q/abc" not in logged
     assert "d3cide" not in logged
-    assert "https://larkspur.example/... (link withheld)" in logged
-    assert "https://demo.example/... (link withheld)" in logged
 
 
 async def test_an_unknown_hosted_link_reference_is_refused() -> None:
@@ -298,7 +299,8 @@ async def test_a_sign_in_request_is_logged_but_never_its_link(
     )
 
     assert receipt.status is DeliveryStatus.DELIVERED
-    assert "not sent: sign-in e-mail to owner@larkspur.example" in caplog.text
+    assert "not sent: sign-in e-mail" in caplog.text
+    assert "owner@larkspur.example" not in caplog.text
     assert "t0ken" not in caplog.text
 
 

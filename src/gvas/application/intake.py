@@ -8,7 +8,7 @@ request that saved the approval.
 """
 
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, tzinfo
 from enum import StrEnum
@@ -244,6 +244,7 @@ class IntakeService:
         ceiling: UsageCeilingGuard | None = None,
         max_conversations_per_day: int = 50,
         max_user_messages: int = INTAKE_MAX_USER_MESSAGES,
+        message_budget: Callable[[UUID, datetime], Awaitable[str | None]] | None = None,
         decision_link_secret: str = "",
         decision_link_base_url: str = "",
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -259,6 +260,9 @@ class IntakeService:
         self._ceiling = ceiling or UsageCeilingGuard()
         self._max_conversations_per_day = max_conversations_per_day
         self._max_user_messages = max_user_messages
+        # Returns the reply to give instead of a model turn once a budget
+        # beyond this conversation (a demo sandbox's, a demo's day) is spent.
+        self._message_budget = message_budget
         self._now = now
 
     async def start_conversation(
@@ -502,6 +506,11 @@ class IntakeService:
         ):
             reply = await self._reply(unit_of_work, conversation, UNAVAILABLE_REPLY, now)
             return IntakeReply(conversation, reply, ())
+        if self._message_budget is not None:
+            refusal = await self._message_budget(conversation.business_id, now)
+            if refusal is not None:
+                reply = await self._reply(unit_of_work, conversation, refusal, now)
+                return IntakeReply(conversation, reply, conversation.proposed_slots)
 
         transcript = await unit_of_work.intake_messages.list_for(
             conversation.business_id, conversation.conversation_id

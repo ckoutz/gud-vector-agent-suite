@@ -297,6 +297,7 @@ def create_public_router(
     rate_limiter: PerIpRateLimiter | None = None,
     intake: IntakeService | None = None,
     decision_links: IntakeDecisionLinkService | None = None,
+    on_activity: Callable[[UUID], Awaitable[None]] | None = None,
 ) -> APIRouter:
     """The customer surface: quote view/accept/decline, booking link, webhook,
     and — when an intake service is mounted — the website booking chat."""
@@ -352,7 +353,7 @@ def create_public_router(
         return JSONResponse(payload, status_code=200)
 
     if intake is not None:
-        _mount_intake(router, intake, limited)
+        _mount_intake(router, intake, limited, on_activity)
     if decision_links is not None:
         _mount_decision_links(router, decision_links, limited)
 
@@ -403,7 +404,12 @@ async def _intake_authenticate(
         raise HTTPException(status_code=401, detail=GENERIC_UNAUTHORIZED) from error
 
 
-def _mount_intake(router: APIRouter, intake: IntakeService, limited: list[params.Depends]) -> None:
+def _mount_intake(
+    router: APIRouter,
+    intake: IntakeService,
+    limited: list[params.Depends],
+    on_activity: Callable[[UUID], Awaitable[None]] | None = None,
+) -> None:
     """The website chat: create a conversation, post a message, poll the view.
 
     The ``conversationToken`` is the only credential — it is hashed at rest
@@ -433,6 +439,8 @@ def _mount_intake(router: APIRouter, intake: IntakeService, limited: list[params
     ) -> JSONResponse:
         resolved = _intake_conversation_id(conversation_id)
         conversation = await _intake_authenticate(intake, request, resolved)
+        if on_activity is not None:
+            await on_activity(conversation.business_id)
         if not body.message.strip():
             return JSONResponse({"detail": "message is required"}, status_code=422)
         if body.sms_consent is not None:
