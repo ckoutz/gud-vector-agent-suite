@@ -1,6 +1,7 @@
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ASYNC_DRIVER = "postgresql+asyncpg"
@@ -218,3 +219,37 @@ class ObjectStorageSettings(BaseSettings):
         return bool(
             self.account_id and self.bucket and self.access_key_id and self.secret_access_key
         )
+
+
+class DemoSettings(BaseSettings):
+    """A demo deployment: a fictional business, and nothing leaves the process.
+
+    With ``mode`` on, e-mail, texts and owner channel messages are written to the log instead of
+    sent, the booking calendar is generated openings rather than Calendly, and
+    startup refuses any provider credential that could reach a real person or a
+    live account. The hours below shape the generated openings.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="GVAS_DEMO_", env_file=".env", extra="ignore")
+
+    mode: bool = False
+    # Used when the business has no zone of its own.
+    timezone: str = "America/Los_Angeles"
+    slot_minutes: int = Field(default=60, ge=15, le=240)
+    day_start_hour: int = Field(default=8, ge=0, le=23)
+    day_end_hour: int = Field(default=17, ge=1, le=24)
+
+    @field_validator("timezone")
+    @classmethod
+    def timezone_is_known(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ValueError("is not a known IANA time zone") from error
+        return value
+
+    @model_validator(mode="after")
+    def hours_hold_a_slot(self) -> "DemoSettings":
+        if (self.day_end_hour - self.day_start_hour) * 60 < self.slot_minutes:
+            raise ValueError("the demo day must be long enough for one slot")
+        return self

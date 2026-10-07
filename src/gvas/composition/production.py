@@ -36,6 +36,7 @@ from gvas.composition.report_publication import ReportArtifactAccess
 from gvas.config import (
     CostCeilingSettings,
     DatabaseUrlError,
+    DemoSettings,
     IntakeSettings,
     ObjectStorageSettings,
     OpenAISettings,
@@ -64,6 +65,17 @@ from gvas.infrastructure.calendly.config import (
 )
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.delivery_ledger import SqlChannelDeliveryLedger
+from gvas.infrastructure.demo import (
+    DemoAvailability,
+    DemoBookedEvents,
+    LoggedCustomerEmail,
+    LoggedCustomerText,
+    LoggedOwnerEmail,
+    LoggedOwnerReply,
+    LoggedPortalLoginEmail,
+    LoggedReportEmail,
+    NoAttachments,
+)
 from gvas.infrastructure.object_storage import R2ObjectStorage
 from gvas.infrastructure.openai_checklist_evidence import OpenAIChecklistEvidenceAnnotator
 from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGuard
@@ -156,6 +168,7 @@ class ProductionSettings:
     public_api: PublicApiSettings = field(default_factory=PublicApiSettings)
     cost_ceilings: CostCeilingSettings = field(default_factory=CostCeilingSettings)
     intake: IntakeSettings = field(default_factory=IntakeSettings)
+    demo: DemoSettings = field(default_factory=DemoSettings)
 
     def usage_ceilings(self) -> UsageCeilings:
         return UsageCeilings(
@@ -179,7 +192,11 @@ def load_production_settings() -> ProductionSettings:
         public_api=PublicApiSettings(),
         cost_ceilings=CostCeilingSettings(),
         intake=IntakeSettings(),
+        demo=DemoSettings(),
     )
+    if settings.demo.mode:
+        _require_demo_isolation(settings)
+        return settings
     missing = [
         name
         for name, present in (
@@ -208,6 +225,72 @@ def load_production_settings() -> ProductionSettings:
     _require_complete_portal_handoff(settings.portal)
     _require_complete_stripe_checkout(settings.stripe)
     return settings
+
+
+# Stripe test-mode secret and restricted keys; anything else could be live.
+STRIPE_TEST_KEY_PREFIXES = ("sk_test_", "rk_test_")
+
+
+def _require_demo_isolation(settings: ProductionSettings) -> None:
+    """A demo runs a fictional business with nothing sent, so it must not
+    hold a single credential that could reach a real person or account.
+
+    It needs only its own database and the model key behind Gus. E-mail,
+    texts, Slack, Calendly, the external portal and object storage must be
+    unset (the demo logs or generates them instead), and Stripe, if set at
+    all, must be a test-mode key. Names are reported, never values.
+    """
+
+    missing = [
+        name
+        for name, present in (
+            (
+                "GVAS_DATABASE_URL or DATABASE_URL",
+                "database_url" in settings.app.model_fields_set and bool(settings.app.database_url),
+            ),
+            ("GVAS_OPENAI_API_KEY", settings.openai.is_configured),
+        )
+        if not present
+    ]
+    if missing:
+        raise ProductionConfigurationError(f"missing required settings: {', '.join(missing)}")
+    _require_managed_database(settings.app.database_url)
+    storage = settings.storage
+    held = [
+        name
+        for name, present in (
+            ("GVAS_SLACK_SIGNING_SECRET", bool(settings.slack.signing_secret)),
+            ("GVAS_SLACK_BOT_TOKEN", bool(settings.slack.bot_token)),
+            ("GVAS_SLACK_INSTALLATIONS", bool(settings.slack.installations)),
+            ("GVAS_RESEND_API_KEY", bool(settings.resend.api_key)),
+            *settings.telnyx.required_settings.items(),
+            ("GVAS_TELNYX_MESSAGING_PROFILE_ID", bool(settings.telnyx.messaging_profile_id)),
+            *settings.calendly.required_settings.items(),
+            ("GVAS_CALENDLY_WEBHOOK_SIGNING_KEY", bool(settings.calendly.webhook_signing_key)),
+            *settings.portal.required_settings.items(),
+            *zip(
+                R2_SETTING_NAMES,
+                (
+                    bool(storage.account_id),
+                    bool(storage.bucket),
+                    bool(storage.access_key_id),
+                    bool(storage.secret_access_key),
+                ),
+                strict=True,
+            ),
+        )
+        if present
+    ]
+    if held:
+        raise ProductionConfigurationError(
+            f"demo mode sends nothing, so these must be unset: {', '.join(held)}"
+        )
+    _require_complete_stripe_checkout(settings.stripe)
+    secret_key = settings.stripe.secret_key
+    if secret_key and not secret_key.startswith(STRIPE_TEST_KEY_PREFIXES):
+        raise ProductionConfigurationError(
+            "demo mode only accepts a Stripe test-mode key in GVAS_STRIPE_SECRET_KEY"
+        )
 
 
 def _require_complete_object_storage(storage: ObjectStorageSettings) -> None:
@@ -349,11 +432,82 @@ class ProductionRuntime:
         await self.engine.dispose()
 
 
+def _quote_drafting(
+    settings: ProductionSettings, client: httpx.AsyncClient, usage_ledger: SqlUsageLedger
+) -> QuoteDraftingPort:
+    quote_drafting: QuoteDraftingPort = DeterministicQuoteDrafter()
+    if settings.openai.is_configured:
+        return ModelAssistedQuoteDrafter(
+            quote_drafting,
+            OpenAIFreeTextQuoteDrafter(settings.openai, client, usage_ledger=usage_ledger),
+            ceilings=UsageCeilingGuard(usage_ledger, settings.usage_ceilings()),
+        )
+    logger.warning("openai not configured; quotes accept the structured format only")
+    return quote_drafting
+
+
+def build_demo_ports(
+    settings: ProductionSettings,
+    client: httpx.AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> ApplicationPorts:
+    """The same workflows with nothing sent: see ``gvas.infrastructure.demo``.
+
+    Only the model behind Gus and, when a test key is set, Stripe test mode
+    are real. Startup (``_require_demo_isolation``) has already refused every
+    other provider credential.
+    """
+
+    logger.warning("demo mode: e-mail, texts and Slack are logged, not sent")
+    usage_ledger = SqlUsageLedger(session_factory)
+    attachments = NoAttachments()
+    customer_email = LoggedCustomerEmail(settings.resend.portal_url)
+    owner_channel = LoggedOwnerReply()
+    availability = DemoAvailability(settings.demo, session_factory)
+    payment_checkout = (
+        StripeCheckout(settings.stripe, client) if settings.stripe.is_configured else None
+    )
+    return ApplicationPorts(
+        owner_replies=ChannelOwnerReplyRouter(
+            session_factory,
+            {SLACK_SOURCE_NAMESPACE: owner_channel, TELNYX_SOURCE_NAMESPACE: owner_channel},
+        ),
+        quote_drafting=_quote_drafting(settings, client, usage_ledger),
+        availability=availability,
+        booked_events=DemoBookedEvents(session_factory),
+        intake_agent=OpenAIIntakeAgent(settings.openai, client, usage_ledger=usage_ledger),
+        customer_email=customer_email,
+        owner_email=LoggedOwnerEmail(),
+        quote_delivery=SiteAwareQuoteDelivery(customer_email),
+        customer_text=LoggedCustomerText(),
+        payment_checkout=payment_checkout,
+        billing_accounts=payment_checkout,
+        portal_login_email=LoggedPortalLoginEmail(),
+        report_email=LoggedReportEmail(),
+        transcription=OpenAITranscriber(
+            settings.openai, client, attachments, usage_ledger=usage_ledger
+        ),
+        completeness_review=GuardedCompletenessReviewer(
+            MarkerCompletenessReviewer(),
+            OpenAIContradictionGuard(settings.openai, client, usage_ledger=usage_ledger),
+        ),
+        checklist_evidence=GuardedChecklistEvidenceAttributor(
+            MarkerChecklistEvidenceAttributor(),
+            OpenAIChecklistEvidenceAnnotator(settings.openai, client),
+        ),
+        report_generation=DeterministicReportGenerator(),
+        source_attachments=attachments,
+        usage_ledger=usage_ledger,
+    )
+
+
 def build_production_ports(
     settings: ProductionSettings,
     client: httpx.AsyncClient,
     session_factory: async_sessionmaker[AsyncSession],
 ) -> ApplicationPorts:
+    if settings.demo.mode:
+        return build_demo_ports(settings, client, session_factory)
     poster = SlackWebApiChatPoster(settings.slack, client)
     attachments = SlackFileAttachmentAccess(settings.slack, client)
     usage_ledger = SqlUsageLedger(session_factory)
@@ -424,15 +578,7 @@ def build_production_ports(
     )
     if intake_agent is None:
         logger.warning("openai not configured; the website booking chat is off")
-    quote_drafting: QuoteDraftingPort = DeterministicQuoteDrafter()
-    if settings.openai.is_configured:
-        quote_drafting = ModelAssistedQuoteDrafter(
-            quote_drafting,
-            OpenAIFreeTextQuoteDrafter(settings.openai, client, usage_ledger=usage_ledger),
-            ceilings=UsageCeilingGuard(usage_ledger, settings.usage_ceilings()),
-        )
-    else:
-        logger.warning("openai not configured; quotes accept the structured format only")
+    quote_drafting = _quote_drafting(settings, client, usage_ledger)
     return ApplicationPorts(
         owner_replies=ChannelOwnerReplyRouter(session_factory, owner_replies),
         quote_drafting=quote_drafting,
@@ -483,7 +629,12 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
         ceilings=resolved.usage_ceilings(),
         intake_settings=resolved.intake,
     )
-    routers = [build_slack_event_router(application.ingest_service, resolved.slack)]
+    # A demo has no Slack workspace, so it mounts no Slack Request URL.
+    routers = (
+        []
+        if resolved.demo.mode
+        else [build_slack_event_router(application.ingest_service, resolved.slack)]
+    )
     if resolved.telnyx.is_configured:
         routers.append(build_telnyx_webhook_router(application.ingest_service, resolved.telnyx))
     if resolved.calendly.webhook_signing_key:
