@@ -604,3 +604,22 @@ misconfigured deploy never accepts Slack traffic.
   marker evidence stands alone. `DeterministicReportGenerator` remains in
   place of an inference provider; a model for it replaces the port
   implementation in `gvas.composition.production` and nothing else.
+
+## Demo deployment
+
+A demo runs the real workflows for a fictional business on its own database:
+`GVAS_DEMO_MODE=1` logs e-mail, texts and owner messages instead of sending
+them, offers generated openings instead of Calendly, and refuses to start with
+any credential that could reach a real person or account.
+
+Fill it with fictional customers, quotes, payments and this week's bookings,
+dated relative to now (the command refuses to run unless demo mode is on):
+
+```
+gvas-seed-demo --business-id <uuid> --reset
+gvas-seed-demo --business-id <uuid> --no-seed --sign-in-link https://<dashboard>
+```
+
+`--reset` replaces the business's data and keeps the business and its
+templates; without it a second run refuses. `--sign-in-link` prints a
+single-use owner sign-in link (15 minutes), since demo e-mail is only logged.
