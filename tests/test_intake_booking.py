@@ -49,6 +49,7 @@ from gvas.domain.intake import (
     IntakeAgentError,
     IntakeCollected,
     IntakeConversation,
+    IntakeMessageRole,
     IntakeProfile,
     IntakeState,
     IntakeTurn,
@@ -64,7 +65,10 @@ from gvas.domain.messages import (
 from gvas.domain.ports import OwnerEmailPort
 from gvas.infrastructure.customer_repositories import SqlCustomerRepository
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
-from gvas.infrastructure.intake_repositories import SqlIntakeConversationRepository
+from gvas.infrastructure.intake_repositories import (
+    SqlIntakeConversationRepository,
+    SqlIntakeMessageRepository,
+)
 from gvas.infrastructure.models import OutboxMessage
 from gvas.infrastructure.repositories import SqlBusinessRepository
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
@@ -1438,6 +1442,30 @@ async def test_booking_is_emailed_but_never_texted_without_sms_consent(
     assert customer_text.requests == []
     customer = await customer_row(session_factory, business_id)
     assert customer.sms_consent is sms_consent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sms_consent", "promise"),
+    [(True, "by email and text"), (False, "by email once"), (None, "by email once")],
+)
+async def test_the_pick_reply_promises_a_text_only_with_sms_consent(
+    session_factory: async_sessionmaker[AsyncSession], sms_consent: bool | None, promise: str
+) -> None:
+    _, _, business_id, _ = await reach_awaiting_owner(
+        session_factory, availability=AvailabilityFake(), sms_consent=sms_consent
+    )
+
+    row = await conversation_row(session_factory, business_id)
+    async with session_factory() as session:
+        messages = await SqlIntakeMessageRepository(session).list_for(
+            business_id, IntakeConversationId(row.id)
+        )
+    reply = [m.content for m in messages if m.role is IntakeMessageRole.AGENT][-1]
+    assert reply.startswith("Great — I've requested")
+    assert promise in reply
+    if sms_consent is not True:
+        assert "text" not in reply
 
 
 @pytest.mark.asyncio

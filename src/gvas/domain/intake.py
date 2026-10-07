@@ -890,10 +890,24 @@ def escalation_notice(conversation: IntakeConversation, summary: str) -> str:
     return text
 
 
-def slot_confirmed_reply(slot: AvailableSlot, zone: tzinfo | None = None) -> str:
+def _confirm_channels(texts: bool) -> str:
+    """Only a customer who said yes to texts is told a text is coming."""
+    return "email and text" if texts else "email"
+
+
+def slot_confirmed_reply(
+    slot: AvailableSlot, zone: tzinfo | None = None, *, texts: bool = False
+) -> str:
     return (
         f"Great — I've requested {format_slot_label(slot.start, zone)}. "
-        "We'll confirm by email/text once the owner approves."
+        f"We'll confirm by {_confirm_channels(texts)} once the owner approves."
+    )
+
+
+def slot_held_reply(*, texts: bool = False) -> str:
+    return (
+        "That time is already with the team for approval — we'll confirm by "
+        f"{_confirm_channels(texts)}."
     )
 
 
