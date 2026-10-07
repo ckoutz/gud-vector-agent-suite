@@ -161,11 +161,30 @@ def test_a_demo_refuses_a_stripe_key_that_is_not_test_mode(
 def test_a_demo_accepts_a_stripe_test_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GVAS_STRIPE_SECRET_KEY", "sk_test_abc123")
     monkeypatch.setenv("GVAS_STRIPE_WEBHOOK_SECRET", "whsec_demo")
+    monkeypatch.setenv("GVAS_STRIPE_DEPLOYMENT", "demo")
 
     settings = load_production_settings()
 
     assert settings.stripe.is_configured
+    assert settings.stripe.deployment == "demo"
     assert build_production_runtime(settings).application.public_quotes is not None
+
+
+@pytest.mark.usefixtures("demo_environment")
+@pytest.mark.parametrize("deployment", [None, "production"])
+def test_a_demo_with_stripe_must_not_claim_productions_events(
+    monkeypatch: pytest.MonkeyPatch, deployment: str | None
+) -> None:
+    """The demo shares production's Stripe test account; without its own
+    deployment name it would act on production's events."""
+
+    monkeypatch.setenv("GVAS_STRIPE_SECRET_KEY", "sk_test_abc123")
+    monkeypatch.setenv("GVAS_STRIPE_WEBHOOK_SECRET", "whsec_demo")
+    if deployment is not None:
+        monkeypatch.setenv("GVAS_STRIPE_DEPLOYMENT", deployment)
+
+    with pytest.raises(ProductionConfigurationError, match="GVAS_STRIPE_DEPLOYMENT"):
+        load_production_settings()
 
 
 @pytest.mark.usefixtures("demo_environment")

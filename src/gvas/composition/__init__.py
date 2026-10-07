@@ -43,7 +43,7 @@ from gvas.application.plan_custody import (
 )
 from gvas.application.portal import PortalService
 from gvas.application.processing import ProcessOwnerMessageService
-from gvas.application.public_quotes import PublicQuoteService
+from gvas.application.public_quotes import DEFAULT_DEPLOYMENT, PublicQuoteService
 from gvas.application.quotes import (
     DeliverApprovedQuoteService,
     QuoteIntentSelector,
@@ -219,6 +219,7 @@ def build_application(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     ceilings: UsageCeilings | None = None,
     intake_settings: IntakeSettings | None = None,
+    payment_deployment: str = DEFAULT_DEPLOYMENT,
 ) -> Application:
     resolved_engine = engine
     if resolved_engine is None and session_factory is None:
@@ -303,6 +304,7 @@ def build_application(
         unit_of_work_factory,
         checkout=ports.payment_checkout,
         billing_accounts=ports.billing_accounts,
+        deployment=payment_deployment,
     )
     portal = PortalService(unit_of_work_factory, billing_accounts=ports.billing_accounts, now=now)
     owner = OwnerService(

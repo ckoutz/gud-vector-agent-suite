@@ -30,6 +30,7 @@ from gvas.application.contradiction_guard import GuardedCompletenessReviewer
 from gvas.application.deterministic_report import DeterministicReportGenerator
 from gvas.application.docx_report import DocxReportRenderer
 from gvas.application.guarded_checklist_evidence import GuardedChecklistEvidenceAttributor
+from gvas.application.public_quotes import DEFAULT_DEPLOYMENT
 from gvas.application.quotes import SiteAwareQuoteDelivery
 from gvas.composition import Application, ApplicationPorts, build_application
 from gvas.composition.report_publication import ReportArtifactAccess
@@ -290,6 +291,12 @@ def _require_demo_isolation(settings: ProductionSettings) -> None:
     if secret_key and not secret_key.startswith(STRIPE_TEST_KEY_PREFIXES):
         raise ProductionConfigurationError(
             "demo mode only accepts a Stripe test-mode key in GVAS_STRIPE_SECRET_KEY"
+        )
+    if settings.stripe.is_configured and settings.stripe.deployment == DEFAULT_DEPLOYMENT:
+        # The demo shares production's Stripe test account; untagged or
+        # production-tagged events are production's, so the demo needs its own name.
+        raise ProductionConfigurationError(
+            "demo mode with Stripe needs its own GVAS_STRIPE_DEPLOYMENT (e.g. demo)"
         )
 
 
@@ -628,6 +635,7 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
         lease_ttl=timedelta(seconds=resolved.worker.lease_seconds),
         ceilings=resolved.usage_ceilings(),
         intake_settings=resolved.intake,
+        payment_deployment=resolved.stripe.deployment,
     )
     # A demo has no Slack workspace, so it mounts no Slack Request URL.
     routers = (
