@@ -1003,7 +1003,7 @@ class IntakeService:
         await unit_of_work.intake_conversations.save(updated)
         texts = await self._confirms_by_text(unit_of_work, updated, customer_id)
         reply = slot_confirmed_reply(slot, zone, texts=texts)
-        await self._append(unit_of_work, updated, IntakeMessageRole.AGENT, reply, now)
+        await self._reply(unit_of_work, updated, reply, now)
         return IntakeReply(updated, reply, ())
 
     @staticmethod
