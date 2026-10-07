@@ -7,7 +7,7 @@ constant time so the raw token is the only secret.
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -174,9 +174,12 @@ class PublicQuoteService:
         checkout: PaymentCheckoutPort | None = None,
         billing_accounts: BillingAccountPort | None = None,
         deployment: str = DEFAULT_DEPLOYMENT,
+        payments_off: Callable[[BusinessId], Awaitable[bool]] | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._checkout = checkout
+        # Businesses that never take a card (demo sandboxes).
+        self._payments_off = payments_off
         self._billing_accounts = billing_accounts
         self._deployment = deployment
 
@@ -221,6 +224,8 @@ class PublicQuoteService:
             raise OpenCheckoutUnavailableError("checkout is not configured")
         async with self._unit_of_work_factory() as unit_of_work:
             quote = await self._find_claimable(unit_of_work, claim_token)
+            if self._payments_off is not None and await self._payments_off(quote.business_id):
+                raise OpenCheckoutUnavailableError("payments are off for this business")
             accepted = quote.record_customer_accept(_now())
             business = await self._hosted_business(unit_of_work, quote.business_id)
             open_payment = await unit_of_work.quote_payments.find_open(

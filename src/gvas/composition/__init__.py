@@ -1,6 +1,7 @@
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -70,6 +71,7 @@ from gvas.composition.review import CoordinateFieldNoteReviewService
 from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.config import IntakeSettings, Settings
 from gvas.domain.completeness import CompletenessReviewPort
+from gvas.domain.identifiers import BusinessId
 from gvas.domain.ports import (
     AppointmentLookupPort,
     AttachmentAccessPort,
@@ -220,6 +222,8 @@ def build_application(
     ceilings: UsageCeilings | None = None,
     intake_settings: IntakeSettings | None = None,
     payment_deployment: str = DEFAULT_DEPLOYMENT,
+    intake_message_budget: Callable[[UUID, datetime], Awaitable[str | None]] | None = None,
+    payments_off: Callable[[BusinessId], Awaitable[bool]] | None = None,
 ) -> Application:
     resolved_engine = engine
     if resolved_engine is None and session_factory is None:
@@ -284,6 +288,7 @@ def build_application(
             ceiling=ceiling_guard,
             max_conversations_per_day=resolved_intake_settings.max_conversations_per_day,
             max_user_messages=resolved_intake_settings.max_messages_per_conversation,
+            message_budget=intake_message_budget,
             decision_link_secret=resolved_intake_settings.decision_link_secret,
             decision_link_base_url=resolved_intake_settings.decision_link_base_url,
             now=now,
@@ -305,6 +310,7 @@ def build_application(
         checkout=ports.payment_checkout,
         billing_accounts=ports.billing_accounts,
         deployment=payment_deployment,
+        payments_off=payments_off,
     )
     portal = PortalService(unit_of_work_factory, billing_accounts=ports.billing_accounts, now=now)
     owner = OwnerService(

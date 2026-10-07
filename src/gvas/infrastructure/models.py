@@ -473,6 +473,25 @@ class QuoteRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class DemoSandbox(Base):
+    """A visitor's own copy of the demo business (demo deployments only).
+
+    Only the SHA-256 digest of the visitor's sandbox token is stored. The
+    sweep deletes the business, and everything under it, once
+    ``last_active_at`` is older than the idle limit.
+    """
+
+    __tablename__ = "demo_sandboxes"
+    __table_args__ = (Index("ix_demo_sandboxes_last_active_at", "last_active_at"),)
+
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), primary_key=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 # Workstream models are imported after Base is defined to register metadata.
 from gvas.infrastructure import calendar_block_models as calendar_block_models  # noqa: E402, F401
 from gvas.infrastructure import completeness_models as completeness_models  # noqa: E402, F401

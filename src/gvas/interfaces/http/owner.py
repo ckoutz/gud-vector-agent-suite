@@ -8,7 +8,9 @@ The owner's calendar link is write-only: responses carry its host, never the
 link.
 """
 
+from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -278,7 +280,10 @@ def settings_payload(business: BusinessRecord) -> dict[str, object]:
 
 
 def create_owner_router(
-    service: OwnerService, *, rate_limiter: PerIpRateLimiter | None = None
+    service: OwnerService,
+    *,
+    rate_limiter: PerIpRateLimiter | None = None,
+    on_activity: Callable[[UUID], Awaitable[None]] | None = None,
 ) -> APIRouter:
     router = APIRouter()
     limiter = rate_limiter or PerIpRateLimiter(per_minute=120, burst=30)
@@ -290,9 +295,12 @@ def create_owner_router(
     async def authenticated(request: Request) -> OwnerContext:
         token = bearer_token(request)
         try:
-            return await service.authenticate(token)
+            context = await service.authenticate(token)
         except OwnerAuthenticationError as error:
             raise HTTPException(status_code=401, detail=GENERIC_UNAUTHORIZED) from error
+        if on_activity is not None:
+            await on_activity(context.business.business_id)
+        return context
 
     limited = [Depends(rate_limit)]
     owner = Depends(authenticated)

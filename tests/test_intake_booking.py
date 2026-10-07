@@ -5,9 +5,10 @@ The hard rule under test: nothing reaches the availability provider's ``book``
 until the owner replies ``approve booking <ref>``; declining never books.
 """
 
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -201,6 +202,7 @@ def intake_app(
     customer_text: CustomerTextFake | None = None,
     intake_settings: IntakeSettings | None = None,
     owner_email: OwnerEmailPort | None = None,
+    intake_message_budget: Callable[[UUID, datetime], Awaitable[str | None]] | None = None,
 ) -> tuple[Application, OwnerReplyFake]:
     owner = owner_replies or OwnerReplyFake()
     ports = deterministic_ports(owner, TranscriptionFake({}), CustomerDeliveryFake())
@@ -218,6 +220,7 @@ def intake_app(
             session_factory=session_factory,
             now=Clock(),
             intake_settings=intake_settings or IntakeSettings(max_conversations_per_day=0),
+            intake_message_budget=intake_message_budget,
         ),
         owner,
     )
@@ -522,6 +525,39 @@ async def test_per_conversation_message_cap_stops_the_model(
         user_rows = [m for m in view.json()["messages"] if m["role"] == "user"]
         assert len(user_rows) == 2, "the cap is terminal: nothing past it is stored"
     assert agent.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_spent_message_budget_answers_without_the_model(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await intake_business(session_factory)
+    agent = IntakeAgentFake()
+    asked: list[UUID] = []
+
+    async def budget(business_id: UUID, now: datetime) -> str | None:
+        asked.append(business_id)
+        return "Gus has answered all he can for this demo." if len(asked) > 1 else None
+
+    application, _ = intake_app(session_factory, agent=agent, intake_message_budget=budget)
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+        first = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "hi"},
+            headers=headers,
+        )
+        refused = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "again"},
+            headers=headers,
+        )
+    assert first.status_code == refused.status_code == 200
+    assert refused.json()["reply"] == "Gus has answered all he can for this demo."
+    assert agent.calls == 1
+    assert len(set(asked)) == 1
 
 
 @pytest.mark.asyncio

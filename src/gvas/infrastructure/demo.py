@@ -12,9 +12,7 @@ demo that still holds a real provider credential.
 
 import hashlib
 import logging
-import re
 from datetime import UTC, datetime, time, timedelta
-from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -62,7 +60,6 @@ CLOSED_WEEKDAYS = frozenset({6})
 # Requests waiting for the owner and approved bookings hold their slot.
 HOLDING_STATES = (IntakeState.AWAITING_OWNER.value, IntakeState.APPROVED.value)
 TITLE_MAX_CHARS = 80
-_URL = re.compile(r"https?://[^\s<>\"')]+")
 
 Span = tuple[datetime, datetime]
 
@@ -89,22 +86,12 @@ def _receipt(
     )
 
 
-def _withhold_links(text: str) -> str:
-    def host_only(match: re.Match[str]) -> str:
-        parts = urlsplit(match.group(0))
-        return f"{parts.scheme}://{parts.netloc}/... (link withheld)"
-
-    return _URL.sub(host_only, text)
-
-
 def _log(kind: str, business_id: BusinessId, to: str, text: str) -> None:
-    logger.info(
-        "demo mode, not sent: %s to %s (business %s)\n%s",
-        kind,
-        to,
-        business_id,
-        _withhold_links(text),
-    )
+    """Only that something was not sent: demo visitors may type real names,
+    addresses and numbers, and logs outlive the sandbox that held them."""
+
+    del to, text
+    logger.info("demo mode, not sent: %s (business %s)", kind, business_id)
 
 
 class LoggedCustomerEmail:
@@ -260,9 +247,8 @@ class DemoAvailability:
                 kind=BookingKind.LINK, link=site_url, event_type_uri=DEMO_EVENT_TYPE_URI
             )
         logger.info(
-            "demo mode: booked %s for %s (business %s), no calendar touched",
+            "demo mode: booked %s (business %s), no calendar touched",
             request.slot_start.isoformat(),
-            request.invitee_email,
             request.business_id,
         )
         return BookingResult(kind=BookingKind.BOOKED, event_type_uri=DEMO_EVENT_TYPE_URI)
