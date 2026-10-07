@@ -245,9 +245,17 @@ def _paid_day(today: date, quote: FakeQuote) -> date:
     return min(day, month_start - timedelta(days=1))
 
 
-def _open_day(day: date) -> date:
+def _open_day(today: date, offset: int) -> date:
+    """The ``offset``-th open day from today (today itself is 0 when open), so
+    distinct offsets never land on the same day."""
+
+    day = today
     while day.weekday() in CLOSED_WEEKDAYS:
         day += timedelta(days=1)
+    for _ in range(offset):
+        day += timedelta(days=1)
+        while day.weekday() in CLOSED_WEEKDAYS:
+            day += timedelta(days=1)
     return day
 
 
@@ -438,7 +446,7 @@ async def seed_demo(
 
         for booking in BOOKINGS:
             start = datetime.combine(
-                _open_day(today + timedelta(days=booking.day_offset)),
+                _open_day(today, booking.day_offset),
                 time(booking.hour),
                 tzinfo=zone,
             ).astimezone(UTC)

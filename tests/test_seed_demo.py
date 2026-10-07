@@ -227,6 +227,12 @@ async def test_dates_hold_up_on_awkward_days(
     for payment in await service.payments(context):
         assert payment.paid_at <= now
         assert quotes[payment.quote_id].created_at < payment.paid_at
+    slots = []
     for booking in await service.bookings(context):
         assert booking.requested_slot_start is not None
+        assert booking.requested_slot_end is not None
         assert booking.requested_slot_start.astimezone(ZONE).weekday() not in CLOSED_WEEKDAYS
+        slots.append((booking.requested_slot_start, booking.requested_slot_end))
+    slots.sort()
+    for (_, earlier_end), (later_start, _) in zip(slots, slots[1:], strict=False):
+        assert earlier_end <= later_start
