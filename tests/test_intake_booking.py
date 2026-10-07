@@ -29,6 +29,7 @@ from gvas.application.intake import (
     IntakeClosedError,
     IntakeDeliveryError,
     IntakeTextStatus,
+    IntakeVisitor,
     SendIntakeCustomerEmailService,
     SendIntakeCustomerTextService,
 )
@@ -204,6 +205,7 @@ def intake_app(
     intake_settings: IntakeSettings | None = None,
     owner_email: OwnerEmailPort | None = None,
     intake_message_budget: Callable[[UUID, datetime], Awaitable[str | None]] | None = None,
+    intake_visitor: Callable[[UUID], Awaitable[IntakeVisitor | None]] | None = None,
 ) -> tuple[Application, OwnerReplyFake]:
     owner = owner_replies or OwnerReplyFake()
     ports = deterministic_ports(owner, TranscriptionFake({}), CustomerDeliveryFake())
@@ -222,6 +224,7 @@ def intake_app(
             now=Clock(),
             intake_settings=intake_settings or IntakeSettings(max_conversations_per_day=0),
             intake_message_budget=intake_message_budget,
+            intake_visitor=intake_visitor,
         ),
         owner,
     )
@@ -1349,6 +1352,59 @@ async def test_intake_profile_drives_opening_agent_request_and_owner_notice(
     assert "Jane Doe. A new website." in notices[0]
     assert "address" not in notices[0]
     assert "Notes: Plumber; wants it live by May" in notices[0]
+
+
+@pytest.mark.asyncio
+async def test_a_known_visitor_opens_with_their_details_and_only_tells_the_job(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await intake_business(session_factory)
+    visitor = IntakeVisitor(
+        collected=IntakeCollected(
+            name="Sam Rivera", email="sam@example.com", phone="+15555550199", address="12 Oak Ave"
+        ),
+        opening="Hi Sam! I'm {business}'s assistant.",
+    )
+
+    async def known(asked: UUID) -> IntakeVisitor | None:
+        return visitor if asked == business_id else None
+
+    agent = IntakeAgentFake(
+        [collected_turn(name="Someone Else", details="A new patio"), IntakeTurn(reply="ok")]
+    )
+    availability = AvailabilityFake((slot(datetime.now(UTC)),))
+    application, _ = intake_app(
+        session_factory, agent=agent, availability=availability, intake_visitor=known
+    )
+    await seed_owner_thread(application, business_id)
+    async with http_client(application) as client:
+
+        async def chat() -> tuple[list[str], dict[str, object]]:
+            created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+            assert created.json()["reply"] == "Hi Sam! I'm Test Co's assistant."
+            path = f"/v1/intake/conversations/{created.json()['conversationId']}/messages"
+            headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+            states: list[str] = []
+            body: dict[str, object] = {}
+            for text in ("A new patio", "about 200 square feet"):
+                response = await client.post(path, json={"message": text}, headers=headers)
+                body = response.json()
+                states.append(str(body["state"]))
+            slots = body["slots"]
+            assert isinstance(slots, list)
+            picked = await client.post(
+                path, json={"message": f"slot:{slots[0]['start']}"}, headers=headers
+            )
+            return states, picked.json()
+
+        first, booked = await chat()
+        # A second chat in the same sandbox (another tab) shares Sam's e-mail
+        # with the live request, and still gets openings of its own.
+        agent._turns = [collected_turn(details="A new patio"), IntakeTurn(reply="ok")]
+        second, _ = await chat()
+    assert agent.requests[0].collected == visitor.collected
+    assert first == second == ["collecting", "proposing_slots"]
+    assert booked["state"] == "awaiting_owner"
 
 
 @pytest.mark.asyncio

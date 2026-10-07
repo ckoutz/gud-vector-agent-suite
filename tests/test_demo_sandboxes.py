@@ -20,6 +20,7 @@ from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
 from gvas.infrastructure.usage_models import UsageLedgerMonth
 from gvas.interfaces.demo_sandboxes import (
     DAILY_LIMIT_REPLY,
+    SAM,
     VISITOR_LIMIT_REPLY,
     DemoSandboxes,
     SandboxAuthenticationError,
@@ -271,6 +272,20 @@ async def test_gus_stops_after_the_visitor_cap_and_the_daily_cap(
     # The template business itself is not a sandbox and has no visitor cap.
     assert await sandboxes.refusal(original.id, later) == DAILY_LIMIT_REPLY
     assert await sandboxes.refusal(second.business_id, later + timedelta(days=1)) is None
+
+
+@pytest.mark.asyncio
+async def test_every_sandbox_visitor_is_sam_rivera(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    original = await template(session_factory)
+    sandboxes = DemoSandboxes(settings(), session_factory)
+    created = await sandboxes.create(NOW)
+
+    assert await sandboxes.visitor(created.business_id) is SAM
+    assert await sandboxes.visitor(original.id) is None
+    assert SAM.collected.ready_for_slots is False
+    assert SAM.collected.model_copy(update={"details": "A new patio"}).ready_for_slots
 
 
 @pytest.mark.asyncio

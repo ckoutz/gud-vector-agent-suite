@@ -30,6 +30,7 @@ from gvas.application.intake import (
     IntakeBookingEventService,
     IntakeDecisionLinkService,
     IntakeService,
+    IntakeVisitor,
     SendIntakeCustomerEmailService,
     SendIntakeCustomerTextService,
     SendOwnerEmailService,
@@ -223,6 +224,7 @@ def build_application(
     intake_settings: IntakeSettings | None = None,
     payment_deployment: str = DEFAULT_DEPLOYMENT,
     intake_message_budget: Callable[[UUID, datetime], Awaitable[str | None]] | None = None,
+    intake_visitor: Callable[[UUID], Awaitable[IntakeVisitor | None]] | None = None,
     payments_off: Callable[[BusinessId], Awaitable[bool]] | None = None,
 ) -> Application:
     resolved_engine = engine
@@ -289,6 +291,7 @@ def build_application(
             max_conversations_per_day=resolved_intake_settings.max_conversations_per_day,
             max_user_messages=resolved_intake_settings.max_messages_per_conversation,
             message_budget=intake_message_budget,
+            visitor=intake_visitor,
             decision_link_secret=resolved_intake_settings.decision_link_secret,
             decision_link_base_url=resolved_intake_settings.decision_link_base_url,
             now=now,

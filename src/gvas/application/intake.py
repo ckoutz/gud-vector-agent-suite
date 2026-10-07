@@ -235,6 +235,16 @@ class OwnerDecisionEmail:
         return tuple(actions)
 
 
+@dataclass(frozen=True)
+class IntakeVisitor:
+    """A visitor whose details are known before they type: the chat opens
+    with them collected and ``opening`` as its first reply (``{business}``
+    becomes the business's name)."""
+
+    collected: IntakeCollected
+    opening: str
+
+
 class IntakeService:
     def __init__(
         self,
@@ -246,6 +256,7 @@ class IntakeService:
         max_conversations_per_day: int = 50,
         max_user_messages: int = INTAKE_MAX_USER_MESSAGES,
         message_budget: Callable[[UUID, datetime], Awaitable[str | None]] | None = None,
+        visitor: Callable[[UUID], Awaitable[IntakeVisitor | None]] | None = None,
         decision_link_secret: str = "",
         decision_link_base_url: str = "",
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -264,6 +275,7 @@ class IntakeService:
         # Returns the reply to give instead of a model turn once a budget
         # beyond this conversation (a demo sandbox's, a demo's day) is spent.
         self._message_budget = message_budget
+        self._visitor = visitor
         self._now = now
 
     async def start_conversation(
@@ -334,6 +346,11 @@ class IntakeService:
             reply = PORTAL_OPENING_REPLY
         else:
             reply = business.intake_profile.opening or OPENING_REPLY
+            visitor = None if self._visitor is None else await self._visitor(business.business_id)
+            if visitor is not None:
+                collected = visitor.collected
+                name = business.display_name or business.name
+                reply = visitor.opening.replace("{business}", name)
         conversation = IntakeConversation(
             conversation_id=IntakeConversationId(uuid4()),
             business_id=business.business_id,
@@ -627,6 +644,9 @@ class IntakeService:
 
         if conversation.has_live_booking:
             return conversation
+        if self._visitor is not None and await self._visitor(conversation.business_id) is not None:
+            # Every chat there shares the visitor's e-mail, so it names no one.
+            return None
         email = conversation.collected.email
         if not email:
             return None
