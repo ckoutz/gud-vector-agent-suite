@@ -109,9 +109,7 @@ CUSTOMERS = (
     FakeCustomer(
         "Grace Kim", "grace.kim@example.com", "+15105550152", "2301 Tulare Ave, El Cerrito"
     ),
-    FakeCustomer(
-        "Luis Romero", "luis.romero@example.com", "+15105550161", "640 Masonic Ave, Albany"
-    ),
+    FakeCustomer("Luis Romero", "luis.romero@example.com", "+15105550161", "64 Solano Ave, Albany"),
     FakeCustomer("Ellen Park", "ellen.park@example.com", "+15105550174", "15 Estates Dr, Oakland"),
     FakeCustomer(
         "Marcus Bell", "marcus.bell@example.com", "+15105550185", "1188 Euclid Ave, Berkeley"
@@ -181,10 +179,10 @@ QUOTES = (
     FakeQuote(10, (("Sod install, 800 sq ft", 1, 235_000),), "card", 12, paid_days_ago=7),
     FakeQuote(
         11,
-        (("Garden maintenance, 2 visits a month", 1, 18_500),),
+        (("Garden maintenance, 2 visits a month", 1, 18_000),),
         "plan",
         20,
-        "3 months by check: $540, $15 off.",
+        "3 months by check: $540.",
         paid_days_ago=2,
     ),
 )
