@@ -648,6 +648,7 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
         intake_settings=resolved.intake,
         payment_deployment=resolved.stripe.deployment,
         intake_message_budget=None if sandboxes is None else sandboxes.refusal,
+        intake_visitor=None if sandboxes is None else sandboxes.visitor,
         payments_off=None if sandboxes is None else sandboxes.is_sandbox,
     )
     on_activity = None if sandboxes is None else sandboxes.touch

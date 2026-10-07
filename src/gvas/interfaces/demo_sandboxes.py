@@ -23,10 +23,11 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.application.intake import IntakeVisitor
 from gvas.config import DemoSettings
 from gvas.domain.customers import hash_portal_token, portal_token_matches
 from gvas.domain.identifiers import BusinessId
-from gvas.domain.intake import IntakeMessageRole
+from gvas.domain.intake import IntakeCollected, IntakeMessageRole
 from gvas.infrastructure.intake_models import IntakeMessage
 from gvas.infrastructure.models import Base, Business, DemoSandbox
 from gvas.infrastructure.usage_models import UsageLedgerMonth
@@ -44,6 +45,20 @@ VISITOR_LIMIT_REPLY = (
 )
 DAILY_LIMIT_REPLY = (
     "The demo has had a lot of visitors today, so Gus is resting. Please come back tomorrow."
+)
+# Every visitor plays this customer, so nobody types (or makes up) their own
+# name, e-mail, phone or address.
+SAM = IntakeVisitor(
+    collected=IntakeCollected(
+        name="Sam Rivera",
+        email="sam.rivera@example.com",
+        phone="(510) 555-0199",
+        address="12 Oak Ave, Oakland",
+    ),
+    opening=(
+        "Hi Sam! I'm Gus, Larkspur's booking assistant. I already have your contact "
+        "details. What would you like done in your yard?"
+    ),
 )
 COPIED_FIELDS = (
     "name",
@@ -196,6 +211,11 @@ class DemoSandboxes:
                 select(DemoSandbox.business_id).where(DemoSandbox.business_id == business_id)
             )
         return found is not None
+
+    async def visitor(self, business_id: UUID) -> IntakeVisitor | None:
+        """Sam Rivera, for a chat opened in a sandbox."""
+
+        return SAM if await self.is_sandbox(business_id) else None
 
     async def refusal(self, business_id: UUID, now: datetime) -> str | None:
         """The reply Gus gives instead of calling the model, when a visitor or
