@@ -23,6 +23,7 @@ from composition_fakes import (
 from gvas.application.intake import (
     NO_AVAILABILITY_REPLY,
     OPENING_REPLY,
+    SLOTS_OFFER_REPLY,
     UNAVAILABLE_REPLY,
     IntakeClosedError,
     IntakeDeliveryError,
@@ -522,6 +523,42 @@ async def test_per_conversation_message_cap_stops_the_model(
         user_rows = [m for m in view.json()["messages"] if m["role"] == "user"]
         assert len(user_rows) == 2, "the cap is terminal: nothing past it is stored"
     assert agent.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_slots_are_offered_the_turn_after_details_complete_without_the_model_flag(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await intake_business(session_factory)
+    availability = AvailabilityFake((slot(datetime.now(UTC)),))
+    agent = IntakeAgentFake(
+        [
+            collected_turn(
+                name="Jane", email=EMAIL, phone="+15555550100", address="2 Elm St", problem="ants"
+            ),
+            IntakeTurn(reply="Sorry, no times are open; the owner will confirm."),
+        ]
+    )
+    application, _ = intake_app(session_factory, agent=agent, availability=availability)
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+        first = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "ants"},
+            headers=headers,
+        )
+        second = await client.post(
+            f"/v1/intake/conversations/{conversation_id}/messages",
+            json={"message": "Yes, please."},
+            headers=headers,
+        )
+    assert first.json()["state"] == "collecting", "Gus gets one turn for follow-up questions"
+    assert not first.json()["slots"]
+    assert second.json()["state"] == "proposing_slots"
+    assert second.json()["slots"]
+    assert second.json()["reply"] == SLOTS_OFFER_REPLY
 
 
 @pytest.mark.asyncio

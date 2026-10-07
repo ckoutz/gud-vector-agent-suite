@@ -97,7 +97,9 @@ def test_intake_prompt_keeps_the_guardrails_for_every_profile() -> None:
         assert "these take precedence over the business description" in prompt
         assert "NEVER quote prices" in prompt
         assert "NEVER invent or estimate availability" in prompt
-        assert "the owner will review and confirm — never that anything" in prompt
+        assert "the owner will review and confirm —\n  never that anything" in prompt
+        assert "never say there are no openings" in prompt
+        assert "email and phone number, last" in prompt
         assert "`needs_human`" in prompt
 
 
