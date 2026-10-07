@@ -76,6 +76,7 @@ from gvas.domain.intake import (
     pick_offer_slots,
     scrub_agent_reply,
     slot_confirmed_reply,
+    slot_held_reply,
     slot_message_start,
     unverified_booking_change_notice,
 )
@@ -149,9 +150,6 @@ UNVERIFIED_CHANGE_REPLY = (
 )
 UNVERIFIED_CHANGE_UNREACHABLE_REPLY = (
     "I couldn't reach the owner just now — please try again in a little while."
-)
-SLOT_HELD_REPLY = (
-    "That time is already with the team for approval — we'll confirm by email or text."
 )
 
 
@@ -868,7 +866,10 @@ class IntakeService:
             reply = await self._reply(unit_of_work, conversation, SLOT_NOT_OFFERED_REPLY, now)
             return IntakeReply(conversation, reply, conversation.proposed_slots)
         if conversation.is_choosing_new_time and conversation.requested_slot_start == slot.start:
-            reply = await self._reply(unit_of_work, conversation, SLOT_HELD_REPLY, now)
+            texts = await self._confirms_by_text(
+                unit_of_work, conversation, conversation.customer_id
+            )
+            reply = await self._reply(unit_of_work, conversation, slot_held_reply(texts=texts), now)
             return IntakeReply(conversation, reply, conversation.proposed_slots)
 
         collected = conversation.collected
@@ -981,9 +982,23 @@ class IntakeService:
                 )
             )
         await unit_of_work.intake_conversations.save(updated)
-        reply = slot_confirmed_reply(slot, zone)
+        texts = await self._confirms_by_text(unit_of_work, updated, customer_id)
+        reply = slot_confirmed_reply(slot, zone, texts=texts)
         await self._append(unit_of_work, updated, IntakeMessageRole.AGENT, reply, now)
         return IntakeReply(updated, reply, ())
+
+    @staticmethod
+    async def _confirms_by_text(
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        customer_id: CustomerId | None,
+    ) -> bool:
+        """The approval is texted only to a linked customer who said yes to
+        texts (the same rule the delivery uses), so the reply promises no more."""
+        if customer_id is None or not conversation.collected.phone:
+            return False
+        customer = await unit_of_work.customers.get(conversation.business_id, customer_id)
+        return customer is not None and customer.sms_consent is True
 
     @staticmethod
     async def _learn_business_zone(
