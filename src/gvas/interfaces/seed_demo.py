@@ -1,0 +1,531 @@
+"""Fill a demo business with fictional customers, quotes, payments and bookings.
+
+Dates are relative to now, in the business's zone, so the dashboard always
+looks like a business mid-week: a quote and a booking waiting for the owner,
+quotes sent and accepted, payments this month and last, a check-paid plan and
+appointments today and this week. Refuses to run unless demo mode is on.
+
+    gvas-seed-demo --business-id <uuid> --reset
+    gvas-seed-demo --business-id <uuid> --sign-in-link https://dashboard.example
+
+``--reset`` deletes the business's customers, quotes, payments, bookings and
+messages first, keeping the business and its templates. ``--sign-in-link``
+prints a single-use owner sign-in link (15 minutes), since demo mode logs
+e-mail without sending it.
+"""
+
+import argparse
+import asyncio
+import secrets
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from uuid import UUID, uuid4
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from gvas.config import DemoSettings, Settings
+from gvas.domain.customers import hash_portal_token, new_portal_token
+from gvas.domain.enums import (
+    BillingInterval,
+    CustomerQuoteStatus,
+    DeliveryStatus,
+    QuoteBilling,
+    QuoteStatus,
+    RecipientAddressKind,
+)
+from gvas.domain.identifiers import BusinessId, QuoteId
+from gvas.domain.intake import INTAKE_CHANNEL_WEB, BookingKind, IntakeState, new_reference
+from gvas.domain.messages import CustomerRecipient
+from gvas.domain.owner import OWNER_LOGIN_TOKEN_TTL
+from gvas.domain.payments import (
+    MANUAL_PROVIDER,
+    PaymentKind,
+    PaymentMethod,
+    PaymentSource,
+    paid_through,
+)
+from gvas.domain.quotes import QuoteDraftProposal, QuoteLineItem, hash_claim_token, new_claim_token
+from gvas.domain.time_zones import business_zone
+from gvas.infrastructure.db import create_engine, create_session_factory
+from gvas.infrastructure.intake_models import IntakeConversation, IntakeMessage
+from gvas.infrastructure.models import (
+    Base,
+    Business,
+    Conversation,
+    Customer,
+    OwnerChannelEndpoint,
+    OwnerLoginTokenRecord,
+    QuoteRecord,
+)
+from gvas.infrastructure.payment_models import LedgerPaymentRow, QuoteSubscription
+
+CURRENCY = "USD"
+ENDPOINT_NAMESPACE = "demo-seed"
+# Kept on reset: the business itself and what bootstrap published for it.
+KEPT_TABLES = frozenset(
+    {
+        "businesses",
+        "business_template_profiles",
+        "field_note_checklists",
+        "field_note_report_templates",
+        "field_note_template_sets",
+    }
+)
+
+
+class SeedError(RuntimeError):
+    """The seed cannot run against this database or business."""
+
+
+@dataclass(frozen=True)
+class FakeCustomer:
+    name: str
+    email: str
+    phone: str
+    address: str
+
+
+CUSTOMERS = (
+    FakeCustomer(
+        "Hannah Brooks", "hannah.brooks@example.com", "+15105550118", "412 Mariposa Ave, Oakland"
+    ),
+    FakeCustomer("Daniel Ortiz", "d.ortiz@example.com", "+15105550127", "1820 Grove St, Berkeley"),
+    FakeCustomer(
+        "Priya Natarajan", "priya.n@example.com", "+15105550133", "77 Sea View Pkwy, Alameda"
+    ),
+    FakeCustomer(
+        "Tom Whitaker", "tom.whitaker@example.com", "+15105550146", "9 Crocker Ave, Piedmont"
+    ),
+    FakeCustomer(
+        "Grace Kim", "grace.kim@example.com", "+15105550152", "2301 Tulare Ave, El Cerrito"
+    ),
+    FakeCustomer(
+        "Luis Romero", "luis.romero@example.com", "+15105550161", "640 Masonic Ave, Albany"
+    ),
+    FakeCustomer("Ellen Park", "ellen.park@example.com", "+15105550174", "15 Estates Dr, Oakland"),
+    FakeCustomer(
+        "Marcus Bell", "marcus.bell@example.com", "+15105550185", "1188 Euclid Ave, Berkeley"
+    ),
+    FakeCustomer(
+        "Sofia Alvarez", "sofia.alvarez@example.com", "+15105550192", "3410 Fruitvale Ave, Oakland"
+    ),
+    FakeCustomer(
+        "Ruth Holloway", "ruth.holloway@example.com", "+15105550109", "52 Lakeshore Ave, Oakland"
+    ),
+    FakeCustomer(
+        "Ben Carter", "ben.carter@example.com", "+15105550138", "705 Bancroft Ave, San Leandro"
+    ),
+    FakeCustomer(
+        "Ana Delgado",
+        "ana.delgado@example.com",
+        "+15105550157",
+        "2919 Lake Chabot Rd, Castro Valley",
+    ),
+)
+
+
+@dataclass(frozen=True)
+class FakeQuote:
+    customer: int
+    items: tuple[tuple[str, int, int], ...]  # description, quantity, unit price in cents
+    # "pending" (needs the owner), "sent", "viewed", "accepted", "card", "check", "plan"
+    stage: str
+    days_ago: int
+    note: str | None = None
+    #: For paid quotes: days before now it was paid, clamped into this month when ``this_month``.
+    paid_days_ago: int = 0
+    this_month: bool = True
+
+
+QUOTES = (
+    FakeQuote(
+        0,
+        (("Backyard cleanup and haul-away", 1, 68_000), ("Mulch, 6 cu yd, spread", 1, 56_000)),
+        "pending",
+        0,
+        "Side gate code on file.",
+    ),
+    FakeQuote(1, (("Drip irrigation repair, 3 zones", 1, 38_500),), "viewed", 2),
+    FakeQuote(
+        2,
+        (
+            ("Front-yard drought-tolerant replant", 1, 312_000),
+            ("Smart irrigation controller", 1, 73_000),
+        ),
+        "sent",
+        5,
+    ),
+    FakeQuote(3, (("Hedge trimming", 12, 3_500),), "sent", 1),
+    FakeQuote(
+        4,
+        (("Paver patio, 12 x 14 ft", 1, 620_000),),
+        "accepted",
+        4,
+        "Includes base prep and edging.",
+    ),
+    FakeQuote(5, (("Lawn aeration and overseed", 1, 31_000),), "accepted", 6),
+    FakeQuote(6, (("Raised cedar beds, 4 x 8 ft", 3, 48_500),), "accepted", 2),
+    FakeQuote(7, (("Spring cleanup", 1, 64_000),), "card", 9, paid_days_ago=5),
+    FakeQuote(8, (("Oak pruning", 2, 49_000),), "card", 30, paid_days_ago=26, this_month=False),
+    FakeQuote(9, (("Gutter and bed cleanup", 1, 27_500),), "check", 8, paid_days_ago=3),
+    FakeQuote(10, (("Sod install, 800 sq ft", 1, 235_000),), "card", 12, paid_days_ago=7),
+    FakeQuote(
+        11,
+        (("Garden maintenance, 2 visits a month", 1, 18_500),),
+        "plan",
+        20,
+        "3 months by check: $540, $15 off.",
+        paid_days_ago=2,
+    ),
+)
+PLAN_MONTHS = 3
+PLAN_AMOUNT = 54_000
+
+
+@dataclass(frozen=True)
+class FakeBooking:
+    customer: FakeCustomer
+    details: str
+    day_offset: int
+    hour: int
+    hours: int
+    waiting: bool = False
+
+
+BOOKINGS = (
+    FakeBooking(CUSTOMERS[4], "Paver patio: mark out and base prep", 0, 9, 3),
+    FakeBooking(CUSTOMERS[7], "Monthly visit: mow, edge, blow", 0, 14, 2),
+    FakeBooking(CUSTOMERS[5], "Lawn aeration and overseed", 1, 10, 2),
+    FakeBooking(CUSTOMERS[11], "Garden maintenance visit", 3, 8, 2),
+    FakeBooking(CUSTOMERS[6], "Raised beds: build and fill", 4, 13, 3),
+    FakeBooking(
+        FakeCustomer(
+            "Olivia Grant",
+            "olivia.grant@example.com",
+            "+15105550199",
+            "48 Monte Vista Ave, Oakland",
+        ),
+        "Estimate: new lawn and a flagstone path in the front yard",
+        2,
+        15,
+        1,
+        waiting=True,
+    ),
+)
+
+
+@dataclass(frozen=True)
+class SeedSummary:
+    customers: int
+    quotes: int
+    payments: int
+    bookings: int
+
+
+def _local_noon(day: date, zone: tzinfo) -> datetime:
+    return datetime.combine(day, time(12), tzinfo=zone).astimezone(UTC)
+
+
+def _paid_day(today: date, quote: FakeQuote) -> date:
+    day = today - timedelta(days=quote.paid_days_ago)
+    month_start = today.replace(day=1)
+    if quote.this_month:
+        return max(day, month_start)
+    return min(day, month_start - timedelta(days=1))
+
+
+async def _reset(session: AsyncSession, business_id: BusinessId) -> None:
+    for table in reversed(Base.metadata.sorted_tables):
+        if table.name in KEPT_TABLES or "business_id" not in table.c:
+            continue
+        await session.execute(delete(table).where(table.c.business_id == business_id))
+
+
+async def seed_demo(
+    session_factory: async_sessionmaker[AsyncSession],
+    business_id: BusinessId,
+    *,
+    reset: bool,
+    now: datetime | None = None,
+) -> SeedSummary:
+    now = now or datetime.now(UTC)
+    async with session_factory() as session:
+        business = await session.get(Business, business_id)
+        if business is None:
+            raise SeedError(f"business {business_id} does not exist; run gvas-bootstrap first")
+        zone = business_zone(business.timezone) or ZoneInfo(DemoSettings().timezone)
+        if reset:
+            await _reset(session, business_id)
+        elif await session.scalar(
+            select(func.count())
+            .select_from(QuoteRecord)
+            .where(QuoteRecord.business_id == business_id)
+        ):
+            raise SeedError("the business already has quotes; pass --reset to replace them")
+        today = now.astimezone(zone).date()
+        owner = business.owner_email
+
+        endpoint = OwnerChannelEndpoint(
+            business_id=business_id,
+            source_namespace=ENDPOINT_NAMESPACE,
+            external_endpoint_id="owner",
+            routing={},
+        )
+        session.add(endpoint)
+        customers = []
+        for index, person in enumerate(CUSTOMERS):
+            customer = Customer(
+                business_id=business_id,
+                email=person.email,
+                display_name=person.name,
+                phone=person.phone,
+                created_at=now - timedelta(days=40 - index * 2),
+            )
+            session.add(customer)
+            customers.append(customer)
+        await session.flush()
+
+        payments = 0
+        for index, fake in enumerate(QUOTES):
+            person = CUSTOMERS[fake.customer]
+            quote_id = QuoteId(uuid4())
+            created = now - timedelta(days=fake.days_ago, hours=3 + index % 4)
+            recurring = fake.stage == "plan"
+            draft = QuoteDraftProposal(
+                quote_id=quote_id,
+                business_id=business_id,
+                recipient=CustomerRecipient(
+                    address=person.email,
+                    address_kind=RecipientAddressKind.EMAIL,
+                    display_name=person.name,
+                    phone=person.phone,
+                    service_address=person.address,
+                ),
+                currency=CURRENCY,
+                line_items=tuple(
+                    QuoteLineItem(description=text, quantity=quantity, unit_price_minor=price)
+                    for text, quantity, price in fake.items
+                ),
+                owner_note=fake.note,
+                billing=QuoteBilling.RECURRING if recurring else QuoteBilling.ONE_TIME,
+                interval=BillingInterval.MONTH if recurring else None,
+            )
+            conversation = Conversation(
+                business_id=business_id,
+                endpoint_id=endpoint.id,
+                external_conversation_id=f"demo-quote-{index + 1}",
+                routing={},
+            )
+            session.add(conversation)
+            await session.flush()
+            pending = fake.stage == "pending"
+            sent_at = created + timedelta(minutes=40)
+            token = None if pending else new_claim_token()
+            customer_status = {
+                "viewed": CustomerQuoteStatus.VIEWED,
+                "accepted": CustomerQuoteStatus.ACCEPTED,
+                "card": CustomerQuoteStatus.PAID,
+                "check": CustomerQuoteStatus.PAID,
+                "plan": CustomerQuoteStatus.PAID,
+            }.get(fake.stage)
+            session.add(
+                QuoteRecord(
+                    id=quote_id,
+                    business_id=business_id,
+                    conversation_id=conversation.id,
+                    active_conversation_id=conversation.id if pending else None,
+                    external_conversation_id=conversation.external_conversation_id,
+                    status=(
+                        QuoteStatus.AWAITING_APPROVAL if pending else QuoteStatus.DELIVERED
+                    ).value,
+                    revision=1,
+                    source_message_key=f"demo-{index + 1}",
+                    last_message_key=f"demo-{index + 1}",
+                    pending_request_text=fake.items[0][0],
+                    draft=draft.model_dump(mode="json"),
+                    approval_correlation_id=f"demo-approval-{index + 1}",
+                    delivery_receipt=None
+                    if pending
+                    else {
+                        "status": DeliveryStatus.DELIVERED.value,
+                        "provider_message_id": f"demo-{index + 1}",
+                        "occurred_at": sent_at.isoformat(),
+                        "emailed": True,
+                    },
+                    claim_token=token,
+                    claim_token_hash=None if token is None else hash_claim_token(token),
+                    customer_status=None if customer_status is None else customer_status.value,
+                    approved_at=None if pending else sent_at,
+                    customer_id=None if pending else customers[fake.customer].id,
+                    billing=draft.billing.value,
+                    billing_interval=None if draft.interval is None else draft.interval.value,
+                    version=1,
+                    created_at=created,
+                    updated_at=sent_at if not pending else created,
+                )
+            )
+            await session.flush()
+            if fake.stage not in {"card", "check", "plan"}:
+                continue
+            paid_on = _paid_day(today, fake)
+            paid_at = _local_noon(paid_on, zone)
+            manual = fake.stage != "card"
+            session.add(
+                LedgerPaymentRow(
+                    business_id=business_id,
+                    quote_id=quote_id,
+                    kind=(PaymentKind.PLAN if recurring else PaymentKind.ONE_OFF).value,
+                    source=(PaymentSource.MANUAL if manual else PaymentSource.STRIPE).value,
+                    method=(PaymentMethod.CHECK if manual else PaymentMethod.CARD).value,
+                    reference=f"{'manual' if manual else 'demo_cs'}:{secrets.token_hex(8)}",
+                    amount_cents=PLAN_AMOUNT if recurring else draft.total_minor,
+                    currency=CURRENCY,
+                    paid_at=paid_at,
+                    months_covered=PLAN_MONTHS if recurring else None,
+                    recorded_by=owner if manual else None,
+                    recorded_at=paid_at,
+                    note="Check #2207" if recurring else ("Check #1184" if manual else None),
+                    customer_status_before="accepted" if manual else None,
+                )
+            )
+            payments += 1
+            if recurring:
+                session.add(
+                    QuoteSubscription(
+                        business_id=business_id,
+                        quote_id=quote_id,
+                        customer_id=customers[fake.customer].id,
+                        provider=MANUAL_PROVIDER,
+                        stripe_subscription_id=f"manual:{quote_id}",
+                        status="active",
+                        interval=BillingInterval.MONTH.value,
+                        amount_cents=draft.total_minor,
+                        currency=CURRENCY,
+                        created_at=paid_at,
+                        updated_at=paid_at,
+                        paid_from=paid_on,
+                        paid_through=paid_through(paid_on, PLAN_MONTHS),
+                    )
+                )
+
+        for booking in BOOKINGS:
+            start = datetime.combine(
+                today + timedelta(days=booking.day_offset), time(booking.hour), tzinfo=zone
+            ).astimezone(UTC)
+            asked = now - timedelta(hours=2 if booking.waiting else 30)
+            person = booking.customer
+            intake = IntakeConversation(
+                business_id=business_id,
+                reference=new_reference(),
+                token_hash=hash_portal_token(new_portal_token()),
+                channel=INTAKE_CHANNEL_WEB,
+                state=(
+                    IntakeState.AWAITING_OWNER if booking.waiting else IntakeState.APPROVED
+                ).value,
+                collected={
+                    "name": person.name,
+                    "email": person.email,
+                    "phone": person.phone,
+                    "details": booking.details,
+                    "address": person.address,
+                },
+                requested_slot_start=start,
+                requested_slot_end=start + timedelta(hours=booking.hours),
+                booking_kind=None if booking.waiting else BookingKind.BOOKED.value,
+                decision_at=None if booking.waiting else asked + timedelta(hours=1),
+                owner_notified_at=asked,
+                expires_at=now + timedelta(days=30),
+                created_at=asked,
+                updated_at=asked if booking.waiting else asked + timedelta(hours=1),
+            )
+            session.add(intake)
+            await session.flush()
+            session.add(
+                IntakeMessage(
+                    business_id=business_id,
+                    conversation_id=intake.id,
+                    role="user",
+                    content=booking.details,
+                    created_at=asked,
+                )
+            )
+        await session.commit()
+    return SeedSummary(
+        customers=len(CUSTOMERS), quotes=len(QUOTES), payments=payments, bookings=len(BOOKINGS)
+    )
+
+
+async def mint_owner_sign_in(
+    session_factory: async_sessionmaker[AsyncSession],
+    business_id: BusinessId,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """A raw single-use owner login token for the business's owner e-mail."""
+
+    now = now or datetime.now(UTC)
+    async with session_factory() as session:
+        business = await session.get(Business, business_id)
+        if business is None or not business.owner_email:
+            raise SeedError("the business needs an owner e-mail (gvas-configure-business)")
+        token = new_portal_token()
+        session.add(
+            OwnerLoginTokenRecord(
+                token_hash=hash_portal_token(token),
+                business_id=business_id,
+                email=business.owner_email,
+                expires_at=now + OWNER_LOGIN_TOKEN_TTL,
+                created_at=now,
+            )
+        )
+        await session.commit()
+    return token
+
+
+def _business_id(raw: str) -> BusinessId:
+    try:
+        return BusinessId(UUID(raw))
+    except ValueError as error:
+        raise SeedError("--business-id must be a UUID") from error
+
+
+async def _run(arguments: argparse.Namespace) -> None:
+    business_id = _business_id(arguments.business_id)
+    engine = create_engine(Settings().database_url)
+    try:
+        session_factory = create_session_factory(engine)
+        if arguments.seed or arguments.reset:
+            summary = await seed_demo(session_factory, business_id, reset=arguments.reset)
+            print(  # noqa: T201
+                f"seeded business {business_id}: {summary.customers} customers, "
+                f"{summary.quotes} quotes, {summary.payments} payments, "
+                f"{summary.bookings} bookings"
+            )
+        if arguments.sign_in_link:
+            token = await mint_owner_sign_in(session_factory, business_id)
+            base = arguments.sign_in_link.rstrip("/")
+            print(f"owner sign-in (single use, 15 minutes): {base}/portal/login?token={token}")  # noqa: T201
+    finally:
+        await engine.dispose()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Seed a demo business with fictional data")
+    parser.add_argument("--business-id", required=True)
+    parser.add_argument("--reset", action="store_true", help="replace the business's data")
+    parser.add_argument(
+        "--no-seed", dest="seed", action="store_false", help="only print a sign-in link"
+    )
+    parser.add_argument("--sign-in-link", metavar="DASHBOARD_URL")
+    arguments = parser.parse_args(argv)
+    if not DemoSettings().mode:
+        raise SeedError("refusing to seed: GVAS_DEMO_MODE is off, so this may be a real database")
+    asyncio.run(_run(arguments))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

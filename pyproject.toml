@@ -36,6 +36,7 @@ gvas-worker = "gvas.interfaces.worker:main"
 gvas-migrate = "gvas.interfaces.migrate:main"
 gvas-bootstrap = "gvas.interfaces.bootstrap:main"
 gvas-configure-business = "gvas.interfaces.configure_business:main"
+gvas-seed-demo = "gvas.interfaces.seed_demo:main"
 
 [build-system]
 requires = ["hatchling>=1.27.0,<2"
