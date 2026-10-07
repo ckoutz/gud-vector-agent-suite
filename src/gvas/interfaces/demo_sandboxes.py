@@ -29,6 +29,7 @@ from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import IntakeMessageRole
 from gvas.infrastructure.intake_models import IntakeMessage
 from gvas.infrastructure.models import Base, Business, DemoSandbox
+from gvas.infrastructure.usage_models import UsageLedgerMonth
 from gvas.interfaces.seed_demo import mint_owner_sign_in, seed_demo
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,8 @@ COPIED_FIELDS = (
     "intake_questions",
     "intake_opening",
     "owner_email",
+    # A slot pick only lands when the owner can be told about it.
+    "notification_email",
     "timezone",
 )
 
@@ -213,15 +216,20 @@ class DemoSandboxes:
                         IntakeMessage.created_at >= sandbox.created_at,
                     )
                 )
-                if (sent or 0) > self._settings.sandbox_messages_per_visitor:
+                # The message being answered is not committed yet: it is one more.
+                if (sent or 0) >= self._settings.sandbox_messages_per_visitor:
                     return VISITOR_LIMIT_REPLY
             today = await session.scalar(
                 select(func.count())
                 .select_from(IntakeMessage)
                 .join(DemoSandbox, DemoSandbox.business_id == IntakeMessage.business_id)
-                .where(IntakeMessage.role == user, IntakeMessage.created_at >= day_start)
+                .where(
+                    IntakeMessage.role == user,
+                    IntakeMessage.created_at >= day_start,
+                    IntakeMessage.created_at >= DemoSandbox.created_at,
+                )
             )
-        if (today or 0) > self._settings.sandbox_messages_per_day:
+        if (today or 0) >= self._settings.sandbox_messages_per_day:
             return DAILY_LIMIT_REPLY
         return None
 
@@ -237,7 +245,21 @@ class DemoSandboxes:
                     )
                 )
             ).all()
+            swept = 0
             for business_id in expired:
+                # Re-checked under the delete: a click since the select keeps it.
+                claimed = await session.execute(
+                    delete(DemoSandbox).where(
+                        DemoSandbox.business_id == business_id,
+                        DemoSandbox.last_active_at < now - self.idle,
+                    )
+                )
+                if not claimed.rowcount:  # type: ignore[attr-defined]
+                    continue
+                swept += 1
+                await session.execute(
+                    delete(UsageLedgerMonth).where(UsageLedgerMonth.business_id == business_id)
+                )
                 for table in reversed(Base.metadata.sorted_tables):
                     if "business_id" in table.c:
                         await session.execute(
@@ -245,9 +267,9 @@ class DemoSandboxes:
                         )
                 await session.execute(delete(Business).where(Business.id == business_id))
             await session.commit()
-        if expired:
-            logger.info("demo sandboxes deleted: %d", len(expired))
-        return len(expired)
+        if swept:
+            logger.info("demo sandboxes deleted: %d", swept)
+        return swept
 
 
 def _utc(value: datetime) -> datetime:

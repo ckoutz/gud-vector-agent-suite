@@ -17,6 +17,7 @@ from gvas.infrastructure.demo import DemoBookedEvents
 from gvas.infrastructure.intake_models import IntakeMessage
 from gvas.infrastructure.models import Business, Customer, DemoSandbox, QuoteRecord
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
+from gvas.infrastructure.usage_models import UsageLedgerMonth
 from gvas.interfaces.demo_sandboxes import (
     DAILY_LIMIT_REPLY,
     VISITOR_LIMIT_REPLY,
@@ -49,6 +50,7 @@ async def template(session_factory: async_sessionmaker[AsyncSession]) -> Busines
         intake_brief="Garden design and upkeep in the East Bay.",
         intake_questions="How big is the yard?",
         owner_email="owner@larkspur.example",
+        notification_email="owner@larkspur.example",
         timezone="America/Los_Angeles",
         created_at=NOW,
         updated_at=NOW,
@@ -104,6 +106,7 @@ async def test_each_visitor_gets_a_seeded_copy_of_the_template(
     assert copy is not None and stored is not None
     assert copy.intake_questions == original.intake_questions
     assert copy.timezone == original.timezone
+    assert copy.notification_email == original.notification_email
     assert copy.slug != SLUG
     assert first.sandbox_token not in stored.token_hash
     assert await count(session_factory, Customer, first.business_id) > 0
@@ -173,6 +176,18 @@ async def test_the_sweep_deletes_idle_sandboxes_and_keeps_active_ones(
     idle = await sandboxes.create(NOW)
     active = await sandboxes.create(NOW)
     await sandboxes.touch(active.business_id, NOW + timedelta(hours=1, minutes=30))
+    async with session_factory() as session:
+        for business_id in (idle.business_id, active.business_id):
+            session.add(
+                UsageLedgerMonth(
+                    business_id=business_id,
+                    kind="review_tokens",
+                    month=NOW.date().replace(day=1),
+                    units=120,
+                    updated_at=NOW,
+                )
+            )
+        await session.commit()
 
     deleted = await sandboxes.sweep(NOW + timedelta(hours=2, minutes=5))
 
@@ -185,7 +200,9 @@ async def test_the_sweep_deletes_idle_sandboxes_and_keeps_active_ones(
     assert await count(session_factory, Customer, idle.business_id) == 0
     assert await count(session_factory, QuoteRecord, idle.business_id) == 0
     assert await count(session_factory, IntakeMessage, idle.business_id) == 0
+    assert await count(session_factory, UsageLedgerMonth, idle.business_id) == 0
     assert await count(session_factory, Customer, active.business_id) > 0
+    assert await count(session_factory, UsageLedgerMonth, active.business_id) == 1
     assert await sandboxes.sweep(NOW + timedelta(hours=2, minutes=5)) == 0
 
 
@@ -240,13 +257,16 @@ async def test_gus_stops_after_the_visitor_cap_and_the_daily_cap(
     second = await sandboxes.create(NOW)
     later = NOW + timedelta(minutes=5)
 
-    # The message being answered is already stored when the budget is asked.
-    await add_user_messages(session_factory, first.business_id, 3)
+    # The budget is asked before the message being answered is committed:
+    # with 2 stored, the 3rd still gets an answer; with 3 stored, the 4th doesn't.
+    await add_user_messages(session_factory, first.business_id, 2)
     assert await sandboxes.refusal(first.business_id, later) is None
     await add_user_messages(session_factory, first.business_id, 1)
     assert await sandboxes.refusal(first.business_id, later) == VISITOR_LIMIT_REPLY
 
-    await add_user_messages(session_factory, second.business_id, 2)
+    await add_user_messages(session_factory, second.business_id, 1)
+    assert await sandboxes.refusal(second.business_id, later) is None
+    await add_user_messages(session_factory, second.business_id, 1)
     assert await sandboxes.refusal(second.business_id, later) == DAILY_LIMIT_REPLY
     # The template business itself is not a sandbox and has no visitor cap.
     assert await sandboxes.refusal(original.id, later) == DAILY_LIMIT_REPLY
