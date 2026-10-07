@@ -56,7 +56,7 @@ SAM = IntakeVisitor(
         address="12 Oak Ave, Oakland",
     ),
     opening=(
-        "Hi Sam! I'm Gus, Larkspur's booking assistant. I already have your contact "
+        "Hi Sam! I'm Gus, {business}'s booking assistant. I already have your contact "
         "details. What would you like done in your yard?"
     ),
 )

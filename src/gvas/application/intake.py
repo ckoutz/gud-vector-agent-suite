@@ -237,7 +237,8 @@ class OwnerDecisionEmail:
 @dataclass(frozen=True)
 class IntakeVisitor:
     """A visitor whose details are known before they type: the chat opens
-    with them collected and ``opening`` as its first reply."""
+    with them collected and ``opening`` as its first reply (``{business}``
+    becomes the business's name)."""
 
     collected: IntakeCollected
     opening: str
@@ -347,7 +348,8 @@ class IntakeService:
             visitor = None if self._visitor is None else await self._visitor(business.business_id)
             if visitor is not None:
                 collected = visitor.collected
-                reply = visitor.opening
+                name = business.display_name or business.name
+                reply = visitor.opening.replace("{business}", name)
         conversation = IntakeConversation(
             conversation_id=IntakeConversationId(uuid4()),
             business_id=business.business_id,
@@ -637,6 +639,9 @@ class IntakeService:
 
         if conversation.has_live_booking:
             return conversation
+        if self._visitor is not None and await self._visitor(conversation.business_id) is not None:
+            # Every chat there shares the visitor's e-mail, so it names no one.
+            return None
         email = conversation.collected.email
         if not email:
             return None

@@ -1340,7 +1340,7 @@ async def test_a_known_visitor_opens_with_their_details_and_only_tells_the_job(
         collected=IntakeCollected(
             name="Sam Rivera", email="sam@example.com", phone="+15555550199", address="12 Oak Ave"
         ),
-        opening="Hi Sam! What would you like done?",
+        opening="Hi Sam! I'm {business}'s assistant.",
     )
 
     async def known(asked: UUID) -> IntakeVisitor | None:
@@ -1355,22 +1355,33 @@ async def test_a_known_visitor_opens_with_their_details_and_only_tells_the_job(
     )
     await seed_owner_thread(application, business_id)
     async with http_client(application) as client:
-        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
-        assert created.json()["reply"] == visitor.opening
-        conversation_id = created.json()["conversationId"]
-        headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
-        states = []
-        for text in ("A new patio", "about 200 square feet"):
-            response = await client.post(
-                f"/v1/intake/conversations/{conversation_id}/messages",
-                json={"message": text},
-                headers=headers,
+
+        async def chat() -> tuple[list[str], dict[str, object]]:
+            created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+            assert created.json()["reply"] == "Hi Sam! I'm Test Co's assistant."
+            path = f"/v1/intake/conversations/{created.json()['conversationId']}/messages"
+            headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+            states: list[str] = []
+            body: dict[str, object] = {}
+            for text in ("A new patio", "about 200 square feet"):
+                response = await client.post(path, json={"message": text}, headers=headers)
+                body = response.json()
+                states.append(str(body["state"]))
+            slots = body["slots"]
+            assert isinstance(slots, list)
+            picked = await client.post(
+                path, json={"message": f"slot:{slots[0]['start']}"}, headers=headers
             )
-            states.append(response.json()["state"])
+            return states, picked.json()
+
+        first, booked = await chat()
+        # A second chat in the same sandbox (another tab) shares Sam's e-mail
+        # with the live request, and still gets openings of its own.
+        agent._turns = [collected_turn(details="A new patio"), IntakeTurn(reply="ok")]
+        second, _ = await chat()
     assert agent.requests[0].collected == visitor.collected
-    assert states == ["collecting", "proposing_slots"]
-    row = await conversation_row(session_factory, business_id)
-    assert row.collected["name"] == "Sam Rivera"
+    assert first == second == ["collecting", "proposing_slots"]
+    assert booked["state"] == "awaiting_owner"
 
 
 @pytest.mark.asyncio
