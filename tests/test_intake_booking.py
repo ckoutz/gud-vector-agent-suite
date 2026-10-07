@@ -675,6 +675,29 @@ async def test_unlisted_slot_pick_is_rejected(
 
 
 @pytest.mark.asyncio
+async def test_the_transcript_keeps_each_reply_after_the_message_it_answers(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await intake_business(session_factory)
+    asked = [f"question {n}" for n in range(6)]
+    agent = IntakeAgentFake([IntakeTurn(reply=f"answer {n}") for n in range(6)])
+    application, _ = intake_app(session_factory, agent=agent)
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+        for message in asked:
+            await client.post(
+                f"/v1/intake/conversations/{conversation_id}/messages",
+                json={"message": message},
+                headers=headers,
+            )
+        view = await client.get(f"/v1/intake/conversations/{conversation_id}", headers=headers)
+    contents = [m["content"] for m in view.json()["messages"]][1:]
+    assert contents == [text for n in range(6) for text in (f"question {n}", f"answer {n}")]
+
+
+@pytest.mark.asyncio
 async def test_agent_reply_with_price_is_scrubbed(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

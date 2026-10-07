@@ -114,6 +114,7 @@ SLOT_LOOKAHEAD_DAYS = 14
 # Calendly rejects a start_time that is not strictly in the future by the time
 # the request lands; a lead also keeps slots the customer cannot make out.
 SLOT_LEAD = timedelta(minutes=5)
+REPLY_OFFSET = timedelta(microseconds=1)
 
 MESSAGE_LIMIT_REPLY = (
     "This conversation has reached its message limit — the owner will follow up with you directly."
@@ -485,7 +486,11 @@ class IntakeService:
         reply: str,
         now: datetime,
     ) -> str:
-        await self._append(unit_of_work, conversation, IntakeMessageRole.AGENT, reply, now)
+        # A reply shares the turn's clock with the message it answers; one
+        # microsecond later keeps it after that message when ordered by time.
+        await self._append(
+            unit_of_work, conversation, IntakeMessageRole.AGENT, reply, now + REPLY_OFFSET
+        )
         return reply
 
     async def _step(
