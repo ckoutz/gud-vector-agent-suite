@@ -10,6 +10,11 @@ class StripeSettings(BaseSettings):
     composition rejects a deployment that sets only one of them. With neither
     set the public quote routes still serve views and declines, and accepting
     answers 503.
+
+    ``deployment`` names this deployment on everything it creates in Stripe.
+    Several deployments can share one Stripe account (the demo uses the
+    production test account), and Stripe sends every event to every
+    endpoint, so each one acts only on events tagged with its own name.
     """
 
     model_config = SettingsConfigDict(env_prefix="GVAS_STRIPE_", env_file=".env", extra="ignore")
@@ -18,6 +23,7 @@ class StripeSettings(BaseSettings):
     webhook_secret: str = ""
     api_base_url: str = "https://api.stripe.com/v1"
     timeout_seconds: float = Field(default=30.0, gt=0)
+    deployment: str = Field(default="production", pattern=r"^[a-z][a-z0-9-]{0,31}$")
 
     @property
     def required_settings(self) -> dict[str, bool]:

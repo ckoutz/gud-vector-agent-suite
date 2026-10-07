@@ -390,6 +390,15 @@ undoes the other, and owner failure notices stay sanitized.
   `api.stripe.com`, `Idempotency-Key` = the quote's delivery key) and the
   webhook; one set fails startup; neither leaves everything else working but
   `accept` answers `503`.
+- **Sharing a Stripe account** (`GVAS_STRIPE_DEPLOYMENT`, default
+  `production`): every checkout, subscription and Stripe customer is tagged
+  `metadata[gvas_deployment]`. Stripe sends every event to every endpoint
+  on the account, so a deployment answers `200 ignored` to events tagged for
+  another one and does not record them; untagged events (everything made
+  before the tag) are production's. A second deployment on the same account
+  (the demo) sets its own name, e.g. `demo` (demo mode refuses to start with
+  Stripe otherwise), and gets its own webhook endpoint and signing secret.
+  Deploy the tag to production before the other deployment takes a payment.
 - **Webhook**: subscribe `checkout.session.completed`,
   `checkout.session.async_payment_succeeded`,
   `checkout.session.async_payment_failed` and, for recurring quotes,
@@ -535,6 +544,7 @@ Set on both services unless noted. Values below are placeholders; see
 | `GVAS_PORTAL_TIMEOUT_SECONDS` | Default 30 |
 | `GVAS_STRIPE_SECRET_KEY` | Optional set; sent only as a bearer header to `api.stripe.com` |
 | `GVAS_STRIPE_WEBHOOK_SECRET` | Optional set; `Stripe-Signature` verification on `/webhooks/stripe` |
+| `GVAS_STRIPE_DEPLOYMENT` | Default `production`; tag on this deployment's Stripe records, events tagged otherwise are ignored |
 | `GVAS_PUBLIC_CORS_EXTRA_ORIGINS` | Optional; comma-separated extra CORS origins for the public API (e.g. a preview deployment) |
 | `GVAS_PUBLIC_RATE_LIMIT_PER_MINUTE` | Default 120; per-IP limit on the public claim-token, booking and intake routes |
 | `GVAS_INTAKE_MAX_CONVERSATIONS_PER_DAY` | Default 50 per business per UTC day; `0` is unlimited |

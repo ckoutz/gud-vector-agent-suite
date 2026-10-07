@@ -72,6 +72,11 @@ class UnknownPaymentSessionError(RuntimeError):
 #: Metadata key stamped on every checkout and copied by the provider onto the
 #: subscription and its invoices; its presence says a record is ours.
 QUOTE_METADATA_KEY = "gvas_quote_id"
+#: Metadata key naming the deployment that created a checkout, subscription or
+#: customer. Deployments sharing one provider account each act only on their
+#: own events; records from before the tag existed belong to production.
+DEPLOYMENT_METADATA_KEY = "gvas_deployment"
+DEFAULT_DEPLOYMENT = "production"
 
 
 class PublicQuoteView:
@@ -168,10 +173,12 @@ class PublicQuoteService:
         unit_of_work_factory: Callable[[], UnitOfWork],
         checkout: PaymentCheckoutPort | None = None,
         billing_accounts: BillingAccountPort | None = None,
+        deployment: str = DEFAULT_DEPLOYMENT,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._checkout = checkout
         self._billing_accounts = billing_accounts
+        self._deployment = deployment
 
     async def fetch_quote(self, claim_token: str) -> PublicQuoteView:
         """Return the projection; the first successful fetch marks the quote
@@ -261,6 +268,7 @@ class PublicQuoteService:
             metadata = {
                 QUOTE_METADATA_KEY: public_quote_id(quote.quote_id),
                 "business_id": str(quote.business_id),
+                DEPLOYMENT_METADATA_KEY: self._deployment,
             }
             await unit_of_work.commit()
         customer_ref: str | None = None
@@ -362,6 +370,7 @@ class PublicQuoteService:
                 metadata={
                     "business_id": str(customer.business_id),
                     "gvas_customer_id": str(customer.customer_id),
+                    DEPLOYMENT_METADATA_KEY: self._deployment,
                 },
             )
         )
@@ -415,8 +424,15 @@ class PublicQuoteService:
         The dedup row, the payment transition, the quote's customer status and
         the owner notice all land in one transaction, so a mid-failure rolls
         the recording back and the provider's retry replays cleanly.
+
+        An event tagged for another deployment sharing the provider account
+        is answered as ignored, never retried and never recorded.
         """
 
+        owner = event.metadata.get(DEPLOYMENT_METADATA_KEY, DEFAULT_DEPLOYMENT)
+        if owner != self._deployment:
+            logger.info("ignoring %s for deployment %r", event.event_type, owner)
+            return False
         if event.outcome is PaymentEventOutcome.OTHER:
             return False
         async with self._unit_of_work_factory() as unit_of_work:

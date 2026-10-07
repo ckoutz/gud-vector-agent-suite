@@ -54,7 +54,7 @@ from gvas.infrastructure.models import (
     QuoteRecord,
     ServiceRequestRecord,
 )
-from gvas.infrastructure.payment_models import QuoteSubscription
+from gvas.infrastructure.payment_models import PaymentProviderEvent, QuoteSubscription
 from gvas.infrastructure.quote_drafting import (
     DeterministicQuoteDrafter,
     written_recurrence,
@@ -160,6 +160,7 @@ async def portal_business(
     checkout: CheckoutFake | None = None,
     billing: BillingFake | None = None,
     site_url: str = SITE_URL,
+    deployment: str = "production",
 ) -> Portal:
     """A hosted business whose owner approves one quote addressed to ``email``."""
 
@@ -192,6 +193,7 @@ async def portal_business(
         ),
         session_factory=session_factory,
         now=Clock(),
+        payment_deployment=deployment,
     )
     worker = immediate_worker(application)
     await application.ingest_service.ingest(
@@ -823,7 +825,10 @@ async def test_stripe_adapter_posts_customers_and_billing_portal_sessions() -> N
 
 
 def subscription_checkout_event(
-    *, event_id: str = "evt_sub_1", session_id: str = SESSION_ID
+    *,
+    event_id: str = "evt_sub_1",
+    session_id: str = SESSION_ID,
+    metadata: dict[str, str] | None = None,
 ) -> bytes:
     return json.dumps(
         {
@@ -838,7 +843,7 @@ def subscription_checkout_event(
                     "payment_status": "paid",
                     "customer": STRIPE_CUSTOMER,
                     "subscription": STRIPE_SUBSCRIPTION,
-                    "metadata": {"gvas_quote_id": "gvq_x"},
+                    "metadata": {"gvas_quote_id": "gvq_x"} if metadata is None else metadata,
                 }
             },
         }
@@ -853,6 +858,7 @@ def invoice_event(
     amount_paid: int = 9_900,
     subscription: str | None = STRIPE_SUBSCRIPTION,
     period_end: int = 1_800_000_000,
+    metadata: dict[str, str] | None = None,
 ) -> bytes:
     return json.dumps(
         {
@@ -869,7 +875,9 @@ def invoice_event(
                     "amount_due": amount_paid,
                     "currency": "usd",
                     "lines": {"data": [{"period": {"start": 1, "end": period_end}}]},
-                    "subscription_details": {"metadata": {"gvas_quote_id": "gvq_x"}},
+                    "subscription_details": {
+                        "metadata": {"gvas_quote_id": "gvq_x"} if metadata is None else metadata
+                    },
                 }
             },
         }
@@ -1000,6 +1008,7 @@ async def test_recurring_accept_creates_a_customer_and_a_subscription_checkout(
     assert created.email == EMAIL and created.name == "Jane Doe"
     assert created.idempotency_key.startswith("billing-customer:")
     assert created.metadata["business_id"] == str(portal.business_id)
+    assert created.metadata["gvas_deployment"] == "production"
     assert len(checkout.requests) == 1
     request = checkout.requests[0]
     assert request.is_subscription
@@ -1007,10 +1016,94 @@ async def test_recurring_accept_creates_a_customer_and_a_subscription_checkout(
     assert request.customer_ref == STRIPE_CUSTOMER
     assert request.currency == "usd"
     assert request.metadata["gvas_quote_id"].startswith("gvq_")
+    assert request.metadata["gvas_deployment"] == "production"
     assert request.idempotency_key.startswith("quote-delivery:")
     async with session_factory() as session:
         customer = await session.scalar(select(Customer))
     assert customer is not None and customer.stripe_customer_id == STRIPE_CUSTOMER
+
+
+# -- deployments sharing one Stripe account ----------------------------------
+
+DEMO_TAG = {"gvas_quote_id": "gvq_x", "gvas_deployment": "demo"}
+PRODUCTION_TAG = {"gvas_quote_id": "gvq_x", "gvas_deployment": "production"}
+
+
+@pytest.mark.asyncio
+async def test_production_answers_ok_to_the_demos_events_and_records_nothing(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Stripe sends every event on the shared account to every endpoint. A
+    demo event names a session or subscription production never made, which
+    would otherwise be a 503 retried for days."""
+
+    portal = await portal_business(
+        session_factory, recurring=True, checkout=CheckoutFake(), billing=BillingFake()
+    )
+    async with client(portal, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as http:
+        assert (await http.post(f"/v1/quotes/{portal.claim_token}/accept")).status_code == 200
+        demo_events = [
+            subscription_checkout_event(
+                event_id="evt_demo_checkout", session_id="cs_demo", metadata=DEMO_TAG
+            ),
+            invoice_event(
+                event_id="evt_demo_invoice", event_type="invoice.paid", metadata=DEMO_TAG
+            ),
+            subscription_event(
+                event_id="evt_demo_sub",
+                event_type="customer.subscription.updated",
+                subscription="sub_demo",
+                metadata=DEMO_TAG,
+            ),
+        ]
+        for body in demo_events:
+            response = await post_event(http, body)
+            assert response.status_code == 200 and response.json() == {"status": "ignored"}
+        # Production's own event, tagged or from before the tag, still lands.
+        completed = await post_event(http, subscription_checkout_event())
+        assert completed.json() == {"status": "recorded"}
+        tagged = await post_event(
+            http,
+            invoice_event(
+                event_id="evt_prod_renew", event_type="invoice.paid", metadata=PRODUCTION_TAG
+            ),
+        )
+        assert tagged.json() == {"status": "recorded"}
+    async with session_factory() as session:
+        seen = set((await session.scalars(select(PaymentProviderEvent.event_id))).all())
+    assert seen == {"evt_sub_1", "evt_prod_renew"}
+
+
+@pytest.mark.asyncio
+async def test_the_demo_tags_its_records_and_acts_only_on_its_own_events(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    checkout = CheckoutFake()
+    billing = BillingFake()
+    portal = await portal_business(
+        session_factory, recurring=True, checkout=checkout, billing=billing, deployment="demo"
+    )
+    async with client(portal, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as http:
+        assert (await http.post(f"/v1/quotes/{portal.claim_token}/accept")).status_code == 200
+        assert checkout.requests[0].metadata["gvas_deployment"] == "demo"
+        assert billing.customers[0].metadata["gvas_deployment"] == "demo"
+        # Production's events, untagged or tagged, are not the demo's.
+        for body in (
+            subscription_checkout_event(event_id="evt_untagged"),
+            subscription_checkout_event(event_id="evt_production", metadata=PRODUCTION_TAG),
+        ):
+            response = await post_event(http, body)
+            assert response.status_code == 200 and response.json() == {"status": "ignored"}
+        assert (await http.get(f"/v1/quotes/{portal.claim_token}")).json()["quote"][
+            "status"
+        ] != "paid"
+        own = await post_event(
+            http, subscription_checkout_event(event_id="evt_demo", metadata=DEMO_TAG)
+        )
+        assert own.json() == {"status": "recorded"}
+        quote = (await http.get(f"/v1/quotes/{portal.claim_token}")).json()["quote"]
+        assert quote["status"] == "paid"
+    assert len(await subscription_rows(session_factory)) == 1
 
 
 @pytest.mark.asyncio

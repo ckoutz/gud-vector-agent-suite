@@ -96,6 +96,7 @@ def checkout_event(
     session_id: str = SESSION_ID,
     payment_intent: str | None = "pi_1",
     payment_status: str = "paid",
+    metadata: dict[str, str] | None = None,
 ) -> bytes:
     return json.dumps(
         {
@@ -106,7 +107,7 @@ def checkout_event(
                     "id": session_id,
                     "payment_intent": payment_intent,
                     "payment_status": payment_status,
-                    "metadata": {},
+                    "metadata": {} if metadata is None else metadata,
                 }
             },
         }
@@ -813,6 +814,33 @@ async def test_webhook_for_an_unknown_session_is_a_503_retry(
             "/webhooks/stripe", content=body, headers={SIGNATURE_HEADER: sign(body)}
         )
         assert again.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_a_checkout_tagged_for_another_deployment_is_ignored_not_retried(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    checkout = CheckoutFake()
+    application, _, _, claim_token = await hosted_quote(session_factory, checkout=checkout)
+    async with public_client(application, verifier=StripeWebhookVerifier(WEBHOOK_SECRET)) as client:
+        assert (await client.post(f"/v1/quotes/{claim_token}/accept")).status_code == 200
+        assert checkout.requests[0].metadata["gvas_deployment"] == "production"
+        demo = checkout_event(
+            event_id="evt_demo", session_id="cs_demo_1", metadata={"gvas_deployment": "demo"}
+        )
+        response = await client.post(
+            "/webhooks/stripe", content=demo, headers={SIGNATURE_HEADER: sign(demo)}
+        )
+        assert response.status_code == 200
+        assert response.json() == {"status": "ignored"}
+        # Even one naming production's own session is not acted on.
+        stray = checkout_event(event_id="evt_stray", metadata={"gvas_deployment": "demo"})
+        response = await client.post(
+            "/webhooks/stripe", content=stray, headers={SIGNATURE_HEADER: sign(stray)}
+        )
+        assert response.json() == {"status": "ignored"}
+        got = await client.get(f"/v1/quotes/{claim_token}")
+        assert got.json()["quote"]["status"] != "paid"
 
 
 @pytest.mark.asyncio
