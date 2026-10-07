@@ -9,11 +9,12 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.application.owner import OwnerAuthenticationError, OwnerContext, OwnerService
+from gvas.composition.production import ProductionConfigurationError
 from gvas.domain.enums import CustomerQuoteStatus
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.owner import OwnerSession
 from gvas.domain.payments import month_totals, paid_through
-from gvas.infrastructure.demo import DemoBookedEvents
+from gvas.infrastructure.demo import CLOSED_WEEKDAYS, DemoBookedEvents
 from gvas.infrastructure.models import Business, Customer, QuoteRecord
 from gvas.infrastructure.repositories import SqlBusinessRepository
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
@@ -163,3 +164,69 @@ def test_the_command_refuses_outside_demo_mode(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(seed_demo, "DemoSettings", lambda: type("S", (), {"mode": False})())
     with pytest.raises(SeedError, match="GVAS_DEMO_MODE"):
         seed_demo.main(["--business-id", str(uuid4()), "--reset"])
+
+
+def _demo_environment(monkeypatch: pytest.MonkeyPatch, *, isolated: bool = True) -> None:
+    def load() -> None:
+        if not isolated:
+            raise ProductionConfigurationError("a demo must not hold GVAS_SLACK_BOT_TOKEN")
+
+    monkeypatch.setattr(seed_demo, "DemoSettings", lambda: type("S", (), {"mode": True})())
+    monkeypatch.setattr(seed_demo, "load_production_settings", load)
+
+
+def test_the_command_refuses_an_environment_holding_real_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _demo_environment(monkeypatch, isolated=False)
+    with pytest.raises(SeedError, match="not an isolated demo"):
+        seed_demo.main(["--business-id", str(uuid4()), "--reset"])
+
+
+def test_a_sign_in_link_must_be_https(monkeypatch: pytest.MonkeyPatch) -> None:
+    _demo_environment(monkeypatch)
+    with pytest.raises(SeedError, match="https"):
+        seed_demo.main(
+            ["--business-id", str(uuid4()), "--no-seed", "--sign-in-link", "http://dash.example"]
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_plain_seed_refuses_any_existing_data(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await _business(session_factory)
+    async with session_factory() as session:
+        session.add(Customer(business_id=business_id, email="real@example.com", created_at=NOW))
+        await session.commit()
+    with pytest.raises(SeedError, match="--reset"):
+        await seed_demo.seed_demo(session_factory, business_id, reset=False, now=NOW)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "now",
+    [
+        datetime(2026, 11, 1, 7, 30, tzinfo=UTC),  # 00:30 on the 1st in Oakland
+        datetime(2026, 10, 31, 20, 0, tzinfo=UTC),  # the 31st
+        datetime(2026, 10, 18, 19, 0, tzinfo=UTC),  # a Sunday
+    ],
+)
+async def test_dates_hold_up_on_awkward_days(
+    session_factory: async_sessionmaker[AsyncSession], now: datetime
+) -> None:
+    business_id = await _business(session_factory)
+    await seed_demo.seed_demo(session_factory, business_id, reset=False, now=now)
+    service = OwnerService(
+        SqlUnitOfWorkFactory(session_factory),
+        booked_events=DemoBookedEvents(session_factory),
+        now=lambda: now,
+    )
+    context = await _context(session_factory, business_id)
+    quotes = {quote.quote_id: quote for quote in await service.quotes(context)}
+    for payment in await service.payments(context):
+        assert payment.paid_at <= now
+        assert quotes[payment.quote_id].created_at < payment.paid_at
+    for booking in await service.bookings(context):
+        assert booking.requested_slot_start is not None
+        assert booking.requested_slot_start.astimezone(ZONE).weekday() not in CLOSED_WEEKDAYS

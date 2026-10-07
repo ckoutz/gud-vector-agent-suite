@@ -20,12 +20,14 @@ import secrets
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.composition.production import ProductionConfigurationError, load_production_settings
 from gvas.config import DemoSettings, Settings
 from gvas.domain.customers import hash_portal_token, new_portal_token
 from gvas.domain.enums import (
@@ -50,6 +52,7 @@ from gvas.domain.payments import (
 from gvas.domain.quotes import QuoteDraftProposal, QuoteLineItem, hash_claim_token, new_claim_token
 from gvas.domain.time_zones import business_zone
 from gvas.infrastructure.db import create_engine, create_session_factory
+from gvas.infrastructure.demo import CLOSED_WEEKDAYS
 from gvas.infrastructure.intake_models import IntakeConversation, IntakeMessage
 from gvas.infrastructure.models import (
     Base,
@@ -61,6 +64,10 @@ from gvas.infrastructure.models import (
     QuoteRecord,
 )
 from gvas.infrastructure.payment_models import LedgerPaymentRow, QuoteSubscription
+
+#: Any of these rows means the business already has data a plain seed would mix into.
+SEEDED_MODELS = (Customer, QuoteRecord, IntakeConversation, LedgerPaymentRow)
+LOCAL_HOSTS = ("localhost", "127.0.0.1")
 
 CURRENCY = "USD"
 ENDPOINT_NAMESPACE = "demo-seed"
@@ -181,6 +188,7 @@ QUOTES = (
         paid_days_ago=2,
     ),
 )
+PAID_STAGES = frozenset({"card", "check", "plan"})
 PLAN_MONTHS = 3
 PLAN_AMOUNT = 54_000
 
@@ -237,6 +245,19 @@ def _paid_day(today: date, quote: FakeQuote) -> date:
     return min(day, month_start - timedelta(days=1))
 
 
+def _open_day(day: date) -> date:
+    while day.weekday() in CLOSED_WEEKDAYS:
+        day += timedelta(days=1)
+    return day
+
+
+def _sign_in_base(raw: str) -> str:
+    parts = urlsplit(raw)
+    if parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in LOCAL_HOSTS):
+        return raw.rstrip("/")
+    raise SeedError("--sign-in-link must be an https:// dashboard address")
+
+
 async def _reset(session: AsyncSession, business_id: BusinessId) -> None:
     for table in reversed(Base.metadata.sorted_tables):
         if table.name in KEPT_TABLES or "business_id" not in table.c:
@@ -259,12 +280,12 @@ async def seed_demo(
         zone = business_zone(business.timezone) or ZoneInfo(DemoSettings().timezone)
         if reset:
             await _reset(session, business_id)
-        elif await session.scalar(
-            select(func.count())
-            .select_from(QuoteRecord)
-            .where(QuoteRecord.business_id == business_id)
-        ):
-            raise SeedError("the business already has quotes; pass --reset to replace them")
+        else:
+            for model in SEEDED_MODELS:
+                if await session.scalar(
+                    select(func.count()).select_from(model).where(model.business_id == business_id)
+                ):
+                    raise SeedError("the business already has data; pass --reset to replace it")
         today = now.astimezone(zone).date()
         owner = business.owner_email
 
@@ -293,6 +314,10 @@ async def seed_demo(
             person = CUSTOMERS[fake.customer]
             quote_id = QuoteId(uuid4())
             created = now - timedelta(days=fake.days_ago, hours=3 + index % 4)
+            if fake.stage in PAID_STAGES:
+                # A quote goes out a couple of days before it's paid, whatever the date.
+                paid = _local_noon(_paid_day(today, fake), zone)
+                created = min(created, paid - timedelta(days=2))
             recurring = fake.stage == "plan"
             draft = QuoteDraftProposal(
                 quote_id=quote_id,
@@ -368,10 +393,10 @@ async def seed_demo(
                 )
             )
             await session.flush()
-            if fake.stage not in {"card", "check", "plan"}:
+            if fake.stage not in PAID_STAGES:
                 continue
             paid_on = _paid_day(today, fake)
-            paid_at = _local_noon(paid_on, zone)
+            paid_at = min(_local_noon(paid_on, zone), now)
             manual = fake.stage != "card"
             session.add(
                 LedgerPaymentRow(
@@ -413,7 +438,9 @@ async def seed_demo(
 
         for booking in BOOKINGS:
             start = datetime.combine(
-                today + timedelta(days=booking.day_offset), time(booking.hour), tzinfo=zone
+                _open_day(today + timedelta(days=booking.day_offset)),
+                time(booking.hour),
+                tzinfo=zone,
             ).astimezone(UTC)
             asked = now - timedelta(hours=2 if booking.waiting else 30)
             person = booking.customer
@@ -506,7 +533,7 @@ async def _run(arguments: argparse.Namespace) -> None:
             )
         if arguments.sign_in_link:
             token = await mint_owner_sign_in(session_factory, business_id)
-            base = arguments.sign_in_link.rstrip("/")
+            base = _sign_in_base(arguments.sign_in_link)
             print(f"owner sign-in (single use, 15 minutes): {base}/portal/login?token={token}")  # noqa: T201
     finally:
         await engine.dispose()
@@ -523,6 +550,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     if not DemoSettings().mode:
         raise SeedError("refusing to seed: GVAS_DEMO_MODE is off, so this may be a real database")
+    if arguments.sign_in_link:
+        _sign_in_base(arguments.sign_in_link)
+    # The same check a demo server starts with: no credential that could reach a
+    # real person or account, so this is not a production environment.
+    try:
+        load_production_settings()
+    except ProductionConfigurationError as error:
+        raise SeedError(f"refusing to seed: this is not an isolated demo ({error})") from error
     asyncio.run(_run(arguments))
     return 0
 
