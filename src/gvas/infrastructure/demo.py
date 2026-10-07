@@ -3,14 +3,18 @@
 ``GVAS_DEMO_MODE`` swaps every outbound channel (customer and owner e-mail,
 texts, owner channel messages, sign-in links, reports) for one that writes to the log, and the
 booking calendar for generated openings. A fictional business then runs the
-real workflows, owner approval included, with no one contacted. The
+real workflows, owner approval included, with no one contacted. Links are
+withheld from the log: they carry bearer tokens (quote claims, sign-in and
+decision links), and the demo is driven from the dashboard instead. The
 production composition decides when these are used, and refuses to start a
 demo that still holds a real provider credential.
 """
 
 import hashlib
 import logging
+import re
 from datetime import UTC, datetime, time, timedelta
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -21,11 +25,13 @@ from gvas.domain.customers import PortalLoginEmailRequest
 from gvas.domain.enums import DeliveryStatus
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import (
+    AvailabilityError,
     AvailableSlot,
     BookingKind,
     BookingRequest,
     BookingResult,
     IntakeState,
+    SupersededBooking,
 )
 from gvas.domain.messages import (
     AttachmentPayload,
@@ -40,6 +46,7 @@ from gvas.domain.messages import (
 from gvas.domain.owner import CalendarEvent, CalendarEventSource
 from gvas.domain.owner_email import OwnerEmailRequest
 from gvas.domain.reporting import ReportEmailRequest
+from gvas.infrastructure.hosted_links import PORTAL_LOGIN_LINK_REFERENCE
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
 from gvas.infrastructure.models import Business
 
@@ -55,6 +62,9 @@ CLOSED_WEEKDAYS = frozenset({6})
 # Requests waiting for the owner and approved bookings hold their slot.
 HOLDING_STATES = (IntakeState.AWAITING_OWNER.value, IntakeState.APPROVED.value)
 TITLE_MAX_CHARS = 80
+_URL = re.compile(r"https?://[^\s<>\"')]+")
+
+Span = tuple[datetime, datetime]
 
 
 class DemoModeError(RuntimeError):
@@ -79,24 +89,49 @@ def _receipt(
     )
 
 
+def _withhold_links(text: str) -> str:
+    def host_only(match: re.Match[str]) -> str:
+        parts = urlsplit(match.group(0))
+        return f"{parts.scheme}://{parts.netloc}/... (link withheld)"
+
+    return _URL.sub(host_only, text)
+
+
 def _log(kind: str, business_id: BusinessId, to: str, text: str) -> None:
-    logger.info("demo mode, not sent: %s to %s (business %s)\n%s", kind, to, business_id, text)
+    logger.info(
+        "demo mode, not sent: %s to %s (business %s)\n%s",
+        kind,
+        to,
+        business_id,
+        _withhold_links(text),
+    )
 
 
 class LoggedCustomerEmail:
-    """Customer e-mail (quotes, booking notices), logged instead of sent."""
+    """Customer e-mail (quotes, booking notices), logged instead of sent.
+
+    Hosted link references resolve as the Resend adapter resolves them.
+    """
+
+    def __init__(self, portal_url: str) -> None:
+        self._portal_url = portal_url
 
     async def deliver(self, request: CustomerDeliveryRequest) -> DeliveryReceipt:
         lines = [f"Subject: {request.subject or ''}", request.body_text]
         if request.quote_url:
             lines.append(f"Quote: {request.quote_url}")
-        lines.extend(link for link in request.links if link != request.quote_url)
+        lines.extend(self._resolve_link(reference) for reference in request.links)
         _log("customer e-mail", request.business_id, request.recipient.address, "\n".join(lines))
         return _receipt(
             request.idempotency_key,
             customer_link=request.quote_url,
             emailed=request.recipient.email_address is not None,
         )
+
+    def _resolve_link(self, reference: str) -> str:
+        if reference == PORTAL_LOGIN_LINK_REFERENCE:
+            return self._portal_url
+        raise DemoModeError("quote carries an unknown hosted link reference")
 
 
 class LoggedCustomerText:
@@ -133,18 +168,10 @@ class LoggedOwnerReply:
 
 
 class LoggedPortalLoginEmail:
-    """Sign-in links are logged so a demo can be signed into without e-mail.
-
-    Only the demo composition builds this; it holds fictional data only.
-    """
+    """The sign-in request is logged; its link (a bearer token) never is."""
 
     async def send_login_link(self, request: PortalLoginEmailRequest) -> DeliveryReceipt:
-        _log(
-            "sign-in e-mail",
-            request.business_id,
-            request.to,
-            f"Subject: {request.subject}\nSign in: {request.login_url}",
-        )
+        _log("sign-in e-mail", request.business_id, request.to, f"Subject: {request.subject}")
         return _receipt(request.idempotency_key)
 
 
@@ -172,8 +199,10 @@ class DemoAvailability:
     Working days (Monday to Saturday) offer one slot per ``slot_minutes``
     inside the configured hours. About one in three is shown as taken, picked
     by a stable hash so the same hour stays taken across calls, and any slot a
-    waiting request or an approved booking holds is never offered again.
-    ``book`` touches no calendar: the approved request is the booking.
+    waiting request, an approved booking or a booking a pending reschedule
+    would replace holds is never offered again. ``book`` touches no calendar:
+    the approved request is the booking. When another booking already took
+    the slot it answers as Calendly does, with a link to pick again.
     """
 
     def __init__(
@@ -188,7 +217,10 @@ class DemoAvailability:
     async def available_slots(
         self, business_id: BusinessId, start: datetime, end: datetime
     ) -> tuple[AvailableSlot, ...]:
-        zone, held = await self._zone_and_holds(business_id, start, end)
+        async with self._session_factory() as session:
+            name = await session.scalar(select(Business.timezone).where(Business.id == business_id))
+            held = [hold.span for hold in await _holds(session, business_id, start, end)]
+        zone = _zone(name or self._settings.timezone, self._settings.timezone)
         length = timedelta(minutes=self._settings.slot_minutes)
         first = self._settings.day_start_hour * 60
         last = self._settings.day_end_hour * 60 - self._settings.slot_minutes
@@ -211,6 +243,22 @@ class DemoAvailability:
         return tuple(openings)
 
     async def book(self, request: BookingRequest) -> BookingResult:
+        async with self._session_factory() as session:
+            site_url = await session.scalar(
+                select(Business.site_url).where(Business.id == request.business_id)
+            )
+            holds = await _holds(session, request.business_id, request.slot_start, request.slot_end)
+        if any(hold.booked and hold.reference != request.reference for hold in holds):
+            if not site_url:
+                raise AvailabilityError("the demo slot is already booked")
+            logger.info(
+                "demo mode: %s already booked (business %s); sending a link to pick again",
+                request.slot_start.isoformat(),
+                request.business_id,
+            )
+            return BookingResult(
+                kind=BookingKind.LINK, link=site_url, event_type_uri=DEMO_EVENT_TYPE_URI
+            )
         logger.info(
             "demo mode: booked %s for %s (business %s), no calendar touched",
             request.slot_start.isoformat(),
@@ -229,29 +277,10 @@ class DemoAvailability:
     async def cancel_booking(self, business_id: BusinessId, event_uri: str) -> None:
         logger.info("demo mode: canceled %s (business %s)", event_uri, business_id)
 
-    async def _zone_and_holds(
-        self, business_id: BusinessId, start: datetime, end: datetime
-    ) -> tuple[ZoneInfo, tuple[tuple[datetime, datetime], ...]]:
-        async with self._session_factory() as session:
-            name = await session.scalar(select(Business.timezone).where(Business.id == business_id))
-            rows = await session.execute(
-                select(IntakeRow.requested_slot_start, IntakeRow.requested_slot_end).where(
-                    IntakeRow.business_id == business_id,
-                    IntakeRow.state.in_(HOLDING_STATES),
-                    IntakeRow.requested_slot_start.is_not(None),
-                    IntakeRow.requested_slot_start < end,
-                )
-            )
-        held = tuple(
-            (_utc(slot_start), _utc(slot_end or slot_start + timedelta(minutes=1)))
-            for slot_start, slot_end in rows
-            if slot_start is not None and _utc(slot_end or slot_start) >= _utc(start)
-        )
-        return _zone(name or self._settings.timezone, self._settings.timezone), held
-
 
 class DemoBookedEvents:
-    """The dashboard's bookings: approved website requests booked in GVAS."""
+    """The dashboard's bookings: approved website requests booked in GVAS,
+    and bookings still in force while their reschedule waits for the owner."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -263,21 +292,93 @@ class DemoBookedEvents:
         self, business_id: BusinessId, start: datetime, end: datetime
     ) -> tuple[CalendarEvent, ...]:
         async with self._session_factory() as session:
-            rows = await session.scalars(
-                select(IntakeRow)
-                .where(
-                    IntakeRow.business_id == business_id,
-                    IntakeRow.state == IntakeState.APPROVED.value,
-                    IntakeRow.booking_kind == BookingKind.BOOKED.value,
-                    IntakeRow.requested_slot_start >= start,
-                    IntakeRow.requested_slot_start < end,
-                )
-                .order_by(IntakeRow.requested_slot_start)
-            )
-            return tuple(_booking_event(row) for row in rows if row.requested_slot_start)
+            rows = await _holding_rows(session, business_id, end)
+        events = [
+            _booking_event(row, span)
+            for row in rows
+            for span in _booked_spans(row)
+            if span[0] < _utc(end) and span[1] > _utc(start)
+        ]
+        return tuple(sorted(events, key=lambda event: event.start))
 
 
-def _booking_event(row: IntakeRow) -> CalendarEvent:
+class _Hold:
+    __slots__ = ("booked", "reference", "span")
+
+    def __init__(self, span: Span, reference: str, *, booked: bool) -> None:
+        self.span = span
+        self.reference = reference
+        self.booked = booked
+
+
+async def _holding_rows(
+    session: AsyncSession, business_id: BusinessId, before: datetime
+) -> list[IntakeRow]:
+    rows = await session.scalars(
+        select(IntakeRow).where(
+            IntakeRow.business_id == business_id,
+            IntakeRow.state.in_(HOLDING_STATES),
+        )
+    )
+    return [row for row in rows if any(span[0] < _utc(before) for span in _spans(row))]
+
+
+async def _holds(
+    session: AsyncSession, business_id: BusinessId, start: datetime, end: datetime
+) -> list[_Hold]:
+    """Every span the business's calendar holds that overlaps ``start``–``end``.
+
+    ``booked`` marks a confirmed booking (as opposed to a request still
+    waiting for the owner), which is what a second booking must not overlap.
+    """
+
+    holds: list[_Hold] = []
+    for row in await _holding_rows(session, business_id, end):
+        booked = set(_booked_spans(row))
+        for span in _spans(row):
+            if span[0] < _utc(end) and span[1] > _utc(start):
+                holds.append(_Hold(span, row.reference, booked=span in booked))
+    return holds
+
+
+def _span(slot_start: datetime, slot_end: datetime | None) -> Span:
+    return _utc(slot_start), _utc(slot_end or slot_start + timedelta(minutes=1))
+
+
+def _superseded(row: IntakeRow) -> Span | None:
+    if not row.superseded_booking:
+        return None
+    old = SupersededBooking.model_validate(row.superseded_booking)
+    return _span(old.slot_start, old.slot_end)
+
+
+def _booked_spans(row: IntakeRow) -> list[Span]:
+    """The confirmed bookings on a row: its approved booking, and the one a
+    pending reschedule would replace, which stays in force until approval."""
+
+    spans: list[Span] = []
+    if (
+        row.state == IntakeState.APPROVED.value
+        and row.booking_kind == BookingKind.BOOKED.value
+        and row.requested_slot_start is not None
+    ):
+        spans.append(_span(row.requested_slot_start, row.requested_slot_end))
+    superseded = _superseded(row)
+    if superseded is not None:
+        spans.append(superseded)
+    return spans
+
+
+def _spans(row: IntakeRow) -> list[Span]:
+    spans = _booked_spans(row)
+    if row.requested_slot_start is not None:
+        requested = _span(row.requested_slot_start, row.requested_slot_end)
+        if requested not in spans:
+            spans.append(requested)
+    return spans
+
+
+def _booking_event(row: IntakeRow, span: Span) -> CalendarEvent:
     collected = row.collected or {}
 
     def text(key: str) -> str | None:
@@ -288,12 +389,11 @@ def _booking_event(row: IntakeRow) -> CalendarEvent:
     title = "Estimate"
     if details:
         title = details if len(details) <= TITLE_MAX_CHARS else details[: TITLE_MAX_CHARS - 1] + "…"
-    assert row.requested_slot_start is not None  # noqa: S101 - filtered by the caller
     return CalendarEvent(
         source=CalendarEventSource.BOOKING,
         title=title,
-        start=_utc(row.requested_slot_start),
-        end=None if row.requested_slot_end is None else _utc(row.requested_slot_end),
+        start=span[0],
+        end=span[1],
         location=text("address"),
         invitee_name=text("name"),
         invitee_email=text("email"),

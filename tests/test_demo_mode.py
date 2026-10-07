@@ -28,6 +28,7 @@ from gvas.domain.intake import (
     IntakeConversation,
     IntakeState,
     IntakeTurn,
+    SupersededBooking,
 )
 from gvas.domain.messages import (
     ConversationRef,
@@ -42,11 +43,13 @@ from gvas.infrastructure.demo import (
     DEMO_EVENT_TYPE_URI,
     DemoAvailability,
     DemoBookedEvents,
+    DemoModeError,
     LoggedCustomerEmail,
     LoggedCustomerText,
     LoggedOwnerReply,
     LoggedPortalLoginEmail,
 )
+from gvas.infrastructure.hosted_links import PORTAL_LOGIN_LINK_REFERENCE
 from gvas.infrastructure.intake_repositories import SqlIntakeConversationRepository
 from gvas.infrastructure.models import Business
 from test_composition import Clock, inbound, seed_business
@@ -191,7 +194,7 @@ async def test_customer_mail_texts_and_owner_messages_are_logged_not_sent(
     business_id = BusinessId(uuid4())
     caplog.set_level(logging.INFO, logger="gvas.infrastructure.demo")
 
-    email = await LoggedCustomerEmail().deliver(
+    email = await LoggedCustomerEmail("https://demo.example/portal/login").deliver(
         CustomerDeliveryRequest(
             business_id=business_id,
             recipient=CustomerRecipient(
@@ -201,6 +204,7 @@ async def test_customer_mail_texts_and_owner_messages_are_logged_not_sent(
             subject="Your quote",
             body_text="Spring cleanup, $480.",
             quote_url="https://larkspur.example/q/abc",
+            links=(PORTAL_LOGIN_LINK_REFERENCE,),
         )
     )
     text = await LoggedCustomerText().send_text(
@@ -217,7 +221,12 @@ async def test_customer_mail_texts_and_owner_messages_are_logged_not_sent(
         OutboundOwnerMessage(
             business_id=business_id,
             conversation_ref=conversation,
-            parts=(TextPart(text="Booking request #abc123"),),
+            parts=(
+                TextPart(
+                    text="Booking request #abc123: approve at "
+                    "https://demo.example/intake/decide?token=d3cide"
+                ),
+            ),
             correlation_id="notice:1",
         ),
     )
@@ -229,12 +238,31 @@ async def test_customer_mail_texts_and_owner_messages_are_logged_not_sent(
     assert email.provider_message_id.startswith("demo-")
     logged = caplog.text
     assert "not sent: customer e-mail to dana@example.test" in logged
-    assert "https://larkspur.example/q/abc" in logged
     assert "not sent: text to +15105550142" in logged
     assert "Booking request #abc123" in logged
+    # Links carry bearer tokens (quote claims, decisions), so only hosts are logged.
+    assert "/q/abc" not in logged
+    assert "d3cide" not in logged
+    assert "https://larkspur.example/... (link withheld)" in logged
+    assert "https://demo.example/... (link withheld)" in logged
 
 
-async def test_a_sign_in_link_is_logged_so_the_demo_can_be_signed_into(
+async def test_an_unknown_hosted_link_reference_is_refused() -> None:
+    with pytest.raises(DemoModeError):
+        await LoggedCustomerEmail("https://demo.example/portal/login").deliver(
+            CustomerDeliveryRequest(
+                business_id=BusinessId(uuid4()),
+                recipient=CustomerRecipient(
+                    address="dana@example.test", address_kind=RecipientAddressKind.EMAIL
+                ),
+                idempotency_key="quote:2",
+                body_text="Spring cleanup, $480.",
+                links=("not-a-reference",),
+            )
+        )
+
+
+async def test_a_sign_in_request_is_logged_but_never_its_link(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger="gvas.infrastructure.demo")
@@ -251,7 +279,8 @@ async def test_a_sign_in_link_is_logged_so_the_demo_can_be_signed_into(
     )
 
     assert receipt.status is DeliveryStatus.DELIVERED
-    assert "https://demo.example/portal/session?token=t0ken" in caplog.text
+    assert "not sent: sign-in e-mail to owner@larkspur.example" in caplog.text
+    assert "t0ken" not in caplog.text
 
 
 # -- the calendar ------------------------------------------------------------
@@ -278,6 +307,7 @@ async def hold(
     state: IntakeState,
     booking_kind: str | None = None,
     details: str | None = None,
+    superseded: datetime | None = None,
 ) -> str:
     now = datetime.now(UTC)
     reference = uuid4().hex[:8]
@@ -299,6 +329,12 @@ async def hold(
                 requested_slot_start=start.astimezone(UTC),
                 requested_slot_end=start.astimezone(UTC) + timedelta(hours=1),
                 booking_kind=booking_kind,
+                superseded_booking=None
+                if superseded is None
+                else SupersededBooking(
+                    slot_start=superseded.astimezone(UTC),
+                    slot_end=superseded.astimezone(UTC) + timedelta(hours=1),
+                ),
                 expires_at=now + timedelta(days=30),
                 created_at=now,
                 updated_at=now,
@@ -419,6 +455,93 @@ async def test_booking_touches_no_calendar_and_shows_on_the_dashboard(
     assert event.invitee_name == "Dana Reyes"
     assert event.location == "12 Laurel Way"
     assert event.reference == reference
+
+
+async def test_a_slot_already_booked_sends_a_link_to_pick_again(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await demo_business(session_factory)
+    async with session_factory() as session:
+        await session.execute(
+            update(Business)
+            .where(Business.id == business_id)
+            .values(site_url="https://larkspur.example")
+        )
+        await session.commit()
+    availability = DemoAvailability(DemoSettings(), session_factory)
+    start = next_monday(PACIFIC).replace(hour=10)
+    first = await hold(
+        session_factory,
+        business_id,
+        start,
+        state=IntakeState.APPROVED,
+        booking_kind=BookingKind.BOOKED.value,
+    )
+    # A second request waiting for the same hour does not block the first.
+    await hold(session_factory, business_id, start, state=IntakeState.AWAITING_OWNER)
+
+    def request(reference: str) -> BookingRequest:
+        return BookingRequest(
+            business_id=business_id,
+            slot_start=start,
+            slot_end=start + timedelta(hours=1),
+            invitee_name="Sam Ortiz",
+            invitee_email="sam@example.test",
+            reference=reference,
+        )
+
+    again = await availability.book(request(first))
+    second = await availability.book(request("other123"))
+
+    assert again.kind is BookingKind.BOOKED
+    assert second.kind is BookingKind.LINK
+    assert second.link == "https://larkspur.example"
+
+
+async def test_a_booking_awaiting_its_reschedule_stays_booked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await demo_business(session_factory)
+    availability = DemoAvailability(DemoSettings(), session_factory)
+    monday = next_monday(PACIFIC)
+    window = (monday, monday + timedelta(days=7))
+    offered = await availability.available_slots(business_id, *window)
+    original, wanted = offered[0], offered[3]
+
+    await hold(
+        session_factory,
+        business_id,
+        wanted.start,
+        state=IntakeState.AWAITING_OWNER,
+        booking_kind=BookingKind.BOOKED.value,
+        superseded=original.start,
+    )
+
+    starts = {opening.start for opening in await availability.available_slots(business_id, *window)}
+    events = await DemoBookedEvents(session_factory).upcoming(business_id, *window)
+    assert original.start not in starts
+    assert wanted.start not in starts
+    assert [event.start for event in events] == [original.start.astimezone(UTC)]
+
+
+async def test_a_booking_already_under_way_shows_on_the_calendar(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await demo_business(session_factory)
+    start = next_monday(PACIFIC).replace(hour=10)
+    await hold(
+        session_factory,
+        business_id,
+        start,
+        state=IntakeState.APPROVED,
+        booking_kind=BookingKind.BOOKED.value,
+    )
+
+    events = await DemoBookedEvents(session_factory).upcoming(
+        business_id, start + timedelta(minutes=30), start + timedelta(days=1)
+    )
+
+    assert [event.start for event in events] == [start.astimezone(UTC)]
 
 
 async def test_another_business_never_sees_the_demo_bookings(

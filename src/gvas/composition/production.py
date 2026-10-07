@@ -461,7 +461,7 @@ def build_demo_ports(
     logger.warning("demo mode: e-mail, texts and Slack are logged, not sent")
     usage_ledger = SqlUsageLedger(session_factory)
     attachments = NoAttachments()
-    customer_email = LoggedCustomerEmail()
+    customer_email = LoggedCustomerEmail(settings.resend.portal_url)
     owner_channel = LoggedOwnerReply()
     availability = DemoAvailability(settings.demo, session_factory)
     payment_checkout = (
