@@ -1,6 +1,7 @@
 """Visitor sandboxes: every demo visitor gets their own copy of the demo business."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -67,7 +68,7 @@ def owner_service(session_factory: async_sessionmaker[AsyncSession]) -> OwnerSer
 
 
 async def count(
-    session_factory: async_sessionmaker[AsyncSession], model: type, business_id: object
+    session_factory: async_sessionmaker[AsyncSession], model: Any, business_id: object
 ) -> int:
     async with session_factory() as session:
         value = await session.scalar(
