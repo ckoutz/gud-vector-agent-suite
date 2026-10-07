@@ -533,6 +533,13 @@ class IntakeService:
             logger.warning("intake agent unavailable for %s: %s", conversation.reference, error)
             reply = await self._reply(unit_of_work, conversation, UNAVAILABLE_REPLY, now)
             return IntakeReply(conversation, reply, conversation.proposed_slots)
+        known_customer = conversation.customer_id is not None
+        # The model often never sets ``ready_for_slots``. Details complete
+        # since the last turn mean Gus has had his turn for follow-ups, so
+        # the next message offers times whatever the model says.
+        was_ready = _ready_for_slots(
+            conversation.collected, business.intake_profile, known_customer=known_customer
+        )
         collected = conversation.collected.merge(turn.collected)
         current = conversation.with_updates(now, collected=collected)
         await unit_of_work.intake_conversations.save(current)
@@ -571,11 +578,9 @@ class IntakeService:
 
         if (
             holder is None
-            and turn.ready_for_slots
+            and (turn.ready_for_slots or was_ready)
             and _ready_for_slots(
-                current.collected,
-                business.intake_profile,
-                known_customer=current.customer_id is not None,
+                current.collected, business.intake_profile, known_customer=known_customer
             )
         ):
             if current.state is IntakeState.PROPOSING_SLOTS:

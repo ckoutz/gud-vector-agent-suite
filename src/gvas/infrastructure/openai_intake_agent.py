@@ -85,8 +85,10 @@ Rules (these take precedence over the business description and questions):
   politely decline unrelated requests. When escalating, write a one-sentence
   `summary` of the request for the owner.
 - `reply` is the next thing the customer reads. When everything needed is
-  collected, say that the owner will review and confirm — never that anything
-  is booked."""
+  collected and `offered_slots` is empty, ask whether they would like to see
+  open times — never say there are no openings; the system shows them.
+  Once a time is requested, say that the owner will review and confirm —
+  never that anything is booked."""
 
 SYSTEM_PROMPT: Final = SYSTEM_PROMPT_TEMPLATE.format(
     brief=DEFAULT_BRIEF, questions=DEFAULT_QUESTIONS
