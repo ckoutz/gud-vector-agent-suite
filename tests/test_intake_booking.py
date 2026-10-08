@@ -1806,4 +1806,4 @@ async def test_offer_line_and_visit_question_are_per_business_and_the_answer_is_
     assert answered.json()["reply"] == VISIT_NOTED_REPLY
     assert agent.calls == 2, "the answer is saved without a model turn"
     row = await conversation_row(session_factory, business_id)
-    assert "Before the visit: Gate code 4412, dog in the back." in (row.collected["notes"] or "")
+    assert "Before the visit: Gate code 4412, dog in the back." in str(row.collected["notes"])

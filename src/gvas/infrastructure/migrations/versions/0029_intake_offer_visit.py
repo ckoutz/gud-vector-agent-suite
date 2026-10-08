@@ -1,13 +1,13 @@
 """per-business offer line and visit question for the booking agent
 
-Revision ID: 0029_intake_offer_line_visit_question
+Revision ID: 0029_intake_offer_visit
 Revises: 0028_demo_sandboxes
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0029_intake_offer_line_visit_question"
+revision = "0029_intake_offer_visit"
 down_revision = "0028_demo_sandboxes"
 branch_labels = None
 depends_on = None
