@@ -878,6 +878,31 @@ def cancel_request_notice(
     return "\n".join(lines)
 
 
+def visit_note(answer: str) -> str:
+    """The answer to the visit question as it is saved: ``Before the visit: …``."""
+
+    return f"{VISIT_NOTE_LABEL} {' '.join(answer.split())[:VISIT_ANSWER_MAX_CHARS]}"
+
+
+def with_visit_note(collected: IntakeCollected, note: str) -> IntakeCollected:
+    """Adds ``note`` to the notes. It always lands in full: when the notes
+    are full, older notes give way."""
+
+    merged = collected.merge(IntakeCollected(notes=note))
+    if merged.notes is not None and note in merged.notes:
+        return merged
+    room = INTAKE_NOTES_MAX_CHARS - len(note) - 2
+    kept = (collected.notes or "")[: max(room, 0)].rstrip()
+    return collected.model_copy(update={"notes": f"{kept}; {note}" if kept else note})
+
+
+def visit_note_notice(conversation: IntakeConversation, note: str) -> str:
+    """The owner notice for an answer that came after the request notice."""
+
+    who = conversation.collected.name or "The customer"
+    return f"{who} added a note to request {conversation.reference}: {note}"
+
+
 def escalation_notice(conversation: IntakeConversation, summary: str) -> str:
     """The owner notice for ``needs_human`` turns: transcript summary only."""
 
