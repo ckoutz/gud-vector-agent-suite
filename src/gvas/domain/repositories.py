@@ -222,6 +222,8 @@ class BusinessRepository(Protocol):
         intake_brief: str | None = None,
         intake_questions: str | None = None,
         intake_opening: str | None = None,
+        intake_offer_line: str | None = None,
+        intake_visit_question: str | None = None,
         notification_email: str | None = None,
         owner_email: str | None = None,
         calendar_feed_url: str | None = None,

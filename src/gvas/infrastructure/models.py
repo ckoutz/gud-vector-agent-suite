@@ -40,6 +40,8 @@ class Business(Base):
     intake_brief: Mapped[str | None] = mapped_column(Text)
     intake_questions: Mapped[str | None] = mapped_column(Text)
     intake_opening: Mapped[str | None] = mapped_column(Text)
+    intake_offer_line: Mapped[str | None] = mapped_column(Text)
+    intake_visit_question: Mapped[str | None] = mapped_column(Text)
     # Owner inbox copied on website-originated owner notices.
     notification_email: Mapped[str | None] = mapped_column(String(254))
     # The address that signs in to the owner dashboard, and the owner's

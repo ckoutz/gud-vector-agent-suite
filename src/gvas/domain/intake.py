@@ -69,6 +69,10 @@ DECLINE_REASON_MAX_CHARS = 200
 INTAKE_BRIEF_MAX_CHARS = 1000
 INTAKE_QUESTIONS_MAX_CHARS = 2000
 INTAKE_OPENING_MAX_CHARS = 600
+INTAKE_OFFER_LINE_MAX_CHARS = 300
+INTAKE_VISIT_QUESTION_MAX_CHARS = 300
+VISIT_NOTE_LABEL = "Before the visit:"
+VISIT_ANSWER_MAX_CHARS = 500
 INTAKE_DETAILS_MAX_CHARS = 2000
 INTAKE_NOTES_MAX_CHARS = 2000
 
@@ -122,12 +126,15 @@ def _aware(value: datetime) -> datetime:
 class IntakeProfile(IntakeModel):
     """Per-business agent copy: what the business is and books (``brief``),
     what to find out beyond contact details (``questions``) and the first
-    message a visitor reads (``opening``). ``None`` means the generic
-    default."""
+    message a visitor reads (``opening``). ``offer_line`` replaces the line
+    above the offered times and ``visit_question`` is asked once a time is
+    picked. ``None`` means the generic default (no visit question)."""
 
     brief: str | None = Field(default=None, max_length=INTAKE_BRIEF_MAX_CHARS)
     questions: str | None = Field(default=None, max_length=INTAKE_QUESTIONS_MAX_CHARS)
     opening: str | None = Field(default=None, max_length=INTAKE_OPENING_MAX_CHARS)
+    offer_line: str | None = Field(default=None, max_length=INTAKE_OFFER_LINE_MAX_CHARS)
+    visit_question: str | None = Field(default=None, max_length=INTAKE_VISIT_QUESTION_MAX_CHARS)
 
     @property
     def is_configured(self) -> bool:
@@ -869,6 +876,31 @@ def cancel_request_notice(
     if business_name:
         lines.append(f"Business: {business_name}.")
     return "\n".join(lines)
+
+
+def visit_note(answer: str) -> str:
+    """The answer to the visit question as it is saved: ``Before the visit: …``."""
+
+    return f"{VISIT_NOTE_LABEL} {' '.join(answer.split())[:VISIT_ANSWER_MAX_CHARS]}"
+
+
+def with_visit_note(collected: IntakeCollected, note: str) -> IntakeCollected:
+    """Adds ``note`` to the notes. It always lands in full: when the notes
+    are full, older notes give way."""
+
+    merged = collected.merge(IntakeCollected(notes=note))
+    if merged.notes is not None and note in merged.notes:
+        return merged
+    room = INTAKE_NOTES_MAX_CHARS - len(note) - 2
+    kept = (collected.notes or "")[: max(room, 0)].rstrip()
+    return collected.model_copy(update={"notes": f"{kept}; {note}" if kept else note})
+
+
+def visit_note_notice(conversation: IntakeConversation, note: str) -> str:
+    """The owner notice for an answer that came after the request notice."""
+
+    who = conversation.collected.name or "The customer"
+    return f"{who} added a note to request {conversation.reference}: {note}"
 
 
 def escalation_notice(conversation: IntakeConversation, summary: str) -> str:

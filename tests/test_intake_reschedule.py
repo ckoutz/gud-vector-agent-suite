@@ -49,6 +49,7 @@ from test_intake_booking import (
     conversation_row,
     intake_app,
     intake_business,
+    next_weekday,
     seed_owner_thread,
     slot,
 )
@@ -275,7 +276,7 @@ async def test_reschedule_reoffers_slots_and_the_pick_rerequests(
     application, owner, business_id, reference, conversation_id, token = await drive(
         session_factory, availability=availability, agent=agent
     )
-    later = slot(datetime.now(UTC), days=3)
+    later = slot(next_weekday(datetime.now(UTC)), days=1)
     availability.slots = (later,)
     async with http_client(application) as client:
         offered = await post(client, conversation_id, token, "can I move it?")
@@ -322,7 +323,7 @@ async def test_approved_booking_moves_only_once_the_new_time_is_approved(
     assert row.booked_event_uri == OLD_EVENT
     original_start = row.requested_slot_start
 
-    later = slot(datetime.now(UTC), days=3)
+    later = slot(next_weekday(datetime.now(UTC)), days=1)
     availability.slots = (later,)
     async with http_client(application) as client:
         offered = await post(client, conversation_id, token, "need to move it")
@@ -374,8 +375,8 @@ async def test_repeated_reschedules_keep_the_original_booking_in_custody(
     row = await conversation_row(session_factory, business_id)
     assert row.booked_event_uri == OLD_EVENT
 
-    first = slot(datetime.now(UTC), days=3)
-    second = slot(datetime.now(UTC), days=4)
+    first = slot(next_weekday(datetime.now(UTC)), days=1)
+    second = slot(first.start, days=1)
     availability.slots = (first,)
     async with http_client(application) as client:
         await post(client, conversation_id, token, "need to move it")
@@ -422,7 +423,7 @@ async def test_declining_the_new_time_restores_the_original_booking(
     original_start = row.requested_slot_start
     await record_event(application, business_id, row)
 
-    later = slot(datetime.now(UTC), days=3)
+    later = slot(next_weekday(datetime.now(UTC)), days=1)
     availability.slots = (later,)
     async with http_client(application) as client:
         await post(client, conversation_id, token, "move it please")
@@ -830,7 +831,7 @@ async def test_a_stale_decision_link_cannot_act_on_the_new_request(
     assert isinstance(first_body, str)
     approve_path, _decline = decision_paths(first_body)
 
-    later = slot(datetime.now(UTC), days=3)
+    later = slot(next_weekday(datetime.now(UTC)), days=1)
     availability.slots = (later,)
     async with http_client(application) as client:
         await post(client, conversation_id, token, "move it")

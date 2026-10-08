@@ -26,8 +26,10 @@ from gvas.domain.enums import BillingInterval, CustomerQuoteStatus, QuoteBilling
 from gvas.domain.identifiers import MessageKey, SubscriptionId
 from gvas.domain.intake import (
     INTAKE_BRIEF_MAX_CHARS,
+    INTAKE_OFFER_LINE_MAX_CHARS,
     INTAKE_OPENING_MAX_CHARS,
     INTAKE_QUESTIONS_MAX_CHARS,
+    INTAKE_VISIT_QUESTION_MAX_CHARS,
     BookingDecision,
     BookingDecisionAction,
     IntakeConversation,
@@ -144,6 +146,8 @@ class SettingsUpdate:
     intake_brief: str | None = None
     intake_questions: str | None = None
     intake_opening: str | None = None
+    intake_offer_line: str | None = None
+    intake_visit_question: str | None = None
     notification_email: str | None = None
     calendar_feed_url: str | None = None
     timezone: str | None = None
@@ -856,6 +860,12 @@ class OwnerService:
             ("intake_brief", "About your business", INTAKE_BRIEF_MAX_CHARS),
             ("intake_questions", "Questions Gus asks", INTAKE_QUESTIONS_MAX_CHARS),
             ("intake_opening", "Gus's greeting", INTAKE_OPENING_MAX_CHARS),
+            ("intake_offer_line", "Gus's line above the times", INTAKE_OFFER_LINE_MAX_CHARS),
+            (
+                "intake_visit_question",
+                "Gus's question before the visit",
+                INTAKE_VISIT_QUESTION_MAX_CHARS,
+            ),
         ):
             value = getattr(update, field)
             if value is None:

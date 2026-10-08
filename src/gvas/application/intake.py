@@ -35,6 +35,7 @@ from gvas.domain.intake import (
     INTAKE_MAX_USER_MESSAGES,
     INTAKE_MESSAGE_MAX_CHARS,
     SERVICE_REQUEST_SOURCE_INTAKE,
+    VISIT_NOTE_LABEL,
     AvailabilityError,
     AvailableSlot,
     BookingDecision,
@@ -79,6 +80,9 @@ from gvas.domain.intake import (
     slot_held_reply,
     slot_message_start,
     unverified_booking_change_notice,
+    visit_note,
+    visit_note_notice,
+    with_visit_note,
 )
 from gvas.domain.messages import (
     CustomerDeliveryRequest,
@@ -125,6 +129,7 @@ NO_AVAILABILITY_REPLY = (
     "time when they review your request."
 )
 SLOTS_OFFER_REPLY = "Here are the next openings I can offer — pick whichever works for you:"
+VISIT_NOTED_REPLY = "Thanks — I've added that to your request for the crew."
 SLOT_NOT_OFFERED_REPLY = "That time isn't one I can offer — please pick one of the listed times."
 OWNER_UNREACHABLE_REPLY = (
     "I couldn't reach the owner to confirm that time just now — "
@@ -522,15 +527,23 @@ class IntakeService:
             return await self._handle_slot_pick(
                 unit_of_work, conversation, picked, now, explicit=True
             )
+        # Read before the model turn so a cancel or reschedule still reaches
+        # the booking-change handling; when the model can't run, the answer
+        # is saved as is rather than lost.
+        answering = await self._answers_visit_question(unit_of_work, conversation)
 
         if await self._ceiling.is_reached(
             conversation.business_id, UsageKind.REVIEW_TOKENS, now=now
         ):
+            if answering:
+                return await self._note_visit_answer(unit_of_work, conversation, content, now)
             reply = await self._reply(unit_of_work, conversation, UNAVAILABLE_REPLY, now)
             return IntakeReply(conversation, reply, ())
         if self._message_budget is not None:
             refusal = await self._message_budget(conversation.business_id, now)
             if refusal is not None:
+                if answering:
+                    return await self._note_visit_answer(unit_of_work, conversation, content, now)
                 reply = await self._reply(unit_of_work, conversation, refusal, now)
                 return IntakeReply(conversation, reply, conversation.proposed_slots)
 
@@ -562,6 +575,8 @@ class IntakeService:
             # is already persisted, so answer with the sanitized fallback and
             # leave the conversation live for the next message.
             logger.warning("intake agent unavailable for %s: %s", conversation.reference, error)
+            if answering:
+                return await self._note_visit_answer(unit_of_work, conversation, content, now)
             reply = await self._reply(unit_of_work, conversation, UNAVAILABLE_REPLY, now)
             return IntakeReply(conversation, reply, conversation.proposed_slots)
         known_customer = conversation.customer_id is not None
@@ -574,6 +589,9 @@ class IntakeService:
         collected = conversation.collected.merge(turn.collected)
         current = conversation.with_updates(now, collected=collected)
         await unit_of_work.intake_conversations.save(current)
+
+        if answering and not (turn.wants_cancel or turn.wants_reschedule or turn.needs_human):
+            return await self._note_visit_answer(unit_of_work, current, content, now)
 
         if holder is not None:
             if (turn.wants_cancel or turn.wants_reschedule) and not verified:
@@ -624,8 +642,9 @@ class IntakeService:
                     reply = await self._reply(unit_of_work, current, NO_AVAILABILITY_REPLY, now)
                     return IntakeReply(current, reply, ())
                 current = offered
-                await self._reply(unit_of_work, current, SLOTS_OFFER_REPLY, now)
-                return IntakeReply(current, SLOTS_OFFER_REPLY, current.proposed_slots)
+                offer = business.intake_profile.offer_line or SLOTS_OFFER_REPLY
+                await self._reply(unit_of_work, current, offer, now)
+                return IntakeReply(current, offer, current.proposed_slots)
 
         reply_text = scrub_agent_reply(turn.reply)
         await self._reply(unit_of_work, current, reply_text, now)
@@ -1023,8 +1042,54 @@ class IntakeService:
         await unit_of_work.intake_conversations.save(updated)
         texts = await self._confirms_by_text(unit_of_work, updated, customer_id)
         reply = slot_confirmed_reply(slot, zone, texts=texts)
+        question = business.intake_profile.visit_question
+        if question and not _visit_noted(updated.collected):
+            reply = f"{reply} {question}"
         await self._reply(unit_of_work, updated, reply, now)
         return IntakeReply(updated, reply, ())
+
+    async def _answers_visit_question(
+        self, unit_of_work: UnitOfWork, conversation: IntakeConversation
+    ) -> bool:
+        """The message right after the business's visit question answers it."""
+
+        if conversation.state not in (IntakeState.AWAITING_OWNER, IntakeState.APPROVED):
+            return False
+        business = await self._business(unit_of_work, conversation.business_id)
+        question = business.intake_profile.visit_question
+        if not question:
+            return False
+        transcript = await unit_of_work.intake_messages.list_for(
+            conversation.business_id, conversation.conversation_id
+        )
+        last_agent = next(
+            (m for m in reversed(transcript) if m.role is IntakeMessageRole.AGENT), None
+        )
+        return last_agent is not None and last_agent.content.endswith(question)
+
+    async def _note_visit_answer(
+        self,
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        content: str,
+        now: datetime,
+    ) -> IntakeReply:
+        """Saves the visit answer word for word on the request and tells the
+        owner, whose request notice went out before the answer came."""
+
+        note = visit_note(content)
+        current = conversation.with_updates(
+            now, collected=with_visit_note(conversation.collected, note)
+        )
+        await unit_of_work.intake_conversations.save(current)
+        await enqueue_intake_owner_notice(
+            unit_of_work,
+            current.business_id,
+            correlation_id=f"intake_visit_note:{current.conversation_id}",
+            text=visit_note_notice(current, note),
+        )
+        reply = await self._reply(unit_of_work, current, VISIT_NOTED_REPLY, now)
+        return IntakeReply(current, reply, current.proposed_slots)
 
     @staticmethod
     async def _confirms_by_text(
@@ -1216,6 +1281,10 @@ def _ready_for_slots(
     return collected.is_complete(
         address_required=profile.requires_address, phone_required=not known_customer
     )
+
+
+def _visit_noted(collected: IntakeCollected) -> bool:
+    return VISIT_NOTE_LABEL.lower() in (collected.notes or "").lower()
 
 
 def _booking_about(collected: IntakeCollected, business: BusinessRecord | None) -> str:
