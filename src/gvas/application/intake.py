@@ -527,16 +527,23 @@ class IntakeService:
             return await self._handle_slot_pick(
                 unit_of_work, conversation, picked, now, explicit=True
             )
+        # Read before the model turn so a cancel or reschedule still reaches
+        # the booking-change handling; when the model can't run, the answer
+        # is saved as is rather than lost.
         answering = await self._answers_visit_question(unit_of_work, conversation)
 
         if await self._ceiling.is_reached(
             conversation.business_id, UsageKind.REVIEW_TOKENS, now=now
         ):
+            if answering:
+                return await self._note_visit_answer(unit_of_work, conversation, content, now)
             reply = await self._reply(unit_of_work, conversation, UNAVAILABLE_REPLY, now)
             return IntakeReply(conversation, reply, ())
         if self._message_budget is not None:
             refusal = await self._message_budget(conversation.business_id, now)
             if refusal is not None:
+                if answering:
+                    return await self._note_visit_answer(unit_of_work, conversation, content, now)
                 reply = await self._reply(unit_of_work, conversation, refusal, now)
                 return IntakeReply(conversation, reply, conversation.proposed_slots)
 
@@ -568,6 +575,8 @@ class IntakeService:
             # is already persisted, so answer with the sanitized fallback and
             # leave the conversation live for the next message.
             logger.warning("intake agent unavailable for %s: %s", conversation.reference, error)
+            if answering:
+                return await self._note_visit_answer(unit_of_work, conversation, content, now)
             reply = await self._reply(unit_of_work, conversation, UNAVAILABLE_REPLY, now)
             return IntakeReply(conversation, reply, conversation.proposed_slots)
         known_customer = conversation.customer_id is not None

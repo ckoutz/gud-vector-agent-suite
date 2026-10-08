@@ -115,15 +115,15 @@ class IntakeAgentFake:
         self, turns: list[IntakeTurn] | None = None, *, error: Exception | None = None
     ) -> None:
         self._turns = list(turns or [])
-        self._error = error
+        self.error = error
         self.requests: list[IntakeTurnRequest] = []
         self.calls = 0
 
     async def turn(self, request: IntakeTurnRequest) -> IntakeTurn:
         self.requests.append(request)
         self.calls += 1
-        if self._error is not None:
-            raise self._error
+        if self.error is not None:
+            raise self.error
         if not self._turns:
             return IntakeTurn(reply="Anything else I should tell the owner?")
         return self._turns.pop(0)
@@ -1858,6 +1858,49 @@ async def test_a_booking_change_after_the_visit_question_is_not_saved_as_the_ans
     assert changed.json()["reply"] != VISIT_NOTED_REPLY
     row = await conversation_row(session_factory, business_id)
     assert "Before the visit" not in str(row.collected["notes"])
+
+
+@pytest.mark.asyncio
+async def test_the_visit_answer_is_saved_when_the_model_is_down(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await intake_business(session_factory)
+    async with session_factory() as session:
+        await SqlBusinessRepository(session).configure_site(
+            business_id, intake_visit_question="Anything we should know?", now=NOW
+        )
+        await session.commit()
+    offered = slot(datetime.now(UTC))
+    agent = IntakeAgentFake(
+        [
+            collected_turn(
+                name="Jane", email=EMAIL, phone="+15555550100", address="2 Elm St", problem="lawn"
+            ),
+            IntakeTurn(reply="Here you go.", ready_for_slots=True),
+        ]
+    )
+    application, owner_replies = intake_app(
+        session_factory, agent=agent, availability=AvailabilityFake((offered,))
+    )
+    await seed_owner_thread(application, business_id)
+    await immediate_worker(application).drain()
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+        url = f"/v1/intake/conversations/{conversation_id}/messages"
+        await client.post(url, json={"message": "new lawn"}, headers=headers)
+        await client.post(url, json={"message": "sounds good"}, headers=headers)
+        await client.post(
+            url, json={"message": f"slot:{offered.start.isoformat()}"}, headers=headers
+        )
+        agent.error = IntakeAgentError("openai down")
+        answered = await client.post(url, json={"message": "Side gate."}, headers=headers)
+    await immediate_worker(application).drain()
+    assert answered.json()["reply"] == VISIT_NOTED_REPLY
+    row = await conversation_row(session_factory, business_id)
+    assert "Before the visit: Side gate." in str(row.collected["notes"])
+    assert texts_of(owner_replies, "Jane added a note to request")
 
 
 def test_a_visit_note_lands_in_full_when_the_notes_are_full() -> None:
