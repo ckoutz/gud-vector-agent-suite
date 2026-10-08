@@ -26,6 +26,7 @@ from gvas.application.intake import (
     OPENING_REPLY,
     SLOTS_OFFER_REPLY,
     UNAVAILABLE_REPLY,
+    VISIT_NOTED_REPLY,
     IntakeClosedError,
     IntakeDeliveryError,
     IntakeTextStatus,
@@ -1758,3 +1759,51 @@ async def test_an_adopted_zone_is_seen_by_later_reads_in_the_same_session(
         assert await businesses.adopt_timezone(business_id, "America/Los_Angeles", NOW)
         after = await businesses.get(business_id)
         assert after is not None and after.timezone == "America/Los_Angeles"
+
+
+@pytest.mark.asyncio
+async def test_offer_line_and_visit_question_are_per_business_and_the_answer_is_saved(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await intake_business(session_factory)
+    offer_line = "Let's schedule a walk-through so we can send you a quote."
+    question = "Anything we should know before we stop by?"
+    async with session_factory() as session:
+        await SqlBusinessRepository(session).configure_site(
+            business_id, intake_offer_line=offer_line, intake_visit_question=question, now=NOW
+        )
+        await session.commit()
+    offered = slot(datetime.now(UTC))
+    agent = IntakeAgentFake(
+        [
+            collected_turn(
+                name="Jane", email=EMAIL, phone="+15555550100", address="2 Elm St", problem="lawn"
+            ),
+            IntakeTurn(reply="Here you go.", ready_for_slots=True),
+        ]
+    )
+    application, _ = intake_app(
+        session_factory, agent=agent, availability=AvailabilityFake((offered,))
+    )
+    await seed_owner_thread(application, business_id)
+    await immediate_worker(application).drain()
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+        url = f"/v1/intake/conversations/{conversation_id}/messages"
+        await client.post(url, json={"message": "new lawn"}, headers=headers)
+        offer = await client.post(url, json={"message": "sounds good"}, headers=headers)
+        picked = await client.post(
+            url, json={"message": f"slot:{offered.start.isoformat()}"}, headers=headers
+        )
+        answered = await client.post(
+            url, json={"message": "Gate code 4412,  dog in the back."}, headers=headers
+        )
+    assert offer.json()["reply"] == offer_line
+    assert picked.json()["state"] == "awaiting_owner"
+    assert picked.json()["reply"].endswith(question)
+    assert answered.json()["reply"] == VISIT_NOTED_REPLY
+    assert agent.calls == 2, "the answer is saved without a model turn"
+    row = await conversation_row(session_factory, business_id)
+    assert "Before the visit: Gate code 4412, dog in the back." in (row.collected["notes"] or "")

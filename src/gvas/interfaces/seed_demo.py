@@ -199,14 +199,38 @@ class FakeBooking:
     hour: int
     hours: int
     waiting: bool = False
+    notes: str | None = None
 
 
 BOOKINGS = (
-    FakeBooking(CUSTOMERS[4], "Paver patio: mark out and base prep", 0, 9, 3),
+    FakeBooking(
+        CUSTOMERS[4],
+        "Paver patio: mark out and base prep",
+        0,
+        9,
+        3,
+        notes="About 12 x 14 ft, slight slope to the fence. "
+        "Before the visit: side gate is unlocked.",
+    ),
     FakeBooking(CUSTOMERS[7], "Monthly visit: mow, edge, blow", 0, 14, 2),
-    FakeBooking(CUSTOMERS[5], "Lawn aeration and overseed", 1, 10, 2),
+    FakeBooking(
+        CUSTOMERS[5],
+        "Lawn aeration and overseed",
+        1,
+        10,
+        2,
+        notes="Front lawn about 800 sq ft, bare patches by the driveway. "
+        "Before the visit: friendly dog in the back yard.",
+    ),
     FakeBooking(CUSTOMERS[11], "Garden maintenance visit", 3, 8, 2),
-    FakeBooking(CUSTOMERS[6], "Raised beds: build and fill", 4, 13, 3),
+    FakeBooking(
+        CUSTOMERS[6],
+        "Raised beds: build and fill",
+        4,
+        13,
+        3,
+        notes="Two 4 x 8 ft beds for vegetables, full sun. Before the visit: gate code 4412.",
+    ),
     FakeBooking(
         FakeCustomer(
             "Olivia Grant",
@@ -219,6 +243,8 @@ BOOKINGS = (
         15,
         1,
         waiting=True,
+        notes="Front lawn about 600 sq ft, mostly weeds; flagstone path about 25 ft. "
+        "Before the visit: will be home, two cats indoors.",
     ),
 )
 
@@ -464,6 +490,7 @@ async def seed_demo(
                     "phone": person.phone,
                     "details": booking.details,
                     "address": person.address,
+                    "notes": booking.notes,
                 },
                 requested_slot_start=start,
                 requested_slot_end=start + timedelta(hours=booking.hours),

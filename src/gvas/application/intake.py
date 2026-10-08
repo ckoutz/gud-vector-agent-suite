@@ -34,7 +34,10 @@ from gvas.domain.intake import (
     INTAKE_CONVERSATION_TTL,
     INTAKE_MAX_USER_MESSAGES,
     INTAKE_MESSAGE_MAX_CHARS,
+    INTAKE_NOTES_MAX_CHARS,
     SERVICE_REQUEST_SOURCE_INTAKE,
+    VISIT_ANSWER_MAX_CHARS,
+    VISIT_NOTE_LABEL,
     AvailabilityError,
     AvailableSlot,
     BookingDecision,
@@ -125,6 +128,7 @@ NO_AVAILABILITY_REPLY = (
     "time when they review your request."
 )
 SLOTS_OFFER_REPLY = "Here are the next openings I can offer — pick whichever works for you:"
+VISIT_NOTED_REPLY = "Thanks — I've added that to your request for the crew."
 SLOT_NOT_OFFERED_REPLY = "That time isn't one I can offer — please pick one of the listed times."
 OWNER_UNREACHABLE_REPLY = (
     "I couldn't reach the owner to confirm that time just now — "
@@ -522,6 +526,10 @@ class IntakeService:
             return await self._handle_slot_pick(
                 unit_of_work, conversation, picked, now, explicit=True
             )
+        if conversation.state in (IntakeState.AWAITING_OWNER, IntakeState.APPROVED):
+            noted = await self._note_visit_answer(unit_of_work, conversation, content, now)
+            if noted is not None:
+                return noted
 
         if await self._ceiling.is_reached(
             conversation.business_id, UsageKind.REVIEW_TOKENS, now=now
@@ -624,8 +632,9 @@ class IntakeService:
                     reply = await self._reply(unit_of_work, current, NO_AVAILABILITY_REPLY, now)
                     return IntakeReply(current, reply, ())
                 current = offered
-                await self._reply(unit_of_work, current, SLOTS_OFFER_REPLY, now)
-                return IntakeReply(current, SLOTS_OFFER_REPLY, current.proposed_slots)
+                offer = business.intake_profile.offer_line or SLOTS_OFFER_REPLY
+                await self._reply(unit_of_work, current, offer, now)
+                return IntakeReply(current, offer, current.proposed_slots)
 
         reply_text = scrub_agent_reply(turn.reply)
         await self._reply(unit_of_work, current, reply_text, now)
@@ -1023,8 +1032,46 @@ class IntakeService:
         await unit_of_work.intake_conversations.save(updated)
         texts = await self._confirms_by_text(unit_of_work, updated, customer_id)
         reply = slot_confirmed_reply(slot, zone, texts=texts)
+        question = business.intake_profile.visit_question
+        if question and not _visit_noted(updated.collected):
+            reply = f"{reply} {question}"
         await self._reply(unit_of_work, updated, reply, now)
         return IntakeReply(updated, reply, ())
+
+    async def _note_visit_answer(
+        self,
+        unit_of_work: UnitOfWork,
+        conversation: IntakeConversation,
+        content: str,
+        now: datetime,
+    ) -> IntakeReply | None:
+        """The message right after the business's visit question is its answer:
+        saved word for word on the request, with no model turn."""
+
+        business = await self._business(unit_of_work, conversation.business_id)
+        question = business.intake_profile.visit_question
+        if not question:
+            return None
+        transcript = await unit_of_work.intake_messages.list_for(
+            conversation.business_id, conversation.conversation_id
+        )
+        last_agent = next(
+            (m for m in reversed(transcript) if m.role is IntakeMessageRole.AGENT), None
+        )
+        if last_agent is None or not last_agent.content.endswith(question):
+            return None
+        answer = " ".join(content.split())[:VISIT_ANSWER_MAX_CHARS]
+        collected = conversation.collected.merge(
+            IntakeCollected(notes=f"{VISIT_NOTE_LABEL} {answer}")
+        )
+        if collected.notes is not None and len(collected.notes) > INTAKE_NOTES_MAX_CHARS:
+            collected = collected.model_copy(
+                update={"notes": collected.notes[:INTAKE_NOTES_MAX_CHARS]}
+            )
+        current = conversation.with_updates(now, collected=collected)
+        await unit_of_work.intake_conversations.save(current)
+        reply = await self._reply(unit_of_work, current, VISIT_NOTED_REPLY, now)
+        return IntakeReply(current, reply, current.proposed_slots)
 
     @staticmethod
     async def _confirms_by_text(
@@ -1216,6 +1263,10 @@ def _ready_for_slots(
     return collected.is_complete(
         address_required=profile.requires_address, phone_required=not known_customer
     )
+
+
+def _visit_noted(collected: IntakeCollected) -> bool:
+    return VISIT_NOTE_LABEL.lower() in (collected.notes or "").lower()
 
 
 def _booking_about(collected: IntakeCollected, business: BusinessRecord | None) -> str:

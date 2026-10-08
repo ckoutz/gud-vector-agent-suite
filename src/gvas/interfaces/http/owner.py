@@ -61,6 +61,8 @@ class SettingsBody(BaseModel):
     intakeBrief: str | None = Field(default=None, max_length=5000)  # noqa: N815
     intakeQuestions: str | None = Field(default=None, max_length=5000)  # noqa: N815
     intakeOpening: str | None = Field(default=None, max_length=5000)  # noqa: N815
+    intakeOfferLine: str | None = Field(default=None, max_length=5000)  # noqa: N815
+    intakeVisitQuestion: str | None = Field(default=None, max_length=5000)  # noqa: N815
     notificationEmail: str | None = Field(default=None, max_length=320)  # noqa: N815
     calendarFeedUrl: str | None = Field(default=None, max_length=4096)  # noqa: N815
     timezone: str | None = Field(default=None, max_length=64)
@@ -217,6 +219,7 @@ def owner_booking_payload(conversation: IntakeConversation) -> dict[str, object]
             "address": collected.address,
         },
         "details": collected.details,
+        "notes": collected.notes,
         "urgency": collected.urgency,
         "requestedStart": _iso(conversation.requested_slot_start),
         "requestedEnd": _iso(conversation.requested_slot_end),
@@ -268,6 +271,8 @@ def settings_payload(business: BusinessRecord) -> dict[str, object]:
         "intakeBrief": profile.brief,
         "intakeQuestions": profile.questions,
         "intakeOpening": profile.opening,
+        "intakeOfferLine": profile.offer_line,
+        "intakeVisitQuestion": profile.visit_question,
         "notificationEmail": business.notification_email,
         "ownerEmail": business.owner_email,
         "timezone": business.timezone,
@@ -503,6 +508,8 @@ def create_owner_router(
                     intake_brief=body.intakeBrief,
                     intake_questions=body.intakeQuestions,
                     intake_opening=body.intakeOpening,
+                    intake_offer_line=body.intakeOfferLine,
+                    intake_visit_question=body.intakeVisitQuestion,
                     notification_email=body.notificationEmail,
                     calendar_feed_url=body.calendarFeedUrl,
                     timezone=body.timezone,

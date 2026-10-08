@@ -380,6 +380,7 @@ async def test_dashboard_approves_a_booking_request(
         assert [row["reference"] for row in bookings["bookings"]] == [reference]
         assert bookings["bookings"][0]["needsDecision"]
         assert bookings["bookings"][0]["customer"]["name"] == "Jane Doe"
+        assert "notes" in bookings["bookings"][0]
 
         approved = await http.post(
             f"/v1/owner/bookings/{reference.upper()}/approve", headers=bearer(owner)

@@ -100,6 +100,8 @@ class SqlBusinessRepository:
                 brief=row.intake_brief,
                 questions=row.intake_questions,
                 opening=row.intake_opening,
+                offer_line=row.intake_offer_line,
+                visit_question=row.intake_visit_question,
             ),
             notification_email=row.notification_email,
             owner_email=row.owner_email,
@@ -153,6 +155,8 @@ class SqlBusinessRepository:
         intake_brief: str | None = None,
         intake_questions: str | None = None,
         intake_opening: str | None = None,
+        intake_offer_line: str | None = None,
+        intake_visit_question: str | None = None,
         notification_email: str | None = None,
         owner_email: str | None = None,
         calendar_feed_url: str | None = None,
@@ -178,6 +182,10 @@ class SqlBusinessRepository:
             row.intake_questions = intake_questions or None
         if intake_opening is not None:
             row.intake_opening = intake_opening or None
+        if intake_offer_line is not None:
+            row.intake_offer_line = intake_offer_line or None
+        if intake_visit_question is not None:
+            row.intake_visit_question = intake_visit_question or None
         if notification_email is not None:
             row.notification_email = notification_email or None
         if owner_email is not None:

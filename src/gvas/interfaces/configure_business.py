@@ -34,8 +34,10 @@ from gvas.config import Settings
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import (
     INTAKE_BRIEF_MAX_CHARS,
+    INTAKE_OFFER_LINE_MAX_CHARS,
     INTAKE_OPENING_MAX_CHARS,
     INTAKE_QUESTIONS_MAX_CHARS,
+    INTAKE_VISIT_QUESTION_MAX_CHARS,
 )
 from gvas.domain.reporting import normalize_email_address
 from gvas.domain.repositories import (
@@ -69,6 +71,8 @@ class ConfigureBusinessRequest:
     intake_brief: str | None = None
     intake_questions: str | None = None
     intake_opening: str | None = None
+    intake_offer_line: str | None = None
+    intake_visit_question: str | None = None
     notification_email: str | None = None
     owner_email: str | None = None
     timezone: str | None = None
@@ -113,6 +117,16 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
     intake_opening = _optional_text(
         arguments.intake_opening, "--intake-opening", INTAKE_OPENING_MAX_CHARS
     )
+    intake_offer_line = _optional_text(
+        getattr(arguments, "intake_offer_line", None),
+        "--intake-offer-line",
+        INTAKE_OFFER_LINE_MAX_CHARS,
+    )
+    intake_visit_question = _optional_text(
+        getattr(arguments, "intake_visit_question", None),
+        "--intake-visit-question",
+        INTAKE_VISIT_QUESTION_MAX_CHARS,
+    )
     notification_email = _optional(arguments.notification_email)
     if getattr(arguments, "clear_notification_email", False):
         if notification_email is not None:
@@ -151,6 +165,8 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
             intake_brief,
             intake_questions,
             intake_opening,
+            intake_offer_line,
+            intake_visit_question,
         )
     ):
         raise ConfigureBusinessInputError("nothing to configure; pass at least one option")
@@ -169,6 +185,8 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         intake_brief=intake_brief,
         intake_questions=intake_questions,
         intake_opening=intake_opening,
+        intake_offer_line=intake_offer_line,
+        intake_visit_question=intake_visit_question,
         notification_email=notification_email,
         owner_email=owner_email,
         timezone=timezone,
@@ -214,6 +232,8 @@ async def run_configure(request: ConfigureBusinessRequest) -> BusinessRecord:
                 intake_brief=request.intake_brief,
                 intake_questions=request.intake_questions,
                 intake_opening=request.intake_opening,
+                intake_offer_line=request.intake_offer_line,
+                intake_visit_question=request.intake_visit_question,
                 notification_email=request.notification_email,
                 owner_email=request.owner_email,
                 timezone=request.timezone,
@@ -242,6 +262,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--intake-questions", help="what the agent finds out beyond name, email and phone"
     )
     parser.add_argument("--intake-opening", help="the agent's first message to a visitor")
+    parser.add_argument("--intake-offer-line", help="the agent's line above the offered times")
+    parser.add_argument(
+        "--intake-visit-question",
+        help="asked once a time is picked; the answer is saved with the request",
+    )
     parser.add_argument(
         "--clear-notification-email",
         action="store_true",
