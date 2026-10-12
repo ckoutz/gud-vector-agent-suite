@@ -35,6 +35,13 @@ from gvas.domain.intake import (
     IntakeConversation,
     sanitize_owner_reason,
 )
+from gvas.domain.invoices import (
+    Invoice,
+    InvoiceConflictError,
+    InvoiceLine,
+    invoice_number,
+)
+from gvas.domain.invoices import due_on as invoice_due_on
 from gvas.domain.money import format_money
 from gvas.domain.owner import (
     CALENDAR_WINDOW_MAX_DAYS,
@@ -777,6 +784,69 @@ class OwnerService:
             await unit_of_work.outbox.enqueue(
                 checkout_expire_command(quote.business_id, checkout.checkout_session_id)
             )
+
+    async def invoices(self, context: OwnerContext) -> tuple[Invoice, ...]:
+        if not context.business.invoice_prefix:
+            return ()
+        async with self._unit_of_work_factory() as unit_of_work:
+            return await unit_of_work.invoices.list_for_business(context.business.business_id)
+
+    async def send_invoice(self, context: OwnerContext, quote_id: str) -> Invoice:
+        """Invoice an accepted one-off quote: an exact copy of its lines and
+        total, due in 14 days. Sending only records it for now; the customer
+        is not e-mailed."""
+
+        prefix = context.business.invoice_prefix
+        if not prefix:
+            raise OwnerNotFoundError("invoices are off for this business")
+        now = self._now()
+        zone = business_zone(context.business.timezone) or UTC
+        business_id = context.business.business_id
+        async with self._unit_of_work_factory() as unit_of_work:
+            quote = await self._find_quote(unit_of_work, context, quote_id)
+            draft = quote.draft
+            if draft is None or draft.billing is not QuoteBilling.ONE_TIME:
+                raise OwnerConflictError("Only one-off quotes can be invoiced.")
+            if quote.customer_status not in (
+                CustomerQuoteStatus.ACCEPTED,
+                CustomerQuoteStatus.PAID,
+            ):
+                raise OwnerConflictError("Only accepted quotes can be invoiced.")
+            if await unit_of_work.invoices.for_quote(business_id, quote.quote_id) is not None:
+                raise OwnerConflictError("This quote already has an invoice.")
+            sequence = await unit_of_work.invoices.next_sequence(business_id)
+            recipient = draft.recipient
+            invoice = Invoice(
+                invoice_id=uuid4(),
+                business_id=business_id,
+                quote_id=quote.quote_id,
+                sequence=sequence,
+                number=invoice_number(prefix, sequence),
+                customer_name=recipient.display_name,
+                customer_email=recipient.email_address,
+                customer_phone=recipient.phone,
+                service_address=recipient.service_address,
+                line_items=tuple(
+                    InvoiceLine(
+                        description=item.description,
+                        quantity=item.quantity,
+                        unit_price_minor=item.unit_price_minor,
+                    )
+                    for item in draft.line_items
+                ),
+                total_minor=draft.total_minor,
+                currency=draft.currency,
+                sent_at=now,
+                due_on=invoice_due_on(now, zone),
+                sent_by=context.session.email,
+                created_at=now,
+            )
+            try:
+                await unit_of_work.invoices.create(invoice)
+            except InvoiceConflictError as error:
+                raise OwnerConflictError("This quote changed; refresh and try again.") from error
+            await unit_of_work.commit()
+        return invoice
 
     async def mark_unpaid(self, context: OwnerContext, quote_id: str) -> Quote:
         """Void the manual payment of a one-off quote, keeping who voided it

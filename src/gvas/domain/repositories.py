@@ -30,6 +30,7 @@ from gvas.domain.intake import (
     IntakeMessageRepository,
     IntakeProfile,
 )
+from gvas.domain.invoices import InvoiceRepository
 from gvas.domain.messages import (
     ChannelEndpointRef,
     ConversationRef,
@@ -117,6 +118,8 @@ class BusinessRecord(BaseModel):
     # The IANA zone the business works in (``America/Los_Angeles``): filled
     # from Calendly, editable by the owner, and used for every time label.
     timezone: str | None = None
+    # Invoices are on only where this is set; numbers read ``LL-1042``.
+    invoice_prefix: str | None = None
 
     @field_validator("site_url")
     @classmethod
@@ -224,6 +227,7 @@ class BusinessRepository(Protocol):
         intake_opening: str | None = None,
         intake_offer_line: str | None = None,
         intake_visit_question: str | None = None,
+        invoice_prefix: str | None = None,
         notification_email: str | None = None,
         owner_email: str | None = None,
         calendar_feed_url: str | None = None,
@@ -358,6 +362,7 @@ class UnitOfWork(Protocol):
     owner_login_tokens: OwnerLoginTokenRepository
     owner_sessions: OwnerSessionRepository
     calendar_blocks: CalendarBlockRepository
+    invoices: InvoiceRepository
 
     async def __aenter__(self) -> "UnitOfWork": ...
 

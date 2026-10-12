@@ -14,6 +14,7 @@ from gvas.domain.customers import (
     ServiceRequestRepository,
 )
 from gvas.domain.intake import IntakeConversationRepository, IntakeMessageRepository
+from gvas.domain.invoices import InvoiceRepository
 from gvas.domain.owner import OwnerLoginTokenRepository, OwnerSessionRepository
 from gvas.domain.payments import (
     PaymentEventRepository,
@@ -56,6 +57,7 @@ from gvas.infrastructure.intake_repositories import (
     SqlIntakeMessageRepository,
 )
 from gvas.infrastructure.payment_repositories import (
+    SqlInvoiceRepository,
     SqlPaymentEventRepository,
     SqlPaymentLedgerRepository,
     SqlQuotePaymentRepository,
@@ -100,6 +102,7 @@ class SqlUnitOfWork:
     owner_login_tokens: OwnerLoginTokenRepository
     owner_sessions: OwnerSessionRepository
     calendar_blocks: CalendarBlockRepository
+    invoices: InvoiceRepository
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -128,6 +131,7 @@ class SqlUnitOfWork:
         self.owner_login_tokens = SqlOwnerLoginTokenRepository(self._session)
         self.owner_sessions = SqlOwnerSessionRepository(self._session)
         self.calendar_blocks = SqlCalendarBlockRepository(self._session)
+        self.invoices = SqlInvoiceRepository(self._session)
         return self
 
     async def __aexit__(

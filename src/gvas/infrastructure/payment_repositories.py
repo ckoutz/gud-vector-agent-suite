@@ -7,6 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from gvas.domain.enums import BillingInterval, QuotePaymentStatus
 from gvas.domain.identifiers import BusinessId, CustomerId, QuoteId, SubscriptionId
+from gvas.domain.invoices import (
+    FIRST_INVOICE_SEQUENCE,
+    Invoice,
+    InvoiceConflictError,
+    InvoiceLine,
+)
 from gvas.domain.payments import (
     LedgerPayment,
     PaymentKind,
@@ -17,6 +23,7 @@ from gvas.domain.payments import (
     QuoteSubscriptionRecord,
 )
 from gvas.infrastructure.payment_models import (
+    InvoiceRow,
     LedgerPaymentRow,
     PaymentProviderEvent,
     QuotePayment,
@@ -451,3 +458,78 @@ class SqlPaymentLedgerRepository:
             query.order_by(LedgerPaymentRow.paid_at.desc(), LedgerPaymentRow.id)
         )
         return tuple(self._payment(row) for row in rows)
+
+
+class SqlInvoiceRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    @staticmethod
+    def _invoice(row: InvoiceRow) -> Invoice:
+        return Invoice(
+            invoice_id=row.id,
+            business_id=BusinessId(row.business_id),
+            quote_id=QuoteId(row.quote_id),
+            sequence=row.sequence,
+            number=row.number,
+            customer_name=row.customer_name,
+            customer_email=row.customer_email,
+            customer_phone=row.customer_phone,
+            service_address=row.service_address,
+            line_items=tuple(InvoiceLine.model_validate(item) for item in row.line_items),
+            total_minor=row.total_cents,
+            currency=row.currency,
+            sent_at=_aware(row.sent_at),
+            due_on=row.due_on,
+            sent_by=row.sent_by,
+            created_at=_aware(row.created_at),
+        )
+
+    async def list_for_business(self, business_id: BusinessId) -> tuple[Invoice, ...]:
+        rows = await self.session.scalars(
+            select(InvoiceRow)
+            .where(InvoiceRow.business_id == business_id)
+            .order_by(InvoiceRow.sequence.desc())
+        )
+        return tuple(self._invoice(row) for row in rows)
+
+    async def for_quote(self, business_id: BusinessId, quote_id: QuoteId) -> Invoice | None:
+        row = await self.session.scalar(
+            select(InvoiceRow).where(
+                InvoiceRow.business_id == business_id, InvoiceRow.quote_id == quote_id
+            )
+        )
+        return None if row is None else self._invoice(row)
+
+    async def next_sequence(self, business_id: BusinessId) -> int:
+        highest = await self.session.scalar(
+            select(func.max(InvoiceRow.sequence)).where(InvoiceRow.business_id == business_id)
+        )
+        return FIRST_INVOICE_SEQUENCE if highest is None else highest + 1
+
+    async def create(self, invoice: Invoice) -> None:
+        self.session.add(
+            InvoiceRow(
+                id=invoice.invoice_id,
+                business_id=invoice.business_id,
+                quote_id=invoice.quote_id,
+                sequence=invoice.sequence,
+                number=invoice.number,
+                customer_name=invoice.customer_name,
+                customer_email=invoice.customer_email,
+                customer_phone=invoice.customer_phone,
+                service_address=invoice.service_address,
+                line_items=[item.model_dump() for item in invoice.line_items],
+                total_cents=invoice.total_minor,
+                currency=invoice.currency,
+                sent_at=invoice.sent_at,
+                due_on=invoice.due_on,
+                sent_by=invoice.sent_by,
+                created_at=invoice.created_at,
+            )
+        )
+        try:
+            async with self.session.begin_nested():
+                await self.session.flush()
+        except IntegrityError as error:
+            raise InvoiceConflictError("the quote or number already has an invoice") from error

@@ -40,6 +40,8 @@ from gvas.domain.enums import (
 )
 from gvas.domain.identifiers import BusinessId, QuoteId
 from gvas.domain.intake import INTAKE_CHANNEL_WEB, BookingKind, IntakeState, new_reference
+from gvas.domain.invoices import due_on as invoice_due_on
+from gvas.domain.invoices import invoice_number
 from gvas.domain.messages import CustomerRecipient
 from gvas.domain.owner import OWNER_LOGIN_TOKEN_TTL
 from gvas.domain.payments import (
@@ -63,10 +65,10 @@ from gvas.infrastructure.models import (
     OwnerLoginTokenRecord,
     QuoteRecord,
 )
-from gvas.infrastructure.payment_models import LedgerPaymentRow, QuoteSubscription
+from gvas.infrastructure.payment_models import InvoiceRow, LedgerPaymentRow, QuoteSubscription
 
 #: Any of these rows means the business already has data a plain seed would mix into.
-SEEDED_MODELS = (Customer, QuoteRecord, IntakeConversation, LedgerPaymentRow)
+SEEDED_MODELS = (Customer, QuoteRecord, IntakeConversation, LedgerPaymentRow, InvoiceRow)
 LOCAL_HOSTS = ("localhost", "127.0.0.1")
 
 CURRENCY = "USD"
@@ -143,6 +145,8 @@ class FakeQuote:
     #: For paid quotes: days before now it was paid, clamped into this month when ``this_month``.
     paid_days_ago: int = 0
     this_month: bool = True
+    #: Where invoices are on: days before now (or before it was paid) its invoice went out.
+    invoice_days_ago: int | None = None
 
 
 QUOTES = (
@@ -170,13 +174,32 @@ QUOTES = (
         "accepted",
         4,
         "Includes base prep and edging.",
+        invoice_days_ago=3,
     ),
-    FakeQuote(5, (("Lawn aeration and overseed", 1, 31_000),), "accepted", 6),
+    FakeQuote(5, (("Lawn aeration and overseed", 1, 31_000),), "accepted", 12, invoice_days_ago=9),
     FakeQuote(6, (("Raised cedar beds, 4 x 8 ft", 3, 48_500),), "accepted", 2),
-    FakeQuote(7, (("Spring cleanup", 1, 64_000),), "card", 9, paid_days_ago=5),
-    FakeQuote(8, (("Oak pruning", 2, 49_000),), "card", 30, paid_days_ago=26, this_month=False),
-    FakeQuote(9, (("Gutter and bed cleanup", 1, 27_500),), "check", 8, paid_days_ago=3),
-    FakeQuote(10, (("Sod install, 800 sq ft", 1, 235_000),), "card", 12, paid_days_ago=7),
+    FakeQuote(7, (("Spring cleanup", 1, 64_000),), "card", 9, paid_days_ago=5, invoice_days_ago=3),
+    FakeQuote(
+        8,
+        (("Oak pruning", 2, 49_000),),
+        "card",
+        30,
+        paid_days_ago=26,
+        this_month=False,
+        invoice_days_ago=5,
+    ),
+    FakeQuote(
+        9, (("Gutter and bed cleanup", 1, 27_500),), "check", 8, paid_days_ago=3, invoice_days_ago=4
+    ),
+    FakeQuote(
+        10,
+        (("Sod install, 800 sq ft", 1, 235_000),),
+        "card",
+        40,
+        paid_days_ago=33,
+        this_month=False,
+        invoice_days_ago=6,
+    ),
     FakeQuote(
         11,
         (("Garden maintenance, 2 visits a month", 1, 18_000),),
@@ -185,7 +208,13 @@ QUOTES = (
         "3 months by check: $540.",
         paid_days_ago=2,
     ),
+    FakeQuote(
+        1, (("Sprinkler valve replacement", 2, 14_500),), "accepted", 26, invoice_days_ago=20
+    ),
+    FakeQuote(3, (("Fall leaf cleanup", 1, 42_000),), "accepted", 6, invoice_days_ago=1),
 )
+# The demo's next invoice is LL-1042.
+SEED_FIRST_INVOICE = 1034
 PAID_STAGES = frozenset({"card", "check", "plan"})
 PLAN_MONTHS = 3
 PLAN_AMOUNT = 54_000
@@ -255,6 +284,7 @@ class SeedSummary:
     quotes: int
     payments: int
     bookings: int
+    invoices: int = 0
 
 
 def _local_noon(day: date, zone: tzinfo) -> datetime:
@@ -342,14 +372,24 @@ async def seed_demo(
         await session.flush()
 
         payments = 0
+        invoiced: list[tuple[datetime, QuoteId, FakeCustomer, QuoteDraftProposal]] = []
         for index, fake in enumerate(QUOTES):
             person = CUSTOMERS[fake.customer]
             quote_id = QuoteId(uuid4())
             created = now - timedelta(days=fake.days_ago, hours=3 + index % 4)
+            invoiced_at = None
             if fake.stage in PAID_STAGES:
                 # A quote goes out a couple of days before it's paid, whatever the date.
                 paid = _local_noon(_paid_day(today, fake), zone)
                 created = min(created, paid - timedelta(days=2))
+                if fake.invoice_days_ago is not None:
+                    invoiced_at = paid - timedelta(days=fake.invoice_days_ago)
+            elif fake.invoice_days_ago is not None:
+                invoiced_at = min(
+                    _local_noon(today - timedelta(days=fake.invoice_days_ago), zone), now
+                )
+            if invoiced_at is not None:
+                created = min(created, invoiced_at - timedelta(days=2))
             recurring = fake.stage == "plan"
             draft = QuoteDraftProposal(
                 quote_id=quote_id,
@@ -425,6 +465,8 @@ async def seed_demo(
                 )
             )
             await session.flush()
+            if invoiced_at is not None and business.invoice_prefix:
+                invoiced.append((invoiced_at, quote_id, person, draft))
             if fake.stage not in PAID_STAGES:
                 continue
             paid_on = _paid_day(today, fake)
@@ -467,6 +509,37 @@ async def seed_demo(
                         paid_through=paid_through(paid_on, PLAN_MONTHS),
                     )
                 )
+
+        for sequence, (sent_at, quote_id, person, draft) in enumerate(
+            sorted(invoiced, key=lambda entry: entry[0]), start=SEED_FIRST_INVOICE
+        ):
+            session.add(
+                InvoiceRow(
+                    business_id=business_id,
+                    quote_id=quote_id,
+                    sequence=sequence,
+                    number=invoice_number(business.invoice_prefix or "", sequence),
+                    customer_name=person.name,
+                    customer_email=person.email,
+                    customer_phone=person.phone,
+                    service_address=person.address,
+                    line_items=[
+                        {
+                            "description": item.description,
+                            "quantity": item.quantity,
+                            "unit_price_minor": item.unit_price_minor,
+                        }
+                        for item in draft.line_items
+                    ],
+                    total_cents=draft.total_minor,
+                    currency=CURRENCY,
+                    sent_at=sent_at,
+                    due_on=invoice_due_on(sent_at, zone),
+                    sent_by=owner,
+                    created_at=sent_at,
+                )
+            )
+        await session.flush()
 
         for booking in BOOKINGS:
             start = datetime.combine(
@@ -514,7 +587,11 @@ async def seed_demo(
             )
         await session.commit()
     return SeedSummary(
-        customers=len(CUSTOMERS), quotes=len(QUOTES), payments=payments, bookings=len(BOOKINGS)
+        customers=len(CUSTOMERS),
+        quotes=len(QUOTES),
+        payments=payments,
+        bookings=len(BOOKINGS),
+        invoices=len(invoiced),
     )
 
 
@@ -562,7 +639,7 @@ async def _run(arguments: argparse.Namespace) -> None:
             print(  # noqa: T201
                 f"seeded business {business_id}: {summary.customers} customers, "
                 f"{summary.quotes} quotes, {summary.payments} payments, "
-                f"{summary.bookings} bookings"
+                f"{summary.bookings} bookings, {summary.invoices} invoices"
             )
         if arguments.sign_in_link:
             token = await mint_owner_sign_in(session_factory, business_id)

@@ -39,6 +39,7 @@ from gvas.domain.intake import (
     INTAKE_QUESTIONS_MAX_CHARS,
     INTAKE_VISIT_QUESTION_MAX_CHARS,
 )
+from gvas.domain.invoices import INVOICE_PREFIX_MAX_CHARS
 from gvas.domain.reporting import normalize_email_address
 from gvas.domain.repositories import (
     BusinessRecord,
@@ -73,6 +74,7 @@ class ConfigureBusinessRequest:
     intake_opening: str | None = None
     intake_offer_line: str | None = None
     intake_visit_question: str | None = None
+    invoice_prefix: str | None = None
     notification_email: str | None = None
     owner_email: str | None = None
     timezone: str | None = None
@@ -127,6 +129,9 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         "--intake-visit-question",
         INTAKE_VISIT_QUESTION_MAX_CHARS,
     )
+    invoice_prefix = _optional_text(
+        getattr(arguments, "invoice_prefix", None), "--invoice-prefix", INVOICE_PREFIX_MAX_CHARS
+    )
     notification_email = _optional(arguments.notification_email)
     if getattr(arguments, "clear_notification_email", False):
         if notification_email is not None:
@@ -167,6 +172,7 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
             intake_opening,
             intake_offer_line,
             intake_visit_question,
+            invoice_prefix,
         )
     ):
         raise ConfigureBusinessInputError("nothing to configure; pass at least one option")
@@ -187,6 +193,7 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         intake_opening=intake_opening,
         intake_offer_line=intake_offer_line,
         intake_visit_question=intake_visit_question,
+        invoice_prefix=invoice_prefix,
         notification_email=notification_email,
         owner_email=owner_email,
         timezone=timezone,
@@ -234,6 +241,7 @@ async def run_configure(request: ConfigureBusinessRequest) -> BusinessRecord:
                 intake_opening=request.intake_opening,
                 intake_offer_line=request.intake_offer_line,
                 intake_visit_question=request.intake_visit_question,
+                invoice_prefix=request.invoice_prefix,
                 notification_email=request.notification_email,
                 owner_email=request.owner_email,
                 timezone=request.timezone,
@@ -262,6 +270,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--intake-questions", help="what the agent finds out beyond name, email and phone"
     )
     parser.add_argument("--intake-opening", help="the agent's first message to a visitor")
+    parser.add_argument(
+        "--invoice-prefix",
+        help='turn invoices on, numbered PREFIX-1001 and up (e.g. "LL"); "" turns them off',
+    )
     parser.add_argument("--intake-offer-line", help="the agent's line above the offered times")
     parser.add_argument(
         "--intake-visit-question",
