@@ -89,10 +89,13 @@ otherwise Slack events arrive for a tenant that does not exist.
 ## Telnyx SMS configuration (optional)
 
 SMS is a second owner channel, scoped to quotes only: `quote:` triggers, quote
-follow-ups and approve/send replies run; any other message (field notes, voice
-notes, `approve report`, `close notes`, free text) gets one short reply saying
-SMS supports quotes only and field notes belong in Slack, and nothing is opened
-or retried. MMS media is not surfaced to the workflows.
+follow-ups and approve/send replies run, as do booking replies and time blocks.
+With OpenAI configured, any other text message (free text such as "hello" or
+"what's outstanding?") gets a plain-language, read-only answer from the owner
+assistant (see `docs/security/owner_assistant_threat_model.md`). Field notes,
+voice notes, `approve report` and `close notes` get one short reply saying what
+texts can do and that field notes belong in Slack, and nothing is opened or
+retried. MMS media is not surfaced to the workflows.
 
 - **Webhook URL**: `https://<web-service-domain>/telnyx/messaging`
   (`GVAS_TELNYX_WEBHOOK_PATH` if you change the path) on the messaging profile

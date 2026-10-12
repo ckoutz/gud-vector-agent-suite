@@ -38,6 +38,7 @@ from gvas.application.intake import (
 from gvas.application.manual_payments import ManualPaymentEffectsService
 from gvas.application.outbox_service import OutboxService
 from gvas.application.owner import OwnerService
+from gvas.application.owner_assistant import OwnerAssistant, OwnerReadTools
 from gvas.application.owner_reply_delivery import DeliverOwnerReplyService
 from gvas.application.plan_custody import (
     CopyPlanSetIntoCustodyService,
@@ -73,6 +74,7 @@ from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.config import IntakeSettings, Settings
 from gvas.domain.completeness import CompletenessReviewPort
 from gvas.domain.identifiers import BusinessId
+from gvas.domain.owner_assistant import OwnerAssistantPort
 from gvas.domain.ports import (
     AppointmentLookupPort,
     AttachmentAccessPort,
@@ -146,6 +148,9 @@ class ApplicationPorts:
     # for customer notices (kept apart from quote_delivery, which may route to
     # an external portal).
     intake_agent: IntakeAgentPort | None = None
+    # Owner messages that match no command get a plain-language, read-only
+    # answer from this model; absent means the owner gets the command list.
+    owner_assistant: OwnerAssistantPort | None = None
     availability: AvailabilityPort | None = None
     customer_email: CustomerQuoteDeliveryPort | None = None
     # The ledger the metered adapters write to; the ceiling guard reads the same
@@ -193,6 +198,7 @@ class Application:
     public_quotes: PublicQuoteService
     portal: PortalService
     owner: OwnerService
+    owner_assistant: OwnerAssistant | None
     intake: IntakeService | None
     intake_booking_events: IntakeBookingEventService
     # Wired only when the intake decision-link secret and base URL are set.
@@ -322,6 +328,17 @@ def build_application(
         calendar_feed=ports.calendar_feed,
         now=now,
     )
+    owner_assistant = (
+        OwnerAssistant(
+            unit_of_work_factory,
+            ports.owner_assistant,
+            OwnerReadTools(unit_of_work_factory, owner, now=now),
+            ceilings=ceiling_guard,
+            now=now,
+        )
+        if ports.owner_assistant is not None
+        else None
+    )
     router = WorkflowRouter(
         [
             quote_handler,
@@ -329,7 +346,7 @@ def build_application(
             calendar_block_handler,
             field_note_handler,
             WorkflowConflictHandler(),
-            UnmatchedMessageHandler(),
+            UnmatchedMessageHandler(owner_assistant),
             *(ChannelUnsupportedMessageHandler(policy) for policy in ports.channel_policies),
         ]
     )
@@ -474,6 +491,7 @@ def build_application(
         public_quotes=public_quotes,
         portal=portal,
         owner=owner,
+        owner_assistant=owner_assistant,
         intake=intake_service,
         intake_booking_events=IntakeBookingEventService(
             unit_of_work_factory,

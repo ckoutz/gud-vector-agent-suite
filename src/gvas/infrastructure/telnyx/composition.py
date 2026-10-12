@@ -7,6 +7,7 @@ from gvas.application.channel_policy import ChannelWorkflowPolicy
 from gvas.application.ingestion import IngestOwnerMessageService
 from gvas.domain.calendar_blocks import CALENDAR_BLOCK_INTENT
 from gvas.domain.intake import BOOKING_INTENT
+from gvas.domain.intents import UNMATCHED_MESSAGE_INTENT
 from gvas.domain.quotes import QUOTE_INTENT, QUOTE_TRIGGER_PREFIX
 from gvas.infrastructure.telnyx.config import TelnyxSettings
 from gvas.infrastructure.telnyx.delivery import (
@@ -23,12 +24,14 @@ from gvas.infrastructure.telnyx.routing import SqlTelnyxRoutingResolver
 from gvas.interfaces.http.telnyx import create_telnyx_router
 
 SMS_QUOTES_ONLY_REPLY_PREFIX = (
-    "SMS supports quotes only, so nothing was started. "
+    "By text I can do quotes, booking replies and time blocks, so nothing was started. "
     f"Begin a quote with `{QUOTE_TRIGGER_PREFIX} ...` and reply here to approve or send it."
 )
 
 
-def sms_quotes_only_policy(field_notes_channel: str) -> ChannelWorkflowPolicy:
+def sms_quotes_only_policy(
+    field_notes_channel: str, *, owner_assistant: bool = False
+) -> ChannelWorkflowPolicy:
     """Scope the SMS channel to the quote workflow.
 
     ``quote:`` triggers, quote follow-ups and approve/send replies run; every
@@ -39,7 +42,12 @@ def sms_quotes_only_policy(field_notes_channel: str) -> ChannelWorkflowPolicy:
         source_namespace=TELNYX_SOURCE_NAMESPACE,
         # Booking decisions and time blocks ride SMS so the owner can answer
         # a booking request from a text.
-        allowed_intents=frozenset({QUOTE_INTENT, BOOKING_INTENT, CALENDAR_BLOCK_INTENT}),
+        # With the owner assistant on, anything else that isn't a field note
+        # gets a plain-language (read-only) answer instead of the scope reply.
+        allowed_intents=frozenset(
+            {QUOTE_INTENT, BOOKING_INTENT, CALENDAR_BLOCK_INTENT}
+            | ({UNMATCHED_MESSAGE_INTENT} if owner_assistant else set())
+        ),
         unsupported_reply=(
             f"{SMS_QUOTES_ONLY_REPLY_PREFIX} Field notes belong in {field_notes_channel}."
         ),
