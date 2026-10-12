@@ -10,9 +10,11 @@ SLOT = AvailableSlot(start=START, end=START + timedelta(hours=1))
 
 def test_a_demo_confirms_in_the_chat_not_by_email() -> None:
     reply = slot_confirmed_reply(SLOT, UTC, texts=True, in_chat=True)
-    assert "We'll confirm here in the chat once the owner approves." in reply
-    assert "email" not in reply and "text" not in reply.split("confirm")[1]
-    assert slot_held_reply(in_chat=True).endswith("we'll confirm here in the chat.")
+    assert "You'll see it change to booked here in the chat once the owner approves." in reply
+    assert "email" not in reply and "text" not in reply
+    assert slot_held_reply(in_chat=True).endswith(
+        "you'll see it change to booked here in the chat once they approve."
+    )
 
 
 def test_a_real_business_still_confirms_by_email() -> None:
