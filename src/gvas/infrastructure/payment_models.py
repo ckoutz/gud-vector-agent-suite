@@ -12,12 +12,14 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     false,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from gvas.infrastructure.db import json_type
 from gvas.infrastructure.models import Base
 
 
@@ -172,3 +174,37 @@ class PaymentProviderEvent(Base):
 
 
 __all__ = ["LedgerPaymentRow", "PaymentProviderEvent", "QuotePayment", "QuoteSubscription"]
+
+
+class InvoiceRow(Base):
+    """An invoice sent from an accepted one-off quote; see ``Invoice``."""
+
+    __tablename__ = "invoices"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["business_id", "quote_id"],
+            ["quotes.business_id", "quotes.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("business_id", "quote_id", name="uq_invoices_business_id_quote_id"),
+        UniqueConstraint("business_id", "sequence", name="uq_invoices_business_id_sequence"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    quote_id: Mapped[UUID] = mapped_column(nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    number: Mapped[str] = mapped_column(String(32), nullable=False)
+    customer_name: Mapped[str | None] = mapped_column(String(255))
+    customer_email: Mapped[str | None] = mapped_column(String(320))
+    customer_phone: Mapped[str | None] = mapped_column(String(64))
+    service_address: Mapped[str | None] = mapped_column(Text)
+    line_items: Mapped[list[dict[str, object]]] = mapped_column(json_type, nullable=False)
+    total_cents: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    due_on: Mapped[date] = mapped_column(Date, nullable=False)
+    sent_by: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

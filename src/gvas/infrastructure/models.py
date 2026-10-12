@@ -50,6 +50,8 @@ class Business(Base):
     calendar_feed_url: Mapped[str | None] = mapped_column(Text)
     # IANA zone name the business's times are shown in.
     timezone: Mapped[str | None] = mapped_column(String(64))
+    # Set (e.g. "LL") only where invoices are on: numbers read LL-1042.
+    invoice_prefix: Mapped[str | None] = mapped_column(String(10))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

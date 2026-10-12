@@ -8,12 +8,20 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from gvas.application.owner import OwnerAuthenticationError, OwnerContext, OwnerService
+from gvas.application.owner import (
+    OwnerAuthenticationError,
+    OwnerConflictError,
+    OwnerContext,
+    OwnerNotFoundError,
+    OwnerService,
+)
 from gvas.composition.production import ProductionConfigurationError
 from gvas.domain.enums import CustomerQuoteStatus
 from gvas.domain.identifiers import BusinessId
+from gvas.domain.invoices import InvoiceStatus, invoice_status
 from gvas.domain.owner import OwnerSession
-from gvas.domain.payments import month_totals, paid_through
+from gvas.domain.payments import first_counted, month_totals, paid_through
+from gvas.domain.quotes import public_quote_id
 from gvas.infrastructure.demo import CLOSED_WEEKDAYS, DemoBookedEvents
 from gvas.infrastructure.models import Business, Customer, QuoteRecord
 from gvas.infrastructure.repositories import SqlBusinessRepository
@@ -72,21 +80,21 @@ async def test_the_seed_gives_the_owner_a_full_week(
 ) -> None:
     business_id = await _business(session_factory)
     summary = await seed_demo.seed_demo(session_factory, business_id, reset=False, now=NOW)
-    assert (summary.customers, summary.quotes) == (12, 12)
+    assert (summary.customers, summary.quotes, summary.invoices) == (12, 14, 0)
 
     service = _service(session_factory)
     context = await _context(session_factory, business_id)
     quotes = await service.quotes(context)
-    assert len(quotes) == 12
+    assert len(quotes) == 14
     assert len([q for q in quotes if q.status.value == "awaiting_approval"]) == 1
     accepted = [q for q in quotes if q.customer_status is CustomerQuoteStatus.ACCEPTED]
-    assert sum(q.draft.total_minor for q in accepted if q.draft is not None) == 796_500
+    assert sum(q.draft.total_minor for q in accepted if q.draft is not None) == 867_500
     assert all(q.is_claimable() for q in quotes if q.status.value == "delivered")
 
     payments = await service.payments(context)
-    # This month: spring cleanup, the Mark-paid check, the sod and the plan prepay;
-    # the oak pruning was paid last month.
-    assert month_totals(payments, ZONE, NOW) == {"USD": 64_000 + 27_500 + 235_000 + 54_000}
+    # This month: spring cleanup, the Mark-paid check and the plan prepay;
+    # the oak pruning and the sod were paid last month.
+    assert month_totals(payments, ZONE, NOW) == {"USD": 64_000 + 27_500 + 54_000}
     assert any(p.paid_at.astimezone(ZONE).month == 9 for p in payments)
 
     (plan,) = await service.subscriptions(context)
@@ -129,13 +137,13 @@ async def test_reset_replaces_only_this_business_and_a_plain_rerun_refuses(
             customers = await session.scalar(
                 select(func.count()).select_from(Customer).where(Customer.business_id == business)
             )
-            assert (quotes, customers) == (count, count)
+            assert (quotes, customers) == (count + 2, count)
         assert await session.get(Business, business_id) is not None
     context = await _context(session_factory, business_id)
     payments = await _service(session_factory).payments(context)
     assert len(payments) == 5
     assert max(p.paid_at for p in payments) <= later
-    assert month_totals(payments, ZONE, later) == {"USD": 380_500}
+    assert month_totals(payments, ZONE, later) == {"USD": 145_500}
 
 
 @pytest.mark.asyncio
@@ -236,3 +244,75 @@ async def test_dates_hold_up_on_awkward_days(
     slots.sort()
     for (_, earlier_end), (later_start, _) in zip(slots, slots[1:], strict=False):
         assert earlier_end <= later_start
+
+
+@pytest.mark.asyncio
+async def test_with_invoices_on_the_seed_has_eight_and_an_accepted_quote_can_be_invoiced(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await _business(session_factory)
+    async with session_factory() as session:
+        await session.execute(
+            update(Business).where(Business.id == business_id).values(invoice_prefix="LL")
+        )
+        await session.commit()
+    summary = await seed_demo.seed_demo(session_factory, business_id, reset=False, now=NOW)
+    assert summary.invoices == 8
+
+    service = _service(session_factory)
+    context = await _context(session_factory, business_id)
+    invoices = await service.invoices(context)
+    assert [i.number for i in invoices] == [f"LL-{n}" for n in range(1041, 1033, -1)]
+    paid = first_counted(await service.payments(context))
+    today = NOW.astimezone(ZONE).date()
+    statuses = [invoice_status(i, paid.get(i.quote_id), today=today) for i in invoices]
+    assert statuses.count(InvoiceStatus.PAID) == 4
+    assert statuses.count(InvoiceStatus.SENT) == 3
+    assert statuses.count(InvoiceStatus.OVERDUE) == 1
+    paid_now = [
+        i
+        for i in invoices
+        if i.quote_id in paid and paid[i.quote_id].paid_at.astimezone(ZONE).month == NOW.month
+    ]
+    assert len(paid_now) == 2
+    for invoice in invoices:
+        assert (invoice.due_on - invoice.sent_at.astimezone(ZONE).date()).days == 14
+        assert invoice.sent_at <= NOW
+        assert sum(x.quantity * x.unit_price_minor for x in invoice.line_items) == (
+            invoice.total_minor
+        )
+
+    quotes = await service.quotes(context)
+    invoiced = {i.quote_id for i in invoices}
+    (beds,) = [
+        q
+        for q in quotes
+        if q.customer_status is CustomerQuoteStatus.ACCEPTED and q.quote_id not in invoiced
+    ]
+    sent = await service.send_invoice(context, public_quote_id(beds.quote_id))
+    assert sent.number == "LL-1042"
+    assert sent.total_minor == 145_500 and len(sent.line_items) == 1
+    assert sent.due_on == today + timedelta(days=14)
+    with pytest.raises(OwnerConflictError, match="already has an invoice"):
+        await service.send_invoice(context, public_quote_id(beds.quote_id))
+    (pending,) = [q for q in quotes if q.status.value == "awaiting_approval"]
+    with pytest.raises(OwnerConflictError, match="accepted"):
+        await service.send_invoice(context, public_quote_id(pending.quote_id))
+
+
+@pytest.mark.asyncio
+async def test_with_invoices_off_there_are_none_and_none_can_be_sent(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await _business(session_factory)
+    await seed_demo.seed_demo(session_factory, business_id, reset=False, now=NOW)
+    service = _service(session_factory)
+    context = await _context(session_factory, business_id)
+    assert await service.invoices(context) == ()
+    accepted = next(
+        q
+        for q in await service.quotes(context)
+        if q.customer_status is CustomerQuoteStatus.ACCEPTED
+    )
+    with pytest.raises(OwnerNotFoundError):
+        await service.send_invoice(context, public_quote_id(accepted.quote_id))

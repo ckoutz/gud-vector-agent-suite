@@ -31,6 +31,7 @@ from gvas.application.owner import (
 )
 from gvas.domain.enums import QuoteStatus
 from gvas.domain.intake import IntakeConversation
+from gvas.domain.invoices import Invoice, invoice_status
 from gvas.domain.owner import CalendarEvent, calendar_feed_host
 from gvas.domain.payments import (
     PLAN_MONTHS_MAX,
@@ -144,6 +145,44 @@ def owner_quote_payload(quote: Quote, *, payment: LedgerPayment | None = None) -
             }
         ),
         "updatedAt": _iso(quote.updated_at),
+    }
+
+
+def owner_invoice_payload(
+    invoice: Invoice, payment: LedgerPayment | None, *, today: date
+) -> dict[str, object]:
+    return {
+        "number": invoice.number,
+        "quoteId": public_quote_id(invoice.quote_id),
+        "status": invoice_status(invoice, payment, today=today).value,
+        "customer": {
+            "name": invoice.customer_name,
+            "email": invoice.customer_email,
+            "phone": invoice.customer_phone,
+            "serviceAddress": invoice.service_address,
+        },
+        "lineItems": [
+            {
+                "description": item.description,
+                "quantity": item.quantity,
+                "unitPriceCents": item.unit_price_minor,
+            }
+            for item in invoice.line_items
+        ],
+        "totalCents": invoice.total_minor,
+        "currency": invoice.currency,
+        "sentAt": _iso(invoice.sent_at),
+        "dueOn": invoice.due_on.isoformat(),
+        "paidOn": _iso(payment.paid_at if payment is not None and payment.counts else None),
+        "paidBy": (
+            None
+            if payment is None or not payment.counts
+            else {
+                "source": payment.source.value,
+                "method": payment.method.value,
+                "note": payment.note,
+            }
+        ),
     }
 
 
@@ -321,6 +360,7 @@ def create_owner_router(
                     "siteUrl": context.business.site_url,
                     "calendlyUrl": context.business.calendly_url,
                     "timezone": context.business.timezone,
+                    "invoices": bool(context.business.invoice_prefix),
                 },
             }
         )
@@ -372,6 +412,35 @@ def create_owner_router(
         except OwnerConflictError as error:
             return JSONResponse({"detail": str(error)}, status_code=409)
         return JSONResponse({"quote": owner_quote_payload(quote)})
+
+    @router.get("/v1/owner/invoices", dependencies=limited)
+    async def invoices(context: OwnerContext = owner) -> JSONResponse:
+        records = await service.invoices(context)
+        paid = first_counted(await service.payments(context)) if records else {}
+        zone = business_zone(context.business.timezone) or UTC
+        today = datetime.now(UTC).astimezone(zone).date()
+        return JSONResponse(
+            {
+                "enabled": bool(context.business.invoice_prefix),
+                "invoices": [
+                    owner_invoice_payload(invoice, paid.get(invoice.quote_id), today=today)
+                    for invoice in records
+                ],
+            }
+        )
+
+    @router.post("/v1/owner/quotes/{quote_id}/send-invoice", dependencies=limited)
+    async def send_invoice(quote_id: str, context: OwnerContext = owner) -> JSONResponse:
+        try:
+            invoice = await service.send_invoice(context, quote_id)
+        except OwnerNotFoundError:
+            return JSONResponse({"detail": "not found"}, status_code=404)
+        except OwnerConflictError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        paid = first_counted(await service.payments(context)).get(invoice.quote_id)
+        zone = business_zone(context.business.timezone) or UTC
+        today = datetime.now(UTC).astimezone(zone).date()
+        return JSONResponse({"invoice": owner_invoice_payload(invoice, paid, today=today)})
 
     @router.post("/v1/owner/quotes/{quote_id}/mark-paid", dependencies=limited)
     async def mark_quote_paid(

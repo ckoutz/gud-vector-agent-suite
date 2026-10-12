@@ -107,6 +107,7 @@ class SqlBusinessRepository:
             owner_email=row.owner_email,
             calendar_feed_url=row.calendar_feed_url,
             timezone=row.timezone,
+            invoice_prefix=row.invoice_prefix,
         )
 
     async def get(self, business_id: BusinessId) -> BusinessRecord | None:
@@ -157,6 +158,7 @@ class SqlBusinessRepository:
         intake_opening: str | None = None,
         intake_offer_line: str | None = None,
         intake_visit_question: str | None = None,
+        invoice_prefix: str | None = None,
         notification_email: str | None = None,
         owner_email: str | None = None,
         calendar_feed_url: str | None = None,
@@ -186,6 +188,8 @@ class SqlBusinessRepository:
             row.intake_offer_line = intake_offer_line or None
         if intake_visit_question is not None:
             row.intake_visit_question = intake_visit_question or None
+        if invoice_prefix is not None:
+            row.invoice_prefix = invoice_prefix or None
         if notification_email is not None:
             row.notification_email = notification_email or None
         if owner_email is not None:

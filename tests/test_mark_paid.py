@@ -29,7 +29,7 @@ from gvas.domain.payments import (
     PaymentMethod,
 )
 from gvas.domain.quotes import public_quote_id
-from gvas.infrastructure.models import OutboxMessage, QuoteRecord
+from gvas.infrastructure.models import Business, OutboxMessage, QuoteRecord
 from gvas.infrastructure.payment_models import LedgerPaymentRow, QuotePayment
 from gvas.infrastructure.repositories import SqlBusinessRepository
 from gvas.infrastructure.stripe import StripeWebhookVerifier
@@ -559,3 +559,60 @@ async def test_a_quote_not_delivered_yet_cannot_be_marked_paid(
             context, quote_id, paid_on=PAID_ON, method=PaymentMethod.CHECK
         )
     assert await _rows(session_factory) == []
+
+
+async def _set_invoice_prefix(
+    session_factory: async_sessionmaker[AsyncSession], business_id: BusinessId, prefix: str
+) -> None:
+    async with session_factory() as session:
+        row = await session.get(Business, business_id)
+        assert row is not None
+        row.invoice_prefix = prefix
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_invoices_stay_off_without_a_prefix_and_mark_paid_settles_the_invoice(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, business_id = await owner_business(session_factory, approve=True)
+    async with http_client(application) as http:
+        owner = await sign_in(session_factory, http, business_id)
+        [quote] = (await http.get("/v1/owner/quotes", headers=bearer(owner))).json()["quotes"]
+        send_url = f"/v1/owner/quotes/{quote['id']}/send-invoice"
+
+        me = (await http.get("/v1/owner/me", headers=bearer(owner))).json()
+        assert me["business"]["invoices"] is False
+        off = (await http.get("/v1/owner/invoices", headers=bearer(owner))).json()
+        assert off == {"enabled": False, "invoices": []}
+        assert (await http.post(send_url, headers=bearer(owner))).status_code == 404
+
+        await _set_invoice_prefix(session_factory, business_id, "LL")
+        assert (await http.post(send_url)).status_code == 401
+        # Sent, not accepted yet: nothing to invoice.
+        assert (await http.post(send_url, headers=bearer(owner))).status_code == 409
+        async with session_factory() as session:
+            row = await session.scalar(select(QuoteRecord))
+            assert row is not None
+            row.customer_status = "accepted"
+            await session.commit()
+
+        sent = await http.post(send_url, headers=bearer(owner))
+        assert sent.status_code == 200
+        invoice = sent.json()["invoice"]
+        assert invoice["number"] == "LL-1001" and invoice["status"] == "sent"
+        assert invoice["totalCents"] == quote["totalCents"]
+        assert invoice["quoteId"] == quote["id"]
+        assert (await http.post(send_url, headers=bearer(owner))).status_code == 409
+
+        payment = {"paidOn": date.today().isoformat(), "method": "cash"}
+        paid_url = f"/v1/owner/quotes/{quote['id']}/mark-paid"
+        assert (await http.post(paid_url, json=payment, headers=bearer(owner))).status_code == 200
+        listed = (await http.get("/v1/owner/invoices", headers=bearer(owner))).json()
+        assert listed["enabled"] is True
+        [paid] = listed["invoices"]
+        assert paid["status"] == "paid" and paid["paidBy"]["method"] == "cash"
+        unpaid_url = f"/v1/owner/quotes/{quote['id']}/mark-unpaid"
+        assert (await http.post(unpaid_url, headers=bearer(owner))).status_code == 200
+        [again] = (await http.get("/v1/owner/invoices", headers=bearer(owner))).json()["invoices"]
+        assert again["status"] == "sent" and again["paidOn"] is None

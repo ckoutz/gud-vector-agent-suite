@@ -960,6 +960,9 @@ def test_configure_rejects_unusable_public_keys_and_booking_links() -> None:
     with pytest.raises(ConfigureBusinessInputError):
         build_request(arguments(notification_email="not-an-address"))
     assert build_request(arguments(clear_notification_email=True)).notification_email == ""
+    # An empty --invoice-prefix switches invoices off; a prefix switches them on.
+    assert build_request(arguments(invoice_prefix="")).invoice_prefix == ""
+    assert build_request(arguments(invoice_prefix=" LL ")).invoice_prefix == "LL"
     # A booking link is a URL with a path, not an origin.
     assert build_request(arguments(calendly_url="https://calendly.com/x?foo=1"))
     for bad_key in ("has/slash", "has space", "x" * 300, "-leading-dash"):

@@ -69,6 +69,7 @@ COPIED_FIELDS = (
     "intake_opening",
     "intake_offer_line",
     "intake_visit_question",
+    "invoice_prefix",
     "owner_email",
     # A slot pick only lands when the owner can be told about it.
     "notification_email",
