@@ -936,18 +936,16 @@ def slot_confirmed_reply(
 ) -> str:
     requested = f"Great — I've requested {format_slot_label(slot.start, zone)}. "
     if in_chat:
-        # The chat's booking banner turns to booked when the owner approves.
-        return (
-            requested + "You'll see it change to booked here in the chat once the owner approves."
-        )
+        # The chat's banner and transcript show the owner's approve or decline.
+        return requested + "You'll see the owner's answer here in the chat."
     return requested + f"We'll confirm by {_confirm_channels(texts)} once the owner approves."
 
 
 def slot_held_reply(*, texts: bool = False, in_chat: bool = False) -> str:
     if in_chat:
         return (
-            "That time is already with the team for approval — you'll see it change "
-            "to booked here in the chat once they approve."
+            "That time is already with the team for approval — you'll see "
+            "their answer here in the chat."
         )
     return (
         "That time is already with the team for approval — we'll confirm by "
