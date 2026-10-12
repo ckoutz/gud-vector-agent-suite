@@ -16,6 +16,7 @@ from gvas.domain.enums import CustomerQuoteStatus, QuoteStatus
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import IntakeConversation, IntakeState
 from gvas.domain.invoices import InvoiceStatus, invoice_status
+from gvas.domain.owner import CalendarEventSource
 from gvas.domain.owner_assistant import (
     OWNER_ASSISTANT_REPLY_MAX_CHARS,
     BusinessCalendarPort,
@@ -174,6 +175,13 @@ def _booking_row(conversation: IntakeConversation, zone: tzinfo) -> dict[str, An
     }
 
 
+_EVENT_STATUS = {
+    CalendarEventSource.BOOKING: "booked",
+    CalendarEventSource.REQUEST: "requested, waiting for the owner to approve or decline",
+    CalendarEventSource.CALENDAR: "on the owner's own calendar",
+}
+
+
 class OwnerReadTools:
     """The assistant's fixed read tools, each bound to one business."""
 
@@ -225,7 +233,7 @@ class OwnerReadTools:
             "days": days,
             "events": [
                 {
-                    "kind": event.source.value,
+                    "status": _EVENT_STATUS.get(event.source, event.source.value),
                     "start": _when(event.start, zone),
                     "end": _when(event.end, zone),
                     "title": _wrote(event.title),
