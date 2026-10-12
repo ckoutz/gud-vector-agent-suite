@@ -437,9 +437,10 @@ def create_owner_router(
             return JSONResponse({"detail": "not found"}, status_code=404)
         except OwnerConflictError as error:
             return JSONResponse({"detail": str(error)}, status_code=409)
+        paid = first_counted(await service.payments(context)).get(invoice.quote_id)
         zone = business_zone(context.business.timezone) or UTC
         today = datetime.now(UTC).astimezone(zone).date()
-        return JSONResponse({"invoice": owner_invoice_payload(invoice, None, today=today)})
+        return JSONResponse({"invoice": owner_invoice_payload(invoice, paid, today=today)})
 
     @router.post("/v1/owner/quotes/{quote_id}/mark-paid", dependencies=limited)
     async def mark_quote_paid(

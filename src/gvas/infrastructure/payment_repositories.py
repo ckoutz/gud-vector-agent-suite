@@ -22,6 +22,7 @@ from gvas.domain.payments import (
     QuotePaymentRecord,
     QuoteSubscriptionRecord,
 )
+from gvas.infrastructure.models import Business
 from gvas.infrastructure.payment_models import (
     InvoiceRow,
     LedgerPaymentRow,
@@ -502,6 +503,10 @@ class SqlInvoiceRepository:
         return None if row is None else self._invoice(row)
 
     async def next_sequence(self, business_id: BusinessId) -> int:
+        # Lock the business so two sends at once take consecutive numbers.
+        await self.session.scalar(
+            select(Business.id).where(Business.id == business_id).with_for_update()
+        )
         highest = await self.session.scalar(
             select(func.max(InvoiceRow.sequence)).where(InvoiceRow.business_id == business_id)
         )

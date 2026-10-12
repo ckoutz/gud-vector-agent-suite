@@ -129,8 +129,12 @@ def build_request(arguments: argparse.Namespace) -> ConfigureBusinessRequest:
         "--intake-visit-question",
         INTAKE_VISIT_QUESTION_MAX_CHARS,
     )
-    invoice_prefix = _optional_text(
-        getattr(arguments, "invoice_prefix", None), "--invoice-prefix", INVOICE_PREFIX_MAX_CHARS
+    raw_invoice_prefix = getattr(arguments, "invoice_prefix", None)
+    # An empty --invoice-prefix "" switches invoices off.
+    invoice_prefix = (
+        ""
+        if raw_invoice_prefix is not None and not raw_invoice_prefix.strip()
+        else _optional_text(raw_invoice_prefix, "--invoice-prefix", INVOICE_PREFIX_MAX_CHARS)
     )
     notification_email = _optional(arguments.notification_email)
     if getattr(arguments, "clear_notification_email", False):
