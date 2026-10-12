@@ -20,7 +20,7 @@ from composition_fakes import (
     application_ports,
 )
 from gvas.application.owner import OwnerService
-from gvas.application.owner_assistant import UNAVAILABLE_REPLY, OwnerReadTools
+from gvas.application.owner_assistant import UNAVAILABLE_REPLY, OwnerReadTools, totals_text
 from gvas.composition import Application, build_application
 from gvas.config import OpenAISettings
 from gvas.domain.identifiers import BusinessId
@@ -32,7 +32,7 @@ from gvas.domain.owner_assistant import (
     OwnerAssistantTool,
     ToolRunner,
 )
-from gvas.infrastructure.openai_owner_assistant import OpenAIOwnerAssistant
+from gvas.infrastructure.openai_owner_assistant import OpenAIOwnerAssistant, _fit
 from gvas.infrastructure.telnyx.composition import (
     SMS_QUOTES_ONLY_REPLY_PREFIX,
     sms_quotes_only_policy,
@@ -253,3 +253,31 @@ async def test_openai_adapter_runs_only_offered_tools_and_returns_the_text() -> 
     tool_messages = [m for m in bodies[1]["messages"] if m["role"] == "tool"]
     assert json.loads(tool_messages[1]["content"]) == {"error": "no such tool"}
     assert [tool["function"]["name"] for tool in bodies[0]["tools"]] == ["money"]
+
+
+def test_totals_never_add_across_currencies() -> None:
+    assert totals_text([(1000, "usd"), (550, "USD"), (2000, "eur")]) == "$15.50 + $20 EUR"
+    assert totals_text([]) == "$0"
+
+
+def test_a_too_long_tool_result_is_still_valid_json() -> None:
+    cut = json.loads(_fit(json.dumps({"rows": ["x" * 100] * 500})))
+    assert set(cut) == {"cut_short", "partial"}
+
+
+@pytest.mark.asyncio
+async def test_a_schedule_at_the_end_of_time_is_an_error_not_a_crash(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    factory = SqlUnitOfWorkFactory(session_factory)
+    async with factory() as unit_of_work:
+        business = await unit_of_work.businesses.get(business_id)
+    assert business is not None
+
+    result = await OwnerReadTools(factory, OwnerService(factory)).run(
+        business, "schedule", {"start_day": "9999-12-30", "days": 7}
+    )
+
+    assert "error" in result

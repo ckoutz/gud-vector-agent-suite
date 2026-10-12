@@ -489,6 +489,7 @@ def build_demo_ports(
         availability=availability,
         booked_events=DemoBookedEvents(session_factory),
         intake_agent=OpenAIIntakeAgent(settings.openai, client, usage_ledger=usage_ledger),
+        owner_assistant=OpenAIOwnerAssistant(settings.openai, client, usage_ledger=usage_ledger),
         customer_email=customer_email,
         owner_email=LoggedOwnerEmail(),
         quote_delivery=SiteAwareQuoteDelivery(customer_email),
@@ -717,6 +718,7 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
                 per_ip_per_hour=resolved.demo.sandbox_per_ip_per_hour,
                 rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
                 owner_assistant=application.owner_assistant,
+                owner_texts_per_sandbox=resolved.demo.sandbox_messages_per_visitor,
             )
         )
     return ProductionRuntime(

@@ -27,7 +27,7 @@ from gvas.interfaces.demo_sandboxes import (
     SandboxCapacityError,
     SandboxError,
 )
-from gvas.interfaces.http.sandbox import create_sandbox_router
+from gvas.interfaces.http.sandbox import OWNER_TEXTS_USED_UP_REPLY, create_sandbox_router
 
 NOW = datetime(2026, 10, 14, 18, 30, tzinfo=UTC)
 SLUG = "larkspur"
@@ -352,6 +352,7 @@ async def test_owner_texts_answer_only_for_the_visitors_own_sandbox(
             sandboxes,
             per_ip_per_hour=3,
             owner_assistant=assistant,  # type: ignore[arg-type]
+            owner_texts_per_sandbox=2,
         )
     )
     transport = httpx.ASGITransport(app=app)
@@ -373,6 +374,16 @@ async def test_owner_texts_answer_only_for_the_visitors_own_sandbox(
             headers={"Authorization": "Bearer gvs_nope"},
             json={"text": "hello"},
         )
+        second = await client.post(
+            "/v1/demo/sandboxes/owner-texts",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"text": "hello"},
+        )
+        used_up = await client.post(
+            "/v1/demo/sandboxes/owner-texts",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"text": "hello again"},
+        )
         too_long = await client.post(
             "/v1/demo/sandboxes/owner-texts",
             headers={"Authorization": f"Bearer {token}"},
@@ -384,8 +395,11 @@ async def test_owner_texts_answer_only_for_the_visitors_own_sandbox(
     async with session_factory() as session:
         sandbox_business = await session.scalar(select(DemoSandbox.business_id))
     assert [(business, text) for business, text, _ in assistant.asked] == [
-        (sandbox_business, "what's on tomorrow?")
+        (sandbox_business, "what's on tomorrow?"),
+        (sandbox_business, "hello"),
     ]
+    assert second.json()["reply"] == "You have 2 bookings tomorrow."
+    assert used_up.json() == {"reply": OWNER_TEXTS_USED_UP_REPLY}
     assert assistant.asked[0][2] == (("owner", "hello"), ("assistant", "Hi!"))
     assert refused.status_code == 401
     assert too_long.status_code == 422

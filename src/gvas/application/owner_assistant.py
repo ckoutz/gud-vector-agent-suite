@@ -7,7 +7,7 @@ one business, and none of them can change anything. Text customers wrote
 """
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -82,6 +82,17 @@ TOOLS: tuple[OwnerAssistantTool, ...] = (
 def money_text(minor: int, currency: str = "usd") -> str:
     amount = f"${minor / 100:,.2f}".replace(".00", "")
     return amount if currency.lower() == "usd" else f"{amount} {currency.upper()}"
+
+
+def totals_text(amounts: Iterable[tuple[int, str]]) -> str:
+    """One total per currency, never added across currencies."""
+
+    sums: dict[str, int] = {}
+    for minor, currency in amounts:
+        sums[currency.lower()] = sums.get(currency.lower(), 0) + minor
+    return " + ".join(money_text(minor, currency) for currency, minor in sums.items()) or (
+        money_text(0)
+    )
 
 
 def business_zone(business: BusinessRecord) -> tzinfo:
@@ -203,8 +214,11 @@ class OwnerReadTools:
             days = min(max(int(args.get("days") or 1), 1), SCHEDULE_MAX_DAYS)
         except (TypeError, ValueError):
             days = 1
-        start = datetime.combine(start_day, time(), zone)
-        end = datetime.combine(start_day + timedelta(days=days), time(), zone)
+        try:
+            start = datetime.combine(start_day, time(), zone)
+            end = datetime.combine(start_day + timedelta(days=days), time(), zone)
+        except OverflowError:
+            return {"error": "that date is out of range"}
         view = await self._owner.business_calendar(business, start, end)
         return {
             "from": start_day.isoformat(),
@@ -273,7 +287,9 @@ class OwnerReadTools:
                 status = invoice_status(invoice, counted.get(invoice.quote_id), today=today)
                 if status is not InvoiceStatus.PAID:
                     open_invoices.append((invoice, status))
-            result["outstanding"] = money_text(sum(i.total_minor for i, _ in open_invoices))
+            result["outstanding"] = totals_text(
+                (i.total_minor, i.currency) for i, _ in open_invoices
+            )
             result["open_invoices"] = [
                 {
                     "number": invoice.number,
@@ -290,8 +306,10 @@ class OwnerReadTools:
                 for quote in quotes
                 if quote.draft is not None and quote.customer_status is CustomerQuoteStatus.ACCEPTED
             ]
-            result["outstanding"] = money_text(
-                sum(quote.draft.total_minor for quote in unpaid if quote.draft is not None)
+            result["outstanding"] = totals_text(
+                (quote.draft.total_minor, quote.draft.currency)
+                for quote in unpaid
+                if quote.draft is not None
             )
             result["accepted_not_paid"] = [
                 _quote_row(quote, zone) for quote in unpaid[:LIST_MAX_ITEMS]

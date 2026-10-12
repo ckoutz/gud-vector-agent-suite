@@ -117,7 +117,7 @@ class OpenAIOwnerAssistant:
                     {
                         "role": "tool",
                         "tool_call_id": call.get("id"),
-                        "content": result[:TOOL_RESULT_MAX_CHARS],
+                        "content": _fit(result),
                     }
                 )
         raise OwnerAssistantError("unreachable")
@@ -187,3 +187,17 @@ class OpenAIOwnerAssistant:
         if not isinstance(message, dict):
             raise OwnerAssistantError("openai answer had no message")
         return message
+
+
+def _fit(result: str) -> str:
+    """A tool result the model can still parse: too-long results are cut and
+    sent as a JSON string, marked as cut."""
+
+    if len(result) <= TOOL_RESULT_MAX_CHARS:
+        return result
+    return json.dumps(
+        {
+            "cut_short": "too much data; answer from this part or ask for less",
+            "partial": result[: TOOL_RESULT_MAX_CHARS - 200],
+        }
+    )

@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from gvas.application.owner_assistant import OwnerAssistant
+from gvas.domain.identifiers import BusinessId
 from gvas.interfaces.demo_sandboxes import (
     DemoSandboxes,
     SandboxAuthenticationError,
@@ -23,6 +24,9 @@ from gvas.interfaces.http.public import PerIpRateLimiter, client_ip
 
 GENERIC_UNAUTHORIZED = "unauthorized"
 OWNER_TEXT_MAX_CHARS = 500
+OWNER_TEXTS_USED_UP_REPLY = (
+    "That's all the texts for this demo copy. Start a new demo visit to keep texting Gus."
+)
 OWNER_TEXT_HISTORY_MAX = 10
 
 
@@ -45,12 +49,15 @@ def create_sandbox_router(
     rate_limiter: PerIpRateLimiter | None = None,
     owner_assistant: OwnerAssistant | None = None,
     owner_text_limiter: PerIpRateLimiter | None = None,
+    owner_texts_per_sandbox: int = 30,
 ) -> APIRouter:
     router = APIRouter()
     limiter = rate_limiter or PerIpRateLimiter(per_minute=120, burst=30)
     create_limiter = PerIpRateLimiter(per_minute=per_ip_per_hour / 60, burst=per_ip_per_hour)
     # Each owner text is a model call: a much tighter limit than page loads.
     text_limiter = owner_text_limiter or PerIpRateLimiter(per_minute=6, burst=10)
+    # And a budget per sandbox copy, like Gus's per-visitor chat cap.
+    texts_used: dict[BusinessId, int] = {}
 
     async def rate_limit(request: Request) -> None:
         if not limiter.allow(client_ip(request)):
@@ -96,6 +103,9 @@ def create_sandbox_router(
             business_id = await sandboxes.business_id(bearer_token(request))
         except SandboxAuthenticationError:
             return JSONResponse({"detail": GENERIC_UNAUTHORIZED}, status_code=401)
+        if texts_used.get(business_id, 0) >= owner_texts_per_sandbox:
+            return JSONResponse({"reply": OWNER_TEXTS_USED_UP_REPLY})
+        texts_used[business_id] = texts_used.get(business_id, 0) + 1
         reply = await owner_assistant.answer(
             business_id,
             body.text.strip(),
