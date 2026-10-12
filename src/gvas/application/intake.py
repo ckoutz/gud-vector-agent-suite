@@ -264,11 +264,9 @@ class IntakeService:
         visitor: Callable[[UUID], Awaitable[IntakeVisitor | None]] | None = None,
         decision_link_secret: str = "",
         decision_link_base_url: str = "",
-        confirms_in_chat: bool = False,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
-        self._confirms_in_chat = confirms_in_chat
         self._agent = agent
         self._decision_email = OwnerDecisionEmail(
             secret=decision_link_secret,
@@ -935,12 +933,7 @@ class IntakeService:
             texts = await self._confirms_by_text(
                 unit_of_work, conversation, conversation.customer_id
             )
-            reply = await self._reply(
-                unit_of_work,
-                conversation,
-                slot_held_reply(texts=texts, in_chat=self._confirms_in_chat),
-                now,
-            )
+            reply = await self._reply(unit_of_work, conversation, slot_held_reply(texts=texts), now)
             return IntakeReply(conversation, reply, conversation.proposed_slots)
 
         collected = conversation.collected
@@ -1054,7 +1047,7 @@ class IntakeService:
             )
         await unit_of_work.intake_conversations.save(updated)
         texts = await self._confirms_by_text(unit_of_work, updated, customer_id)
-        reply = slot_confirmed_reply(slot, zone, texts=texts, in_chat=self._confirms_in_chat)
+        reply = slot_confirmed_reply(slot, zone, texts=texts)
         question = business.intake_profile.visit_question
         if question and not _visit_noted(updated.collected):
             reply = f"{reply} {question}"

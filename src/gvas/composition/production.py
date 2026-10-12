@@ -656,8 +656,6 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
         lease_ttl=timedelta(seconds=resolved.worker.lease_seconds),
         ceilings=resolved.usage_ceilings(),
         intake_settings=resolved.intake,
-        # A demo sends no e-mail or texts, so Gus says he confirms in the chat.
-        confirms_in_chat=resolved.demo.mode,
         payment_deployment=resolved.stripe.deployment,
         intake_message_budget=None if sandboxes is None else sandboxes.refusal,
         intake_visitor=None if sandboxes is None else sandboxes.visitor,

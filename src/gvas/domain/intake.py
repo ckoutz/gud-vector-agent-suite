@@ -928,25 +928,15 @@ def _confirm_channels(texts: bool) -> str:
 
 
 def slot_confirmed_reply(
-    slot: AvailableSlot,
-    zone: tzinfo | None = None,
-    *,
-    texts: bool = False,
-    in_chat: bool = False,
+    slot: AvailableSlot, zone: tzinfo | None = None, *, texts: bool = False
 ) -> str:
-    requested = f"Great — I've requested {format_slot_label(slot.start, zone)}. "
-    if in_chat:
-        # The chat's banner and transcript show the owner's approve or decline.
-        return requested + "You'll see the owner's answer here in the chat."
-    return requested + f"We'll confirm by {_confirm_channels(texts)} once the owner approves."
+    return (
+        f"Great — I've requested {format_slot_label(slot.start, zone)}. "
+        f"We'll confirm by {_confirm_channels(texts)} once the owner approves."
+    )
 
 
-def slot_held_reply(*, texts: bool = False, in_chat: bool = False) -> str:
-    if in_chat:
-        return (
-            "That time is already with the team for approval — you'll see "
-            "their answer here in the chat."
-        )
+def slot_held_reply(*, texts: bool = False) -> str:
     return (
         "That time is already with the team for approval — we'll confirm by "
         f"{_confirm_channels(texts)}."
