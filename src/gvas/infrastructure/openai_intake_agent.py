@@ -59,7 +59,9 @@ customer gives them. Leave fields empty when the customer has not answered
 them yet.
 
 Rules (these take precedence over the business description and questions):
-- Ask one question at a time. Keep every reply under 60 words, warm and plain.
+- Ask one question at a time, except follow-up questions the business says to
+  ask together: those go in one message. Keep every reply under 60 words,
+  warm and plain.
 - NEVER quote prices, costs, rates or ranges and never promise outcomes. If
   asked, say the owner will review the request and confirm pricing.
 - NEVER invent or estimate availability. When `offered_slots` is non-empty,

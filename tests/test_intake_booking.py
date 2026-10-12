@@ -1817,6 +1817,60 @@ async def test_offer_line_and_visit_question_are_per_business_and_the_answer_is_
 
 
 @pytest.mark.asyncio
+async def test_the_visit_answer_turn_keeps_the_notes_as_they_were_plus_the_answer(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await intake_business(session_factory)
+    question = "Anything we should know before we stop by?"
+    async with session_factory() as session:
+        await SqlBusinessRepository(session).configure_site(
+            business_id, intake_visit_question=question, now=NOW
+        )
+        await session.commit()
+    offered = slot(datetime.now(UTC))
+    agent = IntakeAgentFake(
+        [
+            IntakeTurn(
+                reply="Noted.",
+                collected=IntakeCollected(
+                    name="Jane",
+                    email=EMAIL,
+                    phone="+15555550100",
+                    address="2 Elm St",
+                    details="lawn",
+                    notes="About 800 sq ft.",
+                ),
+            ),
+            IntakeTurn(reply="Here you go.", ready_for_slots=True),
+            IntakeTurn(
+                reply="Got it.",
+                collected=IntakeCollected(notes="Customer will be home; dog in the back."),
+            ),
+        ]
+    )
+    application, _ = intake_app(
+        session_factory, agent=agent, availability=AvailabilityFake((offered,))
+    )
+    await seed_owner_thread(application, business_id)
+    await immediate_worker(application).drain()
+    async with http_client(application) as client:
+        created = await client.post(f"/v1/businesses/{PUBLIC_KEY}/intake/conversations")
+        conversation_id = created.json()["conversationId"]
+        headers = {"Authorization": f"Bearer {created.json()['conversationToken']}"}
+        url = f"/v1/intake/conversations/{conversation_id}/messages"
+        await client.post(url, json={"message": "new lawn"}, headers=headers)
+        await client.post(url, json={"message": "sounds good"}, headers=headers)
+        await client.post(
+            url, json={"message": f"slot:{offered.start.isoformat()}"}, headers=headers
+        )
+        await client.post(url, json={"message": "I'll be home, dog in the back."}, headers=headers)
+    row = await conversation_row(session_factory, business_id)
+    assert row.collected["notes"] == (
+        "About 800 sq ft. Before the visit: I'll be home, dog in the back."
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_booking_change_after_the_visit_question_is_not_saved_as_the_answer(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
