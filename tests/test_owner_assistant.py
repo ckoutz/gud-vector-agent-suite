@@ -32,7 +32,11 @@ from gvas.domain.owner_assistant import (
     OwnerAssistantTool,
     ToolRunner,
 )
-from gvas.infrastructure.openai_owner_assistant import OpenAIOwnerAssistant, _fit
+from gvas.infrastructure.openai_owner_assistant import (
+    TOOL_RESULT_MAX_CHARS,
+    OpenAIOwnerAssistant,
+    _fit,
+)
 from gvas.infrastructure.telnyx.composition import (
     SMS_QUOTES_ONLY_REPLY_PREFIX,
     sms_quotes_only_policy,
@@ -261,8 +265,10 @@ def test_totals_never_add_across_currencies() -> None:
 
 
 def test_a_too_long_tool_result_is_still_valid_json() -> None:
-    cut = json.loads(_fit(json.dumps({"rows": ["x" * 100] * 500})))
-    assert set(cut) == {"cut_short", "partial"}
+    for row in ("x" * 100, 'é\\"' * 50, "\u2603" * 100):
+        fitted = _fit(json.dumps({"rows": [row] * 500}))
+        assert len(fitted) <= TOOL_RESULT_MAX_CHARS
+        assert set(json.loads(fitted)) == {"cut_short", "partial"}
 
 
 @pytest.mark.asyncio

@@ -195,9 +195,16 @@ def _fit(result: str) -> str:
 
     if len(result) <= TOOL_RESULT_MAX_CHARS:
         return result
-    return json.dumps(
-        {
-            "cut_short": "too much data; answer from this part or ask for less",
-            "partial": result[: TOOL_RESULT_MAX_CHARS - 200],
-        }
-    )
+    keep = TOOL_RESULT_MAX_CHARS
+    while True:
+        fitted = json.dumps(
+            {
+                "cut_short": "too much data; answer from this part or ask for less",
+                "partial": result[:keep],
+            },
+            ensure_ascii=False,
+        )
+        if len(fitted) <= TOOL_RESULT_MAX_CHARS:
+            return fitted
+        # Escaping grows the text; shrink in proportion and try again.
+        keep = keep * TOOL_RESULT_MAX_CHARS // len(fitted) - 100

@@ -24,6 +24,7 @@ from gvas.interfaces.http.public import PerIpRateLimiter, client_ip
 
 GENERIC_UNAUTHORIZED = "unauthorized"
 OWNER_TEXT_MAX_CHARS = 500
+OWNER_TEXT_COUNTERS_MAX = 5000
 OWNER_TEXTS_USED_UP_REPLY = (
     "That's all the texts for this demo copy. Start a new demo visit to keep texting Gus."
 )
@@ -106,6 +107,9 @@ def create_sandbox_router(
         if texts_used.get(business_id, 0) >= owner_texts_per_sandbox:
             return JSONResponse({"reply": OWNER_TEXTS_USED_UP_REPLY})
         texts_used[business_id] = texts_used.get(business_id, 0) + 1
+        while len(texts_used) > OWNER_TEXT_COUNTERS_MAX:
+            # Oldest first: long-expired sandboxes go before live ones.
+            texts_used.pop(next(iter(texts_used)))
         reply = await owner_assistant.answer(
             business_id,
             body.text.strip(),
