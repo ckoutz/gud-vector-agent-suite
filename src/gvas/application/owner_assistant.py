@@ -240,7 +240,7 @@ class OwnerReadTools:
     async def _needs_you(self, business: BusinessRecord, zone: tzinfo) -> Any:
         async with self._unit_of_work_factory() as unit_of_work:
             quotes = await unit_of_work.quotes.list_for_business(
-                business.business_id, limit=QUOTE_LIST_LIMIT
+                business.business_id, limit=QUOTE_LIST_LIMIT, status=QuoteStatus.AWAITING_APPROVAL
             )
             bookings = await unit_of_work.intake_conversations.list_awaiting_owner(
                 business.business_id, limit=BOOKING_LIST_LIMIT
