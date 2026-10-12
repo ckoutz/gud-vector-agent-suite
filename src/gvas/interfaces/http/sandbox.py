@@ -6,9 +6,13 @@ it into the same single-use owner sign-in token an e-mailed link carries,
 which the dashboard exchanges at ``/v1/portal/sessions``.
 """
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
+from gvas.application.owner_assistant import OwnerAssistant
 from gvas.interfaces.demo_sandboxes import (
     DemoSandboxes,
     SandboxAuthenticationError,
@@ -18,6 +22,20 @@ from gvas.interfaces.http.portal import bearer_token
 from gvas.interfaces.http.public import PerIpRateLimiter, client_ip
 
 GENERIC_UNAUTHORIZED = "unauthorized"
+OWNER_TEXT_MAX_CHARS = 500
+OWNER_TEXT_HISTORY_MAX = 10
+
+
+class _Turn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["owner", "assistant"]
+    text: str = Field(min_length=1, max_length=1000)
+
+
+class _OwnerText(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=OWNER_TEXT_MAX_CHARS)
+    history: list[_Turn] = Field(default_factory=list, max_length=OWNER_TEXT_HISTORY_MAX)
 
 
 def create_sandbox_router(
@@ -25,10 +43,14 @@ def create_sandbox_router(
     *,
     per_ip_per_hour: int,
     rate_limiter: PerIpRateLimiter | None = None,
+    owner_assistant: OwnerAssistant | None = None,
+    owner_text_limiter: PerIpRateLimiter | None = None,
 ) -> APIRouter:
     router = APIRouter()
     limiter = rate_limiter or PerIpRateLimiter(per_minute=120, burst=30)
     create_limiter = PerIpRateLimiter(per_minute=per_ip_per_hour / 60, burst=per_ip_per_hour)
+    # Each owner text is a model call: a much tighter limit than page loads.
+    text_limiter = owner_text_limiter or PerIpRateLimiter(per_minute=6, burst=10)
 
     async def rate_limit(request: Request) -> None:
         if not limiter.allow(client_ip(request)):
@@ -60,5 +82,25 @@ def create_sandbox_router(
         except SandboxAuthenticationError:
             return JSONResponse({"detail": GENERIC_UNAUTHORIZED}, status_code=401)
         return JSONResponse({"signInToken": token})
+
+    @router.post("/v1/demo/sandboxes/owner-texts", dependencies=limited)
+    async def owner_text(body: _OwnerText, request: Request) -> JSONResponse:
+        """The demo's in-page Texts view: the owner texts Gus about their own
+        sandbox copy. Read only, and nothing is sent anywhere."""
+
+        if owner_assistant is None:
+            return JSONResponse({"detail": "texts are off on this demo"}, status_code=503)
+        if not text_limiter.allow(client_ip(request)):
+            return JSONResponse({"detail": "rate limited"}, status_code=429)
+        try:
+            business_id = await sandboxes.business_id(bearer_token(request))
+        except SandboxAuthenticationError:
+            return JSONResponse({"detail": GENERIC_UNAUTHORIZED}, status_code=401)
+        reply = await owner_assistant.answer(
+            business_id,
+            body.text.strip(),
+            tuple((turn.role, turn.text) for turn in body.history),
+        )
+        return JSONResponse({"reply": reply})
 
     return router

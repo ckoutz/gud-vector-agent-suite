@@ -23,7 +23,7 @@ from gvas.domain.customers import (
     portal_token_matches,
 )
 from gvas.domain.enums import BillingInterval, CustomerQuoteStatus, QuoteBilling, QuoteStatus
-from gvas.domain.identifiers import MessageKey, SubscriptionId
+from gvas.domain.identifiers import BusinessId, MessageKey, SubscriptionId
 from gvas.domain.intake import (
     INTAKE_BRIEF_MAX_CHARS,
     INTAKE_OFFER_LINE_MAX_CHARS,
@@ -272,10 +272,10 @@ class OwnerService:
                 context.business.business_id, limit=BOOKING_LIST_LIMIT
             )
 
-    async def _awaiting_owner(self, context: OwnerContext) -> tuple[IntakeConversation, ...]:
+    async def _awaiting_owner(self, business_id: BusinessId) -> tuple[IntakeConversation, ...]:
         async with self._unit_of_work_factory() as unit_of_work:
             return await unit_of_work.intake_conversations.list_awaiting_owner(
-                context.business.business_id, limit=BOOKING_LIST_LIMIT
+                business_id, limit=BOOKING_LIST_LIMIT
             )
 
     async def service_requests(self, context: OwnerContext) -> tuple[ServiceRequestView, ...]:
@@ -294,13 +294,17 @@ class OwnerService:
         )
 
     async def calendar(self, context: OwnerContext, start: datetime, end: datetime) -> CalendarView:
+        return await self.business_calendar(context.business, start, end)
+
+    async def business_calendar(
+        self, business: BusinessRecord, start: datetime, end: datetime
+    ) -> CalendarView:
         if start.tzinfo is None or end.tzinfo is None:
             raise OwnerInputError("start and end must carry a timezone")
         if end <= start or end - start > timedelta(days=CALENDAR_WINDOW_MAX_DAYS):
             raise OwnerInputError(
                 f"the window must be positive and at most {CALENDAR_WINDOW_MAX_DAYS} days"
             )
-        business = context.business
         problems: list[str] = []
         booked: tuple[CalendarEvent, ...] = ()
         own: tuple[CalendarEvent, ...] = ()
@@ -325,7 +329,7 @@ class OwnerService:
                 invitee_email=conversation.collected.email,
                 reference=conversation.reference,
             )
-            for conversation in await self._awaiting_owner(context)
+            for conversation in await self._awaiting_owner(business.business_id)
             if conversation.requested_slot_start is not None
             and start <= conversation.requested_slot_start < end
         )

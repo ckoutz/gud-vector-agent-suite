@@ -125,7 +125,7 @@ async def test_other_non_quote_triggers_over_sms_get_the_same_single_reply(
     await application.worker.drain()
 
     assert len(reply_texts(owner_replies)) == 1
-    assert reply_texts(owner_replies)[0].startswith("SMS supports quotes only")
+    assert reply_texts(owner_replies)[0].startswith(SMS_QUOTES_ONLY_REPLY_PREFIX)
     assert await count(session_factory, FieldNoteCase) == 0
     assert await unsucceeded_outbox(session_factory) == 0
 

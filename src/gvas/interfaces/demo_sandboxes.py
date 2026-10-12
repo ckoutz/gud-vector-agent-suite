@@ -182,6 +182,16 @@ class DemoSandboxes:
         await self.touch(business_id, now)
         return await mint_owner_sign_in(self._session_factory, business_id, now=now)
 
+    async def business_id(self, token: str, now: datetime | None = None) -> BusinessId:
+        """The visitor's own sandbox business; also counts as activity."""
+
+        now = now or datetime.now(UTC)
+        async with self._session_factory() as session:
+            sandbox = await self._find(session, token, now)
+            business_id = BusinessId(sandbox.business_id)
+        await self.touch(business_id, now)
+        return business_id
+
     async def public_key(self, token: str, now: datetime | None = None) -> str:
         now = now or datetime.now(UTC)
         async with self._session_factory() as session:

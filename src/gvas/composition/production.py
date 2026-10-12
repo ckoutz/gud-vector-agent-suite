@@ -82,6 +82,7 @@ from gvas.infrastructure.object_storage import R2ObjectStorage
 from gvas.infrastructure.openai_checklist_evidence import OpenAIChecklistEvidenceAnnotator
 from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGuard
 from gvas.infrastructure.openai_intake_agent import OpenAIIntakeAgent
+from gvas.infrastructure.openai_owner_assistant import OpenAIOwnerAssistant
 from gvas.infrastructure.openai_quote_drafting import OpenAIFreeTextQuoteDrafter
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
 from gvas.infrastructure.owner_reply_routing import ChannelOwnerReplyRouter
@@ -549,7 +550,9 @@ def build_production_ports(
             ledger,
             messaging_profile_id=settings.telnyx.messaging_profile_id or None,
         )
-        channel_policies = (sms_quotes_only_policy("Slack"),)
+        channel_policies = (
+            sms_quotes_only_policy("Slack", owner_assistant=settings.openai.is_configured),
+        )
         customer_text = TelnyxCustomerTextAdapter(
             telnyx_sender,
             parse_telnyx_installations(settings.telnyx.installations),
@@ -590,6 +593,11 @@ def build_production_ports(
     )
     if intake_agent is None:
         logger.warning("openai not configured; the website booking chat is off")
+    owner_assistant = (
+        OpenAIOwnerAssistant(settings.openai, client, usage_ledger=usage_ledger)
+        if settings.openai.is_configured
+        else None
+    )
     quote_drafting = _quote_drafting(settings, client, usage_ledger)
     return ApplicationPorts(
         owner_replies=ChannelOwnerReplyRouter(session_factory, owner_replies),
@@ -600,6 +608,7 @@ def build_production_ports(
         schedule_blocks=availability,
         calendar_feed=IcsCalendarFeed(client),
         intake_agent=intake_agent,
+        owner_assistant=owner_assistant,
         customer_email=resend_quotes,
         owner_email=owner_email,
         quote_delivery=quote_delivery,
@@ -707,6 +716,7 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
                 sandboxes,
                 per_ip_per_hour=resolved.demo.sandbox_per_ip_per_hour,
                 rate_limiter=PerIpRateLimiter(resolved.public_api.rate_limit_per_minute),
+                owner_assistant=application.owner_assistant,
             )
         )
     return ProductionRuntime(

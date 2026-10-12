@@ -326,3 +326,66 @@ async def test_one_address_opens_at_most_three_sandboxes_an_hour(
     assert signed_in.status_code == 200
     assert signed_in.json()["signInToken"]
     assert refused.status_code == 401
+
+
+class _AssistantFake:
+    def __init__(self) -> None:
+        self.asked: list[tuple[object, str, tuple[tuple[str, str], ...]]] = []
+
+    async def answer(
+        self, business_id: object, text: str, history: tuple[tuple[str, str], ...] = ()
+    ) -> str:
+        self.asked.append((business_id, text, history))
+        return "You have 2 bookings tomorrow."
+
+
+@pytest.mark.asyncio
+async def test_owner_texts_answer_only_for_the_visitors_own_sandbox(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await template(session_factory)
+    sandboxes = DemoSandboxes(settings(), session_factory)
+    assistant = _AssistantFake()
+    app = FastAPI()
+    app.include_router(
+        create_sandbox_router(
+            sandboxes,
+            per_ip_per_hour=3,
+            owner_assistant=assistant,  # type: ignore[arg-type]
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://demo.test") as client:
+        token = (await client.post("/v1/demo/sandboxes")).json()["sandboxToken"]
+        answered = await client.post(
+            "/v1/demo/sandboxes/owner-texts",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "text": "what's on tomorrow?",
+                "history": [
+                    {"role": "owner", "text": "hello"},
+                    {"role": "assistant", "text": "Hi!"},
+                ],
+            },
+        )
+        refused = await client.post(
+            "/v1/demo/sandboxes/owner-texts",
+            headers={"Authorization": "Bearer gvs_nope"},
+            json={"text": "hello"},
+        )
+        too_long = await client.post(
+            "/v1/demo/sandboxes/owner-texts",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"text": "x" * 501},
+        )
+
+    assert answered.status_code == 200
+    assert answered.json() == {"reply": "You have 2 bookings tomorrow."}
+    async with session_factory() as session:
+        sandbox_business = await session.scalar(select(DemoSandbox.business_id))
+    assert [(business, text) for business, text, _ in assistant.asked] == [
+        (sandbox_business, "what's on tomorrow?")
+    ]
+    assert assistant.asked[0][2] == (("owner", "hello"), ("assistant", "Hi!"))
+    assert refused.status_code == 401
+    assert too_long.status_code == 422
