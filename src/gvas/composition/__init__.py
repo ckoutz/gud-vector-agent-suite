@@ -228,6 +228,7 @@ def build_application(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     ceilings: UsageCeilings | None = None,
     intake_settings: IntakeSettings | None = None,
+    confirms_in_chat: bool = False,
     payment_deployment: str = DEFAULT_DEPLOYMENT,
     intake_message_budget: Callable[[UUID, datetime], Awaitable[str | None]] | None = None,
     intake_visitor: Callable[[UUID], Awaitable[IntakeVisitor | None]] | None = None,
@@ -300,6 +301,7 @@ def build_application(
             visitor=intake_visitor,
             decision_link_secret=resolved_intake_settings.decision_link_secret,
             decision_link_base_url=resolved_intake_settings.decision_link_base_url,
+            confirms_in_chat=confirms_in_chat,
             now=now,
         )
         if ports.intake_agent is not None
