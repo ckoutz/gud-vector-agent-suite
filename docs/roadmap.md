@@ -94,6 +94,10 @@ e-mail adapter uses it. To adopt it:
      tenant (as done manually for DVM) is out of scope and stays manual;
    - existing keyword commands (`quote:`, `notes:`, …) stay and match first;
      the assistant is the fallback for otherwise-unmatched messages.
+   - later (after the demo split screen): scan what customers send the
+     business (chat notes, visit answers) and flag a likely cancel or
+     reschedule to the owner — e.g. "actually, cancel it" typed as the
+     visit answer while the intake model was down is saved as a note only;
    **Not started; design review pending.** **Needs decision:** D1–D6 there.
    Prerequisite: fix M1 from the intake threat model before building on the
    intake path.

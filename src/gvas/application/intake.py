@@ -586,12 +586,18 @@ class IntakeService:
         was_ready = _ready_for_slots(
             conversation.collected, business.intake_profile, known_customer=known_customer
         )
+        if answering and not (turn.wants_cancel or turn.wants_reschedule or turn.needs_human):
+            # The answer is saved word for word: the model's notes from this
+            # turn would repeat it. Other fields only fill blanks.
+            collected = conversation.collected.merge(
+                turn.collected.model_copy(update={"notes": None})
+            )
+            current = conversation.with_updates(now, collected=collected)
+            return await self._note_visit_answer(unit_of_work, current, content, now)
+
         collected = conversation.collected.merge(turn.collected)
         current = conversation.with_updates(now, collected=collected)
         await unit_of_work.intake_conversations.save(current)
-
-        if answering and not (turn.wants_cancel or turn.wants_reschedule or turn.needs_human):
-            return await self._note_visit_answer(unit_of_work, current, content, now)
 
         if holder is not None:
             if (turn.wants_cancel or turn.wants_reschedule) and not verified:
