@@ -1844,7 +1844,9 @@ async def test_the_visit_answer_turn_keeps_the_notes_as_they_were_plus_the_answe
             IntakeTurn(reply="Here you go.", ready_for_slots=True),
             IntakeTurn(
                 reply="Got it.",
-                collected=IntakeCollected(notes="Customer will be home; dog in the back."),
+                collected=IntakeCollected(
+                    property_type="house", notes="Customer will be home; dog in the back."
+                ),
             ),
         ]
     )
@@ -1868,6 +1870,7 @@ async def test_the_visit_answer_turn_keeps_the_notes_as_they_were_plus_the_answe
     assert row.collected["notes"] == (
         "About 800 sq ft. Before the visit: I'll be home, dog in the back."
     )
+    assert row.collected["propertyType"] == "house"
 
 
 @pytest.mark.asyncio
