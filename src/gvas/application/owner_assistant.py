@@ -23,6 +23,7 @@ from gvas.domain.owner_assistant import (
     OwnerAssistantError,
     OwnerAssistantPort,
     OwnerAssistantRequest,
+    OwnerAssistantSetupError,
     OwnerAssistantTool,
 )
 from gvas.domain.payments import month_totals
@@ -42,6 +43,10 @@ CUSTOMER_MATCH_MAX = 5
 QUOTE_FILTERS = ("all", "waiting_for_owner", "sent", "accepted", "paid", "declined")
 
 UNAVAILABLE_REPLY = "Sorry, I can't answer right now. The dashboard has everything in the meantime."
+SETUP_REPLY = (
+    "Sorry, I can't answer texts right now: the AI service is refusing my requests, "
+    "a setup problem on Güd Vector's side. The dashboard has everything in the meantime."
+)
 LIMIT_REPLY = (
     "I've reached this month's limit for plain-language answers. "
     "The dashboard still has everything."
@@ -445,6 +450,13 @@ class OwnerAssistant:
 
         try:
             answer = await self._model.answer(request, run_tool)
+        except OwnerAssistantSetupError as error:
+            logger.error(
+                "ALERT owner assistant setup problem: %s",
+                error,
+                extra={"business_id": str(business_id), "alert": "owner_assistant_setup"},
+            )
+            return SETUP_REPLY
         except OwnerAssistantError:
             logger.warning("owner assistant failed", exc_info=True)
             return UNAVAILABLE_REPLY

@@ -6,6 +6,7 @@ results go back as JSON data. After a few rounds the model must answer in text.
 """
 
 import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -19,12 +20,15 @@ from gvas.domain.owner_assistant import (
     OwnerAssistantAnswer,
     OwnerAssistantError,
     OwnerAssistantRequest,
+    OwnerAssistantSetupError,
     ToolRunner,
 )
 from gvas.domain.usage import UsageKind, UsageLedgerPort
 
 CHAT_COMPLETIONS_PATH: Final = "/chat/completions"
 TOOL_RESULT_MAX_CHARS: Final = 12_000
+# Statuses that mean the request itself is refused (key, model, shape, credit).
+SETUP_STATUSES: Final = frozenset({400, 401, 402, 403, 404, 422})
 
 SYSTEM_PROMPT: Final = f"""You are Gus, the office assistant for a small service business. The
 owner is texting you. Today and the business's name are in the first message.
@@ -155,6 +159,8 @@ class OpenAIOwnerAssistant:
             "messages": messages,
             "tools": tools,
             "tool_choice": "none" if final else "auto",
+            # OpenAI refuses function tools with reasoning on chat completions.
+            "reasoning_effort": "none",
         }
         try:
             response = await self._client.post(
@@ -166,9 +172,9 @@ class OpenAIOwnerAssistant:
         except httpx.HTTPError as error:
             raise OwnerAssistantError("openai was unreachable") from error
         try:
-            payload = response.json()
-        except ValueError as error:
-            raise OwnerAssistantError("openai answered something that isn't JSON") from error
+            payload: Any = response.json()
+        except ValueError:
+            payload = None
         if self._usage_ledger is not None:
             usage = payload.get("usage") if isinstance(payload, dict) else None
             tokens = usage.get("total_tokens") if isinstance(usage, dict) else None
@@ -179,7 +185,14 @@ class OpenAIOwnerAssistant:
                 at=datetime.now(UTC),
             )
         if response.status_code >= 400:
-            raise OwnerAssistantError(f"openai answered {response.status_code}")
+            detail = _redact(_error_detail(payload), self._settings.api_key)[:300]
+            if response.status_code in SETUP_STATUSES or "quota" in detail.casefold():
+                raise OwnerAssistantSetupError(
+                    f"openai refused the request ({response.status_code}): {detail}"
+                )
+            raise OwnerAssistantError(f"openai answered {response.status_code}: {detail}")
+        if payload is None:
+            raise OwnerAssistantError("openai answered something that isn't JSON")
         try:
             message = payload["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as error:
@@ -187,6 +200,25 @@ class OpenAIOwnerAssistant:
         if not isinstance(message, dict):
             raise OwnerAssistantError("openai answer had no message")
         return message
+
+
+def _error_detail(payload: Any) -> str:
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        parts = [str(error[k]) for k in ("message", "code") if error.get(k)]
+        error = " | ".join(parts)
+    return str(error or "no error message")
+
+
+_SECRET = re.compile(r"(sk|or|key)-[A-Za-z0-9_*\-]{6,}", re.IGNORECASE)
+
+
+def _redact(detail: str, api_key: str) -> str:
+    """No credential reaches the logs, even if the provider echoes one."""
+
+    if api_key:
+        detail = detail.replace(api_key, "<key>")
+    return _SECRET.sub("<key>", detail)
 
 
 def _fit(result: str) -> str:
