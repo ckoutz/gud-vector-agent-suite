@@ -296,6 +296,7 @@ async def test_openai_adapter_runs_only_offered_tools_and_returns_the_text() -> 
         (401, {"message": "Incorrect API key provided"}, True),
         (402, {"message": "Insufficient credits"}, True),
         (429, {"message": "You exceeded your current quota", "code": "insufficient_quota"}, True),
+        (429, {"message": "Billing hard limit reached", "code": "insufficient_quota"}, True),
         (429, {"message": "Rate limit reached"}, False),
         (500, {"message": "The server had an error"}, False),
     ],
@@ -353,3 +354,39 @@ async def test_a_schedule_at_the_end_of_time_is_an_error_not_a_crash(
     )
 
     assert "error" in result
+
+
+async def _refusal(response: httpx.Response, api_key: str = "test-key") -> OwnerAssistantError:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: response)) as client:
+        adapter = OpenAIOwnerAssistant(OpenAISettings(api_key=api_key), client)
+        with pytest.raises(OwnerAssistantError) as raised:
+            await adapter.answer(
+                OwnerAssistantRequest(
+                    business_id=BusinessId(uuid4()),
+                    business_name="Larkspur",
+                    local_now="Monday 2026-10-12, 9:00 AM PDT",
+                    text="hello",
+                    tools=(),
+                ),
+                lambda name, args: None,  # type: ignore[arg-type,return-value]
+            )
+    return raised.value
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_that_isnt_json_is_still_a_setup_problem() -> None:
+    error = await _refusal(httpx.Response(401, text="<html>Unauthorized</html>"))
+    assert isinstance(error, OwnerAssistantSetupError)
+    passing = await _refusal(httpx.Response(502, text="<html>Bad gateway</html>"))
+    assert not isinstance(passing, OwnerAssistantSetupError)
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_never_carries_a_credential_into_the_logs() -> None:
+    key = "sk-proj-AbCdEf0123456789secret"
+    echoed = f"Incorrect API key provided: {key}. Also tried or-v1-abcdef123456."
+    error = await _refusal(httpx.Response(401, json={"error": {"message": echoed}}), key)
+    assert isinstance(error, OwnerAssistantSetupError)
+    assert key not in str(error)
+    assert "or-v1-abcdef123456" not in str(error)
+    assert "Incorrect API key provided" in str(error)
