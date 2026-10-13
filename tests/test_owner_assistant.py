@@ -390,3 +390,11 @@ async def test_a_refusal_never_carries_a_credential_into_the_logs() -> None:
     assert key not in str(error)
     assert "or-v1-abcdef123456" not in str(error)
     assert "Incorrect API key provided" in str(error)
+
+
+@pytest.mark.asyncio
+async def test_a_key_echoed_across_the_length_cut_is_still_redacted() -> None:
+    key = "custom" + "Z" * 40
+    echoed = "x" * 280 + key
+    error = await _refusal(httpx.Response(401, json={"error": {"message": echoed}}), key)
+    assert "ZZZZ" not in str(error)

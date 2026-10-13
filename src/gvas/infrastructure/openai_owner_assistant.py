@@ -185,7 +185,7 @@ class OpenAIOwnerAssistant:
                 at=datetime.now(UTC),
             )
         if response.status_code >= 400:
-            detail = _redact(_error_detail(payload), self._settings.api_key)
+            detail = _redact(_error_detail(payload), self._settings.api_key)[:300]
             if response.status_code in SETUP_STATUSES or "quota" in detail.casefold():
                 raise OwnerAssistantSetupError(
                     f"openai refused the request ({response.status_code}): {detail}"
@@ -207,7 +207,7 @@ def _error_detail(payload: Any) -> str:
     if isinstance(error, dict):
         parts = [str(error[k]) for k in ("message", "code") if error.get(k)]
         error = " | ".join(parts)
-    return str(error or "no error message")[:300]
+    return str(error or "no error message")
 
 
 _SECRET = re.compile(r"(sk|or|key)-[A-Za-z0-9_*\-]{6,}", re.IGNORECASE)
