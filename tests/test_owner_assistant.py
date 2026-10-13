@@ -39,6 +39,7 @@ from gvas.domain.owner_assistant import (
     ToolRunner,
 )
 from gvas.infrastructure.openai_owner_assistant import (
+    SYSTEM_PROMPT,
     TOOL_RESULT_MAX_CHARS,
     OpenAIOwnerAssistant,
     _fit,
@@ -398,3 +399,10 @@ async def test_a_key_echoed_across_the_length_cut_is_still_redacted() -> None:
     echoed = "x" * 280 + key
     error = await _refusal(httpx.Response(401, json={"error": {"message": echoed}}), key)
     assert "ZZZZ" not in str(error)
+
+
+def test_gus_is_told_to_state_every_visits_status() -> None:
+    prompt = " ".join(SYSTEM_PROMPT.split())
+    assert "Every time you mention a visit, say its status" in prompt
+    assert '"requested, waiting for your approval"' in prompt
+    assert "never call a requested visit booked" in prompt
