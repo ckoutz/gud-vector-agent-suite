@@ -20,7 +20,12 @@ from composition_fakes import (
     application_ports,
 )
 from gvas.application.owner import OwnerService
-from gvas.application.owner_assistant import UNAVAILABLE_REPLY, OwnerReadTools, totals_text
+from gvas.application.owner_assistant import (
+    SETUP_REPLY,
+    UNAVAILABLE_REPLY,
+    OwnerReadTools,
+    totals_text,
+)
 from gvas.composition import Application, build_application
 from gvas.config import OpenAISettings
 from gvas.domain.identifiers import BusinessId
@@ -29,6 +34,7 @@ from gvas.domain.owner_assistant import (
     OwnerAssistantAnswer,
     OwnerAssistantError,
     OwnerAssistantRequest,
+    OwnerAssistantSetupError,
     OwnerAssistantTool,
     ToolRunner,
 )
@@ -57,15 +63,18 @@ class Clock:
 class ModelFake:
     """Calls the money tool, then answers with what it got."""
 
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, error: OwnerAssistantError | None = None) -> None:
         self.requests: list[OwnerAssistantRequest] = []
         self.results: list[Any] = []
         self._fail = fail
+        self._error = error
 
     async def answer(
         self, request: OwnerAssistantRequest, run_tool: ToolRunner
     ) -> OwnerAssistantAnswer:
         self.requests.append(request)
+        if self._error is not None:
+            raise self._error
         if self._fail:
             raise OwnerAssistantError("down")
         result = await run_tool("money", {})
@@ -176,6 +185,24 @@ async def test_a_failing_model_gets_a_short_apology_not_an_error(
 
 
 @pytest.mark.asyncio
+async def test_a_refused_ai_request_says_it_is_a_setup_problem_and_logs_an_alert(
+    session_factory: async_sessionmaker[AsyncSession], caplog: pytest.LogCaptureFixture
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    owner_replies = OwnerReplyFake()
+    model = ModelFake(error=OwnerAssistantSetupError("openai refused the request (400): no"))
+
+    with caplog.at_level("ERROR", logger="gvas.application.owner_assistant"):
+        await send(build(session_factory, owner_replies, model), business_id, "hi")
+
+    assert reply_texts(owner_replies) == [SETUP_REPLY]
+    alerts = [r for r in caplog.records if getattr(r, "alert", None) == "owner_assistant_setup"]
+    assert alerts and alerts[0].levelname == "ERROR"
+    assert "(400): no" in alerts[0].getMessage()
+
+
+@pytest.mark.asyncio
 async def test_read_tools_reject_short_lookups_and_unknown_tools(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -257,6 +284,45 @@ async def test_openai_adapter_runs_only_offered_tools_and_returns_the_text() -> 
     tool_messages = [m for m in bodies[1]["messages"] if m["role"] == "tool"]
     assert json.loads(tool_messages[1]["content"]) == {"error": "no such tool"}
     assert [tool["function"]["name"] for tool in bodies[0]["tools"]] == ["money"]
+    # OpenAI rejects function tools with reasoning on chat completions.
+    assert all(body["reasoning_effort"] == "none" for body in bodies)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "error", "setup"),
+    [
+        (400, {"message": "Function tools with reasoning_effort are not supported"}, True),
+        (401, {"message": "Incorrect API key provided"}, True),
+        (402, {"message": "Insufficient credits"}, True),
+        (429, {"message": "You exceeded your current quota", "code": "insufficient_quota"}, True),
+        (429, {"message": "Rate limit reached"}, False),
+        (500, {"message": "The server had an error"}, False),
+    ],
+)
+async def test_openai_adapter_tells_a_setup_problem_from_a_passing_one(
+    status: int, error: dict[str, str], setup: bool
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"error": error})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = OpenAIOwnerAssistant(OpenAISettings(api_key="test-key"), client)
+        with pytest.raises(OwnerAssistantError) as raised:
+            await adapter.answer(
+                OwnerAssistantRequest(
+                    business_id=BusinessId(uuid4()),
+                    business_name="Larkspur",
+                    local_now="Monday 2026-10-12, 9:00 AM PDT",
+                    text="hello",
+                    tools=(OwnerAssistantTool("money", "Money."),),
+                ),
+                lambda name, args: None,  # type: ignore[arg-type,return-value]
+            )
+
+    assert isinstance(raised.value, OwnerAssistantSetupError) is setup
+    assert error["message"] in str(raised.value)
+    assert "test-key" not in str(raised.value)
 
 
 def test_totals_never_add_across_currencies() -> None:

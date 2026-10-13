@@ -19,12 +19,15 @@ from gvas.domain.owner_assistant import (
     OwnerAssistantAnswer,
     OwnerAssistantError,
     OwnerAssistantRequest,
+    OwnerAssistantSetupError,
     ToolRunner,
 )
 from gvas.domain.usage import UsageKind, UsageLedgerPort
 
 CHAT_COMPLETIONS_PATH: Final = "/chat/completions"
 TOOL_RESULT_MAX_CHARS: Final = 12_000
+# Statuses that mean the request itself is refused (key, model, shape, credit).
+SETUP_STATUSES: Final = frozenset({400, 401, 402, 403, 404, 422})
 
 SYSTEM_PROMPT: Final = f"""You are Gus, the office assistant for a small service business. The
 owner is texting you. Today and the business's name are in the first message.
@@ -155,6 +158,8 @@ class OpenAIOwnerAssistant:
             "messages": messages,
             "tools": tools,
             "tool_choice": "none" if final else "auto",
+            # OpenAI refuses function tools with reasoning on chat completions.
+            "reasoning_effort": "none",
         }
         try:
             response = await self._client.post(
@@ -179,7 +184,12 @@ class OpenAIOwnerAssistant:
                 at=datetime.now(UTC),
             )
         if response.status_code >= 400:
-            raise OwnerAssistantError(f"openai answered {response.status_code}")
+            detail = _error_detail(payload)
+            if response.status_code in SETUP_STATUSES or "quota" in detail.casefold():
+                raise OwnerAssistantSetupError(
+                    f"openai refused the request ({response.status_code}): {detail}"
+                )
+            raise OwnerAssistantError(f"openai answered {response.status_code}: {detail}")
         try:
             message = payload["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as error:
@@ -187,6 +197,13 @@ class OpenAIOwnerAssistant:
         if not isinstance(message, dict):
             raise OwnerAssistantError("openai answer had no message")
         return message
+
+
+def _error_detail(payload: Any) -> str:
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        error = error.get("message") or error.get("code")
+    return str(error or "no error message")[:300]
 
 
 def _fit(result: str) -> str:

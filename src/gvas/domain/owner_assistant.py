@@ -50,6 +50,11 @@ class OwnerAssistantError(RuntimeError):
     """The model could not be reached or answered something unusable."""
 
 
+class OwnerAssistantSetupError(OwnerAssistantError):
+    """The AI provider refused the request itself (key, model, request shape,
+    credit): retrying won't help until someone fixes the setup."""
+
+
 class OwnerAssistantPort(Protocol):
     async def answer(
         self, request: OwnerAssistantRequest, run_tool: ToolRunner
