@@ -424,24 +424,29 @@ class OwnerAssistant:
         self._ceilings = ceilings
         self._alerts = alerts
         self._last_alert_at: datetime | None = None
+        self._unsent_alert: tuple[BusinessId, str, str, datetime] | None = None
         self._now = now
 
     async def _alert(self, business_id: BusinessId, business_name: str, detail: str) -> None:
         """At most one sent alert per ``SETUP_ALERT_INTERVAL``; later failures are only
-        logged. An alert that fails to send doesn't count, so the next failure retries."""
+        logged. A send that fails doesn't count: the next failure resends the same alert
+        (same payload and time, so the same idempotency key if the first one did land)."""
 
         if self._alerts is None:
             return
         now = self._now()
-        previous = self._last_alert_at
-        if previous is not None and now - previous < SETUP_ALERT_INTERVAL:
+        if self._last_alert_at is not None and now - self._last_alert_at < SETUP_ALERT_INTERVAL:
             return
+        alert = self._unsent_alert or (business_id, business_name, detail, now)
         self._last_alert_at = now
         try:
-            await self._alerts.setup_problem(business_id, business_name, detail, now)
+            await self._alerts.setup_problem(*alert)
         except Exception:
-            self._last_alert_at = previous
+            self._last_alert_at = None
+            self._unsent_alert = alert
             logger.exception("ALERT owner assistant setup alert could not be sent")
+        else:
+            self._unsent_alert = None
 
     async def answer(
         self,

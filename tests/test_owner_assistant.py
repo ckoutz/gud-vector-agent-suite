@@ -70,12 +70,14 @@ class Clock:
 class AlertsFake:
     def __init__(self, *, fail: bool = False) -> None:
         self.sent: list[tuple[BusinessId, str, str]] = []
+        self.times: list[datetime] = []
         self._fail = fail
 
     async def setup_problem(
         self, business_id: BusinessId, business_name: str, detail: str, at: datetime
     ) -> None:
         self.sent.append((business_id, business_name, detail))
+        self.times.append(at)
         if self._fail:
             raise RuntimeError("resend down")
 
@@ -477,6 +479,7 @@ async def test_a_failed_alert_still_gives_the_owner_the_setup_reply(
 
     assert reply_texts(owner_replies) == [SETUP_REPLY] * 2
     assert len(alerts.sent) == 2, "an alert that failed to send doesn't start the hour"
+    assert alerts.times[0] == alerts.times[1], "the retry is the same alert (same e-mail key)"
 
 
 @pytest.mark.asyncio
