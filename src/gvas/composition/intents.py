@@ -2,13 +2,14 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from gvas.application.field_notes import FieldNoteIntentContribution, FieldNoteUnitOfWorkFactory
-from gvas.application.quotes import QuoteIntentSelector, normalized_text
+from gvas.application.quotes import QuoteIntentSelector, normalized_text, owner_command
 from gvas.domain.calendar_blocks import (
     CALENDAR_BLOCK_INTENT,
     block_confirmation,
     unavailable_request,
     unblock_request,
 )
+from gvas.domain.enums import QuoteStatus
 from gvas.domain.field_note_repositories import AmbiguousFieldNoteMessageError
 from gvas.domain.field_notes import (
     FIELD_NOTE_INTENT,
@@ -24,6 +25,7 @@ from gvas.domain.intents import (
 )
 from gvas.domain.messages import NormalizedOwnerMessage
 from gvas.domain.owner_commands import OwnerCommandState, is_yes
+from gvas.domain.quotes import Quote, quote_trigger_request_text
 from gvas.domain.repositories import UnitOfWork
 
 
@@ -71,7 +73,7 @@ class DeterministicIntentResolver:
             return IntentResolution(intent=BOOKING_INTENT, confidence=1)
         if await self._is_calendar_block(message):
             return IntentResolution(intent=CALENDAR_BLOCK_INTENT, confidence=1)
-        quote_resolution = await self._resolve_quote(message)
+        quote_resolution, active_quote = await self._resolve_quote(message)
         if has_field_note_trigger(message):
             if quote_resolution is not None:
                 return IntentResolution(intent=WORKFLOW_CONFLICT_INTENT, confidence=1)
@@ -84,6 +86,8 @@ class DeterministicIntentResolver:
         if field_note_intent is not None and quote_resolution is not None:
             return IntentResolution(intent=WORKFLOW_CONFLICT_INTENT, confidence=1)
         if quote_resolution is not None:
+            if _plain_words_while_awaiting_ok(message, active_quote):
+                return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
             return quote_resolution
         if field_note_intent is not None:
             return IntentResolution(intent=field_note_intent, confidence=1)
@@ -114,7 +118,9 @@ class DeterministicIntentResolver:
             waiting = await unit_of_work.calendar_blocks.latest_proposed(message.business_id)
         return waiting is not None
 
-    async def _resolve_quote(self, message: NormalizedOwnerMessage) -> IntentResolution | None:
+    async def _resolve_quote(
+        self, message: NormalizedOwnerMessage
+    ) -> tuple[IntentResolution | None, Quote | None]:
         async with self._field_note_unit_of_work_factory() as unit_of_work:
             try:
                 location = await unit_of_work.field_note_messages.locate(
@@ -131,4 +137,19 @@ class DeterministicIntentResolver:
                 location.business_id, location.conversation_id
             )
             await unit_of_work.commit()
-        return self._quotes.select(message, location.conversation_id, active_quote)
+        return self._quotes.select(message, location.conversation_id, active_quote), active_quote
+
+
+def _plain_words_while_awaiting_ok(
+    message: NormalizedOwnerMessage, active_quote: Quote | None
+) -> bool:
+    """A quote waiting for the owner's OK keeps only its exact replies
+    (approve / reject / correct:); plain words ("approve Hannah's quote",
+    "what's tomorrow?") go to Gus like in any other thread."""
+
+    return (
+        active_quote is not None
+        and active_quote.status is QuoteStatus.AWAITING_APPROVAL
+        and owner_command(message) is None
+        and quote_trigger_request_text(normalized_text(message)) is None
+    )

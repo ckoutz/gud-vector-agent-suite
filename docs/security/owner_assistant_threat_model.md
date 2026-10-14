@@ -75,3 +75,12 @@ sent through Telnyx, and the demo backend refuses real provider keys.
 - A repeated YES or a crash-retry can't double-charge: mark paid and send invoice refuse a second run ("nothing to mark paid", "nothing to invoice"), and a plan payment carries a per-command key.
 - All five are marked `sensitive`, so the off-by-default PIN covers them once it's switched on.
 
+
+## Decision tools (approve / decline a visit request, approve / reject a quote)
+
+- The model names a customer; code matches it only against this business's requests or quotes still waiting on the owner. No match, or more than one, is refused before a proposal.
+- The proposal says who, when (visit) or how much and which items (quote), and what the customer will be told, including a decline note exactly as the customer will see it (cleaned the same way as the dashboard's).
+- YES runs the dashboard's `decide_booking` / `decide_quote`, which refuse a request or quote that was decided meanwhile. Approving a quote is `sensitive` (it sends a price to the customer); the others aren't.
+- The exact replies that already worked (`approve <ref>`, `decline <ref>`) still go first and are unchanged.
+- In a thread where a quote waits for the owner's OK, only the exact `approve`, `reject` and `correct:` replies stay with the quote workflow; plain words go to Gus, so "approve Hannah's quote" still needs YES.
+- A request to *move* a booking says what happens to the original time: approving cancels the old booking (or closes the old request), declining keeps it. A note given with a declined move is kept on the request, not sent.

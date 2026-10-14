@@ -1057,3 +1057,42 @@ async def test_postgres_backed_report_versions_follow_case_revisions(
         FieldNoteCaseStatus.OPEN.value
     ]
     assert await unsucceeded_outbox(postgres_session_factory) == 0
+
+
+@pytest.mark.asyncio
+async def test_plain_words_while_a_quote_waits_for_the_ok_leave_the_quote_workflow(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    owner_replies = OwnerReplyFake()
+    quote_delivery = CustomerDeliveryFake()
+    application = build(
+        session_factory,
+        owner_replies=owner_replies,
+        quote_drafting=QuoteDraftingFake(),
+        quote_delivery=quote_delivery,
+        transcription=TranscriptionFake({}),
+        report_generation=ReportGenerationFake(),
+    )
+    await application.ingest_service.ingest(
+        inbound(business_id, "quote: replace two gutters", message_key="quote-1")
+    )
+    await drain(application)
+    before = len(reply_texts(owner_replies))
+
+    await application.ingest_service.ingest(
+        inbound(business_id, "approve the gutter quote", message_key="quote-1-words")
+    )
+    await drain(application)
+
+    words_reply = reply_texts(owner_replies)[before:]
+    assert len(words_reply) == 1
+    assert "Reply with approve, reject" not in words_reply[0]
+    assert quote_delivery.requests == []
+
+    await application.ingest_service.ingest(
+        inbound(business_id, "approve", message_key="quote-1-approve")
+    )
+    await drain(application)
+    assert len(quote_delivery.requests) == 1
