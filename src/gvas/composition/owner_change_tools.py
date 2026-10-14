@@ -18,7 +18,7 @@ from gvas.application.owner import (
     OwnerService,
 )
 from gvas.application.owner_assistant import business_zone, money_text
-from gvas.domain.enums import CustomerQuoteStatus, QuoteBilling
+from gvas.domain.enums import BillingInterval, CustomerQuoteStatus, QuoteBilling, QuoteStatus
 from gvas.domain.identifiers import BusinessId, JsonValue
 from gvas.domain.invoices import Invoice
 from gvas.domain.owner import OwnerSession
@@ -44,8 +44,8 @@ _TARGET = {
 _CUSTOMER = {"type": "string", "description": "The customer's name."}
 _METHOD = {"type": "string", "enum": sorted(_METHODS), "description": "How they paid."}
 _PAID_ON = {
-    "type": "string",
-    "description": "The day it was paid, YYYY-MM-DD. Leave out for today.",
+    "type": ["string", "null"],
+    "description": "The day it was paid, YYYY-MM-DD, or null for today.",
 }
 
 
@@ -169,6 +169,16 @@ def _one_off(quote: Quote) -> bool:
     return quote.draft is not None and quote.draft.billing is QuoteBilling.ONE_TIME
 
 
+def _payable(quote: Quote) -> bool:
+    """The dashboard's rule: only a quote sent to the customer, not declined."""
+
+    return (
+        quote.is_claimable()
+        and quote.customer_status is not CustomerQuoteStatus.DECLINED
+        and not (quote.customer_status is None and quote.status is QuoteStatus.APPROVED)
+    )
+
+
 def _recurring(quote: Quote) -> bool:
     return quote.draft is not None and quote.draft.billing is QuoteBilling.RECURRING
 
@@ -247,7 +257,8 @@ class MarkPaidTool:
             business,
             args.get("target"),
             lambda q: _one_off(q)
-            and q.customer_status not in (CustomerQuoteStatus.PAID, CustomerQuoteStatus.DECLINED),
+            and _payable(q)
+            and q.customer_status is not CustomerQuoteStatus.PAID,
             "mark paid",
         )
         label = _label(quote, invoice)
@@ -305,21 +316,40 @@ class MarkUnpaidTool:
                 "That was paid by card, so it can't be undone here. Refund it in Stripe."
             )
         payment = manual[0]
+        # A card payment that also settled takes over, so the quote stays paid.
+        card = any(
+            other.kind is PaymentKind.ONE_OFF
+            and other.source is not PaymentSource.MANUAL
+            and other.voided_at is None
+            for other in await self._money.ledger(business.business_id, quote)
+        )
         label = _label(quote, invoice)
         paid = money_text(payment.amount_minor, payment.currency)
         day = _day(payment.paid_at.astimezone(business_zone(business)).date())
+        after = (
+            "It stays paid: a card payment also covers it." if card else "It shows unpaid again."
+        )
         return OwnerChangePlan(
             summary=(
                 f"I will undo the {paid} {payment.method.value} payment on {label}, "
-                f"paid {day}, so it shows unpaid again."
+                f"paid {day}. {after}"
             ),
-            arguments={"quote": public_quote_id(quote.quote_id), "label": label},
+            arguments={
+                "quote": public_quote_id(quote.quote_id),
+                "label": label,
+                "card": card,
+            },
         )
 
     async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
-        await _dashboard(
+        quote: Quote = await _dashboard(
             self._money.owner.mark_unpaid(self._money.context(business), _str(arguments, "quote"))
         )
+        if quote.customer_status is CustomerQuoteStatus.PAID:
+            return (
+                f"Done: the manual payment on {arguments['label']} is undone. "
+                "It stays paid: a card payment covers it."
+            )
         return f"Done: {arguments['label']} shows unpaid again."
 
 
@@ -354,10 +384,14 @@ class RecordPlanPaymentTool:
         quote, _ = await self._money.find(
             business,
             args.get("customer"),
-            lambda q: _recurring(q) and q.customer_status is not CustomerQuoteStatus.DECLINED,
+            lambda q: _recurring(q) and _payable(q),
             "record a plan payment for",
         )
         assert quote.draft is not None and quote.draft.interval is not None
+        if quote.draft.interval is BillingInterval.YEAR and months % 12:
+            raise OwnerChangeRefusedError(
+                f"{_name(quote)}'s plan is yearly, so a payment covers 12 or 24 months."
+            )
         paid = money_text(amount_minor, quote.draft.currency)
         span = "1 month" if months == 1 else f"{months} months"
         plan = f"{_total(quote)} every {quote.draft.interval.value}"

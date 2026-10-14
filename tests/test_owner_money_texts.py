@@ -85,7 +85,7 @@ async def test_mark_paid_then_unpaid_by_invoice_number(
     undo = await tools["change_mark_unpaid"].prepare(business, {"target": "Luis"})
     assert undo.summary == (
         f"I will undo the $310 check payment on invoice {number} (Luis Romero, $310), "
-        "paid Wed Oct 14, so it shows unpaid again."
+        "paid Wed Oct 14. It shows unpaid again."
     )
     assert "shows unpaid again" in await tools["change_mark_unpaid"].apply(business, undo.arguments)
 
@@ -106,6 +106,23 @@ async def test_card_payments_wrong_methods_future_dates_and_unknown_names_are_re
         )
     with pytest.raises(OwnerChangeRefusedError, match="can't find"):
         await tools["change_mark_paid"].prepare(business, {"target": "Zed", "method": "cash"})
+    # Hannah's quote still waits for the owner's OK, so it was never sent.
+    with pytest.raises(OwnerChangeRefusedError, match="nothing to mark paid"):
+        await tools["change_mark_paid"].prepare(business, {"target": "Hannah", "method": "cash"})
+
+
+@pytest.mark.asyncio
+async def test_optional_dates_can_be_null_under_strict_tool_schemas(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business, tools = await _larkspur(session_factory)
+
+    for name in ("change_mark_paid", "change_record_plan_payment"):
+        assert "null" in tools[name].spec.parameters["paid_on"]["type"]
+    plan = await tools["change_mark_paid"].prepare(
+        business, {"target": "Ellen", "method": "cash", "paid_on": None}
+    )
+    assert plan.arguments["paid_on"] == "2026-10-14"
 
 
 @pytest.mark.asyncio
