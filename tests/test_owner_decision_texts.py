@@ -148,10 +148,9 @@ async def test_a_request_to_move_a_booking_says_what_happens_to_the_old_time(
         business, {"customer": "Olivia", "reason": "Can't make the new day"}
     )
 
-    assert "It moves their visit from " in approve.summary
-    assert ", which is canceled." in approve.summary
-    assert decline.summary.endswith("stays booked and they'll be told so.")
+    assert approve.summary.count("replaces their earlier request for ") == 1
+    assert decline.summary.endswith("stands and they'll be told so.")
     assert "note" not in decline.summary
-    assert "reason" not in decline.arguments
+    assert decline.arguments["reason"] == "Can't make the new day"
     await tools["change_decline_booking"].apply(business, decline.arguments)
     assert await _olivia_state(session_factory, business, reference) is IntakeState.APPROVED

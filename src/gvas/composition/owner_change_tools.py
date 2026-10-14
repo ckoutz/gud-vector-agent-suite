@@ -563,8 +563,10 @@ class _Decisions:
             return ""
         kept = old.slot_label(business_zone(business))
         if approve:
-            return f" It moves their visit from {kept}, which is canceled."
-        return f" Their original time, {kept}, stays booked and they'll be told so."
+            if old.event_uri:
+                return f" It moves their visit from {kept}, which is canceled."
+            return f" It replaces their earlier request for {kept}."
+        return f" Their original time, {kept}, stands and they'll be told so."
 
     async def quote(self, business: BusinessRecord, target: object) -> Quote:
         needle = _needle(target)
@@ -645,8 +647,11 @@ class DeclineBookingTool:
         raw = str(args.get("reason") or "").strip()
         reason = sanitize_owner_reason(raw) if raw else ""
         arguments: dict[str, JsonValue] = {"reference": request.reference}
+        if reason:
+            arguments["reason"] = reason
         if request.superseded_booking is not None:
-            # Declining a move keeps the original time; the dashboard sends no note then.
+            # Declining a move keeps the original time; the note is kept on the
+            # request, like the dashboard, but not sent.
             return OwnerChangePlan(
                 summary=(
                     f"I will decline {self._decisions.visit(business, request)}."
@@ -655,8 +660,6 @@ class DeclineBookingTool:
                 arguments=arguments,
             )
         told = f', with your note: "{reason}"' if reason else ", with no note."
-        if reason:
-            arguments["reason"] = reason
         return OwnerChangePlan(
             summary=(
                 f"I will decline {self._decisions.visit(business, request)}. "
