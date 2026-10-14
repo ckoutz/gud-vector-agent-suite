@@ -66,3 +66,12 @@ sent through Telnyx, and the demo backend refuses real provider keys.
 
 - The change tools themselves, the PIN (off by default) and the dashboard command log page.
 - Security changes (PIN, owner numbers, sign-in, connected accounts): dashboard only, never by text.
+
+## Money tools (send invoice, mark paid / unpaid, plan payments)
+
+- Each tool resolves its target only among the texting business's own quotes, invoices and plans, by customer name or invoice number; an unknown or ambiguous target is refused before any proposal.
+- The proposal names the customer, the amount and the method in words written by code; YES runs the same dashboard service the button calls, with the stored arguments.
+- Card payments can't be undone by text (they're refunds, out of scope); only check, cash or other can be recorded; dates can't be in the future; months are 1-24.
+- A repeated YES or a crash-retry can't double-charge: mark paid and send invoice refuse a second run ("nothing to mark paid", "nothing to invoice"), and a plan payment carries a per-command key.
+- All five are marked `sensitive`, so the off-by-default PIN covers them once it's switched on.
+
