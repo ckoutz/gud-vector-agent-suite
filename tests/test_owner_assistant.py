@@ -172,6 +172,7 @@ async def test_hello_by_text_gets_a_plain_language_answer_for_its_own_business(
         "change_decline_booking",
         "change_approve_quote",
         "change_reject_quote",
+        "change_settings",
         "schedule",
         "needs_you",
         "money",

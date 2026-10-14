@@ -917,6 +917,19 @@ class OwnerService:
     async def update_settings(
         self, context: OwnerContext, update: SettingsUpdate
     ) -> BusinessRecord:
+        fields = self.settings_fields(update)
+        async with self._unit_of_work_factory() as unit_of_work:
+            record = await unit_of_work.businesses.configure_site(
+                context.business.business_id,
+                now=self._now(),
+                **fields,
+            )
+            await unit_of_work.commit()
+        return record
+
+    def settings_fields(self, update: SettingsUpdate) -> dict[str, str]:
+        """The checked, normalized values ``update_settings`` would save."""
+
         fields: dict[str, str] = {}
         if update.display_name is not None:
             name = " ".join(update.display_name.split())
@@ -973,14 +986,7 @@ class OwnerService:
                 )
             except ValueError as error:
                 raise OwnerInputError(f"Time zone {error}.") from error
-        async with self._unit_of_work_factory() as unit_of_work:
-            record = await unit_of_work.businesses.configure_site(
-                context.business.business_id,
-                now=self._now(),
-                **fields,
-            )
-            await unit_of_work.commit()
-        return record
+        return fields
 
 
 def _is_owner(business: BusinessRecord, email: str) -> bool:
