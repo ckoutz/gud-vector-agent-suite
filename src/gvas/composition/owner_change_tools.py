@@ -1,4 +1,4 @@
-"""The dashboard's money and decision actions as owner-text change tools.
+"""The dashboard's money, decision and settings actions as owner-text change tools.
 
 Each tool resolves the owner's words to one quote in code, writes the exact
 sentence the owner confirms, and on YES calls the same ``OwnerService`` method
@@ -9,6 +9,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from gvas.application.owner import (
     OwnerConflictError,
@@ -16,6 +17,7 @@ from gvas.application.owner import (
     OwnerInputError,
     OwnerNotFoundError,
     OwnerService,
+    SettingsUpdate,
 )
 from gvas.application.owner_assistant import business_zone, money_text
 from gvas.domain.enums import BillingInterval, CustomerQuoteStatus, QuoteBilling, QuoteStatus
@@ -32,6 +34,7 @@ from gvas.domain.owner_assistant import (
 from gvas.domain.payments import LedgerPayment, PaymentKind, PaymentMethod, PaymentSource
 from gvas.domain.quotes import Quote, public_quote_id
 from gvas.domain.repositories import BusinessRecord, UnitOfWork
+from gvas.domain.time_zones import zone_label
 
 QUOTE_LIST_LIMIT = 500
 BOOKING_LIST_LIMIT = 200
@@ -759,3 +762,124 @@ def decision_change_tools(
         ApproveQuoteTool(decisions),
         RejectQuoteTool(decisions),
     )
+
+
+#: Owner-text argument, ``SettingsUpdate`` field, what the owner reads.
+#: Notification e-mail, Calendly link and calendar feed stay dashboard-only.
+_SETTINGS = (
+    ("business_name", "display_name", "your business name"),
+    ("time_zone", "timezone", "your time zone"),
+    ("about", "intake_brief", "what Gus says about your business"),
+    ("questions", "intake_questions", "the questions Gus asks"),
+    ("greeting", "intake_opening", "Gus's greeting"),
+    ("offer_line", "intake_offer_line", "Gus's line above the times"),
+    ("visit_question", "intake_visit_question", "Gus's question before the visit"),
+)
+_CLEARABLE = frozenset(
+    {
+        "intake_brief",
+        "intake_questions",
+        "intake_opening",
+        "intake_offer_line",
+        "intake_visit_question",
+    }
+)
+
+
+def _setting(description: str) -> dict[str, Any]:
+    return {"type": ["string", "null"], "description": f"{description} Null to leave it."}
+
+
+def _current_setting(business: BusinessRecord, field: str) -> str:
+    profile = business.intake_profile
+    value = {
+        "display_name": business.display_name,
+        "timezone": business.timezone,
+        "intake_brief": profile.brief,
+        "intake_questions": profile.questions,
+        "intake_opening": profile.opening,
+        "intake_offer_line": profile.offer_line,
+        "intake_visit_question": profile.visit_question,
+    }[field]
+    return value or ""
+
+
+class SettingsTool:
+    spec = OwnerAssistantTool(
+        "change_settings",
+        "Propose changing the business's Settings: business name, time zone, or Gus's "
+        "wording for customers. Give the exact new text only for the settings the owner "
+        "asked to change and null for the rest; an empty string puts Gus's wording back "
+        "to his default.",
+        {
+            "business_name": _setting("The new business name."),
+            "time_zone": _setting("An IANA time zone name, like America/Los_Angeles."),
+            "about": _setting("What the business is and books, for Gus."),
+            "questions": _setting("What Gus finds out beyond contact details."),
+            "greeting": _setting("The first message a visitor reads."),
+            "offer_line": _setting("The line above offered times."),
+            "visit_question": _setting("The question Gus asks once a time is picked."),
+        },
+    )
+    sensitive = False
+
+    def __init__(self, money: _Money) -> None:
+        self._money = money
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        asked = {
+            field: value for key, field, _ in _SETTINGS if isinstance(value := args.get(key), str)
+        }
+        if not asked:
+            raise OwnerChangeRefusedError(
+                "Tell me which setting to change: business name, time zone, or Gus's wording."
+            )
+        for field, value in asked.items():
+            if not value.strip() and field not in _CLEARABLE:
+                raise OwnerChangeRefusedError("That setting can't be left empty.")
+        fields = await _dashboard(_checked(self._money.owner, SettingsUpdate(**asked)))
+        changes: list[str] = []
+        for _, field, label in _SETTINGS:
+            if field not in fields or fields[field] == _current_setting(business, field):
+                continue
+            new = fields[field]
+            if field == "timezone":
+                changes.append(f"set {label} to {_zone_name(new)}")
+            elif not new:
+                changes.append(f"remove {label}, so Gus uses his default")
+            else:
+                changes.append(f'change {label} to: "{new}"')
+        if not changes:
+            raise OwnerChangeRefusedError("That's already what Settings say.")
+        return OwnerChangePlan(
+            summary=_sentence(f"I will {'; and '.join(changes)}"),
+            arguments={"fields": {field: fields[field] for field in fields}},
+        )
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        fields = arguments["fields"]
+        assert isinstance(fields, dict)
+        update = SettingsUpdate(**{field: str(value) for field, value in fields.items()})
+        await _dashboard(self._money.owner.update_settings(self._money.context(business), update))
+        return "Done: Settings are updated, and the dashboard shows the change."
+
+
+async def _checked(owner: OwnerService, update: SettingsUpdate) -> dict[str, str]:
+    return owner.settings_fields(update)
+
+
+def _sentence(text: str) -> str:
+    return text if text.endswith('"') else f"{text}."
+
+
+def _zone_name(name: str) -> str:
+    return f"{zone_label(datetime.now(UTC).astimezone(ZoneInfo(name)))} ({name})"
+
+
+def settings_change_tools(
+    unit_of_work_factory: Callable[[], UnitOfWork],
+    owner: OwnerService,
+    *,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> tuple[OwnerChangeTool, ...]:
+    return (SettingsTool(_Money(unit_of_work_factory, owner, now)),)
