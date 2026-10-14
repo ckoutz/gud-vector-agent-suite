@@ -525,3 +525,24 @@ async def test_the_alert_email_says_what_failed_and_for_which_business() -> None
     assert "Larkspur Lawn & Garden" in sent.subject
     assert "(402): out of credit" in sent.text
     assert str(business_id) in sent.text
+
+
+@pytest.mark.asyncio
+async def test_after_a_failed_alert_a_different_problem_is_reported_as_itself(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    alerts = AlertsFake(fail=True)
+    model = ModelFake(error=OwnerAssistantSetupError("openai refused the request (401): bad key"))
+    application = build(session_factory, OwnerReplyFake(), model, alerts=alerts)
+
+    await send(application, business_id, "hi")
+    model._error = OwnerAssistantSetupError("openai refused the request (402): no credit")
+    await send(application, business_id, "hello?")
+
+    assert [detail for _, _, detail in alerts.sent] == [
+        "openai refused the request (401): bad key",
+        "openai refused the request (402): no credit",
+    ]
+    assert alerts.times[0] != alerts.times[1]

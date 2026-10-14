@@ -429,15 +429,18 @@ class OwnerAssistant:
 
     async def _alert(self, business_id: BusinessId, business_name: str, detail: str) -> None:
         """At most one sent alert per ``SETUP_ALERT_INTERVAL``; later failures are only
-        logged. A send that fails doesn't count: the next failure resends the same alert
-        (same payload and time, so the same idempotency key if the first one did land)."""
+        logged. A send that fails doesn't count. If the next failure is the same problem,
+        the unsent alert is resent unchanged (same e-mail idempotency key, in case the
+        first send did land); a different problem is reported as itself."""
 
         if self._alerts is None:
             return
         now = self._now()
         if self._last_alert_at is not None and now - self._last_alert_at < SETUP_ALERT_INTERVAL:
             return
-        alert = self._unsent_alert or (business_id, business_name, detail, now)
+        alert = (business_id, business_name, detail, now)
+        if self._unsent_alert is not None and self._unsent_alert[:3] == alert[:3]:
+            alert = self._unsent_alert
         self._last_alert_at = now
         try:
             await self._alerts.setup_problem(*alert)
