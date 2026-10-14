@@ -65,6 +65,7 @@ from gvas.composition.field_note_workflow import FieldNoteWorkflowHandler
 from gvas.composition.intents import DeterministicIntentResolver
 from gvas.composition.owner_change_tools import (
     calendar_change_tools,
+    customer_change_tools,
     decision_change_tools,
     money_change_tools,
     settings_change_tools,
@@ -352,6 +353,7 @@ def build_application(
             + money_change_tools(unit_of_work_factory, owner, now=now)
             + decision_change_tools(unit_of_work_factory, owner, now=now)
             + settings_change_tools(unit_of_work_factory, owner, now=now)
+            + customer_change_tools(unit_of_work_factory, now=now)
             + calendar_change_tools(unit_of_work_factory, ports.schedule_blocks, now=now),
             now=now,
         )

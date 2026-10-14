@@ -10,7 +10,7 @@ import re
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from gvas.application.calendar_blocks import BLOCK_NOT_CONFIGURED_REPLY, BLOCK_UNREACHABLE_REPLY
@@ -31,8 +31,9 @@ from gvas.domain.calendar_blocks import (
     format_minute,
     subtract_interval,
 )
+from gvas.domain.customers import CustomerRecord, customer_phone
 from gvas.domain.enums import BillingInterval, CustomerQuoteStatus, QuoteBilling, QuoteStatus
-from gvas.domain.identifiers import BusinessId, JsonValue
+from gvas.domain.identifiers import BusinessId, CustomerId, JsonValue
 from gvas.domain.intake import (
     AvailabilityError,
     IntakeConversation,
@@ -906,6 +907,144 @@ def settings_change_tools(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> tuple[OwnerChangeTool, ...]:
     return (SettingsTool(_Money(unit_of_work_factory, owner, now)),)
+
+
+def _phone_label(phone: str | None) -> str:
+    """``(510) 555-0163`` for a US number, as the dashboard shows it."""
+
+    if phone and len(phone) == 12 and phone.startswith("+1"):
+        return f"({phone[2:5]}) {phone[5:8]}-{phone[8:]}"
+    return phone or "no phone"
+
+
+class EditCustomerTool:
+    spec = OwnerAssistantTool(
+        "change_customer",
+        "Propose changing a customer's name or phone number in the business's records. "
+        "`customer` is who, as the owner named them: current name, e-mail or phone. Give "
+        "the new value only for what the owner asked to change and null for the rest. "
+        "E-mail addresses can't be changed by text, since customers sign in with them.",
+        {
+            "customer": {
+                "type": "string",
+                "description": "The customer's current name, e-mail or phone.",
+            },
+            "name": _setting("The customer's new full name."),
+            "phone": _setting("The customer's new phone number."),
+        },
+    )
+    sensitive = False
+
+    def __init__(
+        self, unit_of_work_factory: Callable[[], UnitOfWork], now: Callable[[], datetime]
+    ) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._now = now
+
+    async def _customer(self, business: BusinessRecord, target: object) -> CustomerRecord:
+        needle = _needle(target)
+        digits = "".join(character for character in needle if character.isdigit())
+        async with self._unit_of_work_factory() as unit_of_work:
+            customers = await unit_of_work.customers.list_for_business(business.business_id)
+        exact = [c for c in customers if needle in {(c.display_name or "").casefold(), c.email}]
+        found = exact or [
+            c
+            for c in customers
+            if needle in (c.display_name or "").casefold()
+            or needle in c.email
+            or (len(digits) >= 4 and digits in (c.phone or ""))
+        ]
+        if not found:
+            raise OwnerChangeRefusedError(f'No customer in your records matches "{target}".')
+        if len(found) > 1:
+            names = ", ".join(customer.name for customer in found[:5])
+            raise OwnerChangeRefusedError(f"More than one matches ({names}). Say which one.")
+        return found[0]
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        name = " ".join(str(args.get("name") or "").split())
+        phone = str(args.get("phone") or "").strip()
+        if not name and not phone:
+            raise OwnerChangeRefusedError(
+                "Tell me what to change: the customer's name or phone. "
+                "E-mail addresses can't be changed by text."
+            )
+        customer = await self._customer(business, args.get("customer"))
+        changes: dict[str, JsonValue] = {}
+        said: list[str] = []
+        if name:
+            if len(name) > 255:
+                raise OwnerChangeRefusedError("That name is too long.")
+            if name != customer.display_name:
+                changes["display_name"] = name
+                said.append(f'name to "{name}"')
+        if phone:
+            normalized = customer_phone(phone)
+            if normalized is None:
+                raise OwnerChangeRefusedError(
+                    "That doesn't look like a phone number. Give it like (510) 555-0123."
+                )
+            if normalized != customer.phone:
+                changes["phone"] = normalized
+                said.append(f"phone to {_phone_label(normalized)}")
+        if not changes:
+            raise OwnerChangeRefusedError(f"That's already what you have for {customer.name}.")
+        summary = f"I will change {customer.name}'s {' and '.join(said)}."
+        if "phone" in changes and customer.sms_consent is True:
+            summary += (
+                " They agreed to texts at the old number, so Gus won't text the new one "
+                "until they agree again."
+            )
+        return OwnerChangePlan(
+            summary=summary,
+            arguments={
+                "customer_id": str(customer.customer_id),
+                "before": {"display_name": customer.display_name, "phone": customer.phone},
+                "changes": changes,
+            },
+        )
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        before, changes = arguments["before"], arguments["changes"]
+        assert isinstance(before, dict) and isinstance(changes, dict)
+        customer_id = CustomerId(UUID(str(arguments["customer_id"])))
+        async with self._unit_of_work_factory() as unit_of_work:
+            customer = await unit_of_work.customers.get(business.business_id, customer_id)
+            if customer is None:
+                raise OwnerChangeRefusedError(
+                    "That customer isn't in your records any more, so nothing changed."
+                )
+            if (customer.display_name, customer.phone) != (
+                before.get("display_name"),
+                before.get("phone"),
+            ):
+                raise OwnerChangeRefusedError(
+                    f"{customer.name}'s details changed since I asked, so nothing changed. "
+                    "Ask again if you still want it."
+                )
+            name = changes.get("display_name", customer.display_name)
+            phone = changes.get("phone", customer.phone)
+            updated = await unit_of_work.customers.update_details(
+                business.business_id,
+                customer_id,
+                display_name=None if name is None else str(name),
+                phone=None if phone is None else str(phone),
+                now=self._now(),
+            )
+            assert updated is not None
+            await unit_of_work.commit()
+        return (
+            f"Done: {updated.name}'s details are updated, and the dashboard shows them. "
+            "Invoices already sent keep the old ones."
+        )
+
+
+def customer_change_tools(
+    unit_of_work_factory: Callable[[], UnitOfWork],
+    *,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> tuple[OwnerChangeTool, ...]:
+    return (EditCustomerTool(unit_of_work_factory, now),)
 
 
 _DAY_ARG = {"type": "string", "description": "The date, YYYY-MM-DD, in the business's time zone."}

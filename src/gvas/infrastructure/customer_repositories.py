@@ -172,6 +172,30 @@ class SqlCustomerRepository:
             .values(sms_consent=consent, sms_consent_at=at)
         )
 
+    async def update_details(
+        self,
+        business_id: BusinessId,
+        customer_id: CustomerId,
+        *,
+        display_name: str | None,
+        phone: str | None,
+        now: datetime,
+    ) -> CustomerRecord | None:
+        row = await self.session.scalar(
+            select(Customer)
+            .where(Customer.business_id == business_id, Customer.id == customer_id)
+            .with_for_update()
+        )
+        if row is None:
+            return None
+        if phone != row.phone and row.sms_consent is True:
+            row.sms_consent = None
+            row.sms_consent_at = now
+        row.display_name = display_name
+        row.phone = phone
+        await self.session.flush()
+        return self._record(row)
+
 
 class SqlPortalLoginTokenRepository:
     def __init__(self, session: AsyncSession) -> None:
