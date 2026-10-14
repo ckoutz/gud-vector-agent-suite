@@ -909,6 +909,10 @@ def settings_change_tools(
 
 
 _DAY_ARG = {"type": "string", "description": "The date, YYYY-MM-DD, in the business's time zone."}
+_BLOCK_UNSURE_REPLY = (
+    "I couldn't reach the calendar, so I can't tell whether the block landed. "
+    'Text "unblock {day}" to make sure that time is open, or ask again to block it.'
+)
 _TIME = re.compile(r"(\d{1,2}):(\d{2})")
 
 
@@ -926,6 +930,10 @@ def _span(day: date, start: int, end: int) -> str:
 
     last = "midnight" if end == MINUTES_PER_DAY else format_minute(end)
     return f"{format_day(day)}, {format_minute(start)}–{last}"
+
+
+def _key(day: date) -> str:
+    return f"{day.month}/{day.day}"
 
 
 def _hours(block: CalendarBlock) -> str:
@@ -1010,34 +1018,50 @@ class BlockTimeTool:
 
     async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
         schedule = self._calendar.schedule(business)
-        day = date.fromisoformat(str(arguments["day"]))
+        # Rechecked at YES: past midnight the day may be gone.
+        day = await self._calendar.day(business, arguments["day"])
         start, end = int(str(arguments["start"])), int(str(arguments["end"]))
         now = self._calendar.now()
+        business_id = business.business_id
         async with self._calendar.unit_of_work_factory() as unit_of_work:
-            hours = await _reachable(schedule.day_hours(business.business_id, day))
+            hours = await _reachable(schedule.day_hours(business_id, day))
             remaining = subtract_interval(hours.intervals, start, end)
             if remaining == hours.intervals:
                 raise OwnerChangeRefusedError("That time isn't open any more, so nothing changed.")
-            # Kept with the hours it replaces, so ``unblock`` restores them exactly.
-            await unit_of_work.calendar_blocks.add(
-                CalendarBlock(
-                    block_id=uuid4(),
-                    business_id=business.business_id,
-                    day=day,
-                    start_minute=start,
-                    end_minute=end,
-                    state=CalendarBlockState.APPLIED,
-                    previous=hours,
-                    created_at=now,
-                    expires_at=now,
-                    decided_at=now,
-                )
+            # Saved, with the hours it replaces, before Calendly is touched: a
+            # write that lands and then errors can still be unblocked.
+            block = CalendarBlock(
+                block_id=uuid4(),
+                business_id=business_id,
+                day=day,
+                start_minute=start,
+                end_minute=end,
+                state=CalendarBlockState.APPLIED,
+                previous=hours,
+                created_at=now,
+                expires_at=now,
+                decided_at=now,
             )
-            await _reachable(schedule.set_day_hours(business.business_id, day, remaining))
+            await unit_of_work.calendar_blocks.add(block)
             await unit_of_work.commit()
+            try:
+                await schedule.set_day_hours(business_id, day, remaining)
+            except AvailabilityError as error:
+                try:
+                    landed = (await schedule.day_hours(business_id, day)).intervals == remaining
+                except AvailabilityError:
+                    raise OwnerChangeRefusedError(
+                        _BLOCK_UNSURE_REPLY.format(day=_key(day))
+                    ) from error
+                if not landed:
+                    await unit_of_work.calendar_blocks.save(
+                        block.with_updates(state=CalendarBlockState.REMOVED)
+                    )
+                    await unit_of_work.commit()
+                    raise OwnerChangeRefusedError(BLOCK_UNREACHABLE_REPLY) from error
         return (
             f"Done: blocked {_span(day, start, end)}, so no one can book it. "
-            f'To open it again, text "unblock {day.month}/{day.day}".'
+            f'To open it again, text "unblock {_key(day)}".'
         )
 
 
