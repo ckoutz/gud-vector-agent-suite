@@ -40,7 +40,9 @@ class UnmatchedMessageHandler:
         message = context.message
         text = "\n".join(part.text for part in message.parts if isinstance(part, TextPart)).strip()
         if self._assistant is not None and text:
-            answer = await self._assistant.answer(message.business_id, text)
+            answer = await self._assistant.answer(
+                message.business_id, text, conversation_ref=str(message.conversation_ref)
+            )
             detail = f"owner assistant: q={text[:300]!r} a={answer[:300]!r}"
         else:
             answer = UNMATCHED_MESSAGE_REPLY

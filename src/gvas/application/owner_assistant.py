@@ -10,8 +10,10 @@ import logging
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from gvas.domain.calendar_blocks import CalendarBlockState
 from gvas.domain.enums import CustomerQuoteStatus, QuoteStatus
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import IntakeConversation, IntakeState
@@ -26,6 +28,18 @@ from gvas.domain.owner_assistant import (
     OwnerAssistantRequest,
     OwnerAssistantSetupError,
     OwnerAssistantTool,
+    OwnerChangePlan,
+    OwnerChangeRefusedError,
+    OwnerChangeTool,
+)
+from gvas.domain.owner_commands import (
+    OWNER_COMMAND_TEXT_MAX_CHARS,
+    OWNER_COMMAND_TTL,
+    OwnerCommand,
+    OwnerCommandConflictError,
+    OwnerCommandState,
+    conversation_key,
+    is_yes,
 )
 from gvas.domain.payments import month_totals
 from gvas.domain.quotes import Quote
@@ -48,6 +62,17 @@ SETUP_ALERT_INTERVAL = timedelta(hours=1)
 SETUP_REPLY = (
     "Sorry, I can't answer texts right now: the AI service is refusing my requests, "
     "a setup problem on Güd Vector's side. The dashboard has everything in the meantime."
+)
+CONFIRM_PROMPT = "Reply YES in the next 10 minutes to do it. Any other reply cancels it."
+CANCELLED_NOTE = "I cancelled the change that was waiting for your YES, so nothing was done."
+NOTHING_PENDING_REPLY = "Nothing is waiting for a YES, so nothing was changed."
+BUSY_REPLY = (
+    "Another change was being set up at the same moment, so I set up nothing. "
+    "Please send that again."
+)
+CHANGE_FAILED_REPLY = (
+    "Something went wrong while making that change, so it may not be done. "
+    "Please check the dashboard."
 )
 LIMIT_REPLY = (
     "I've reached this month's limit for plain-language answers. "
@@ -414,6 +439,7 @@ class OwnerAssistant:
         model: OwnerAssistantPort,
         tools: OwnerReadTools,
         *,
+        changes: Iterable[OwnerChangeTool] = (),
         ceilings: UsageCeilingGuard | None = None,
         alerts: OwnerAssistantAlertPort | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -421,6 +447,7 @@ class OwnerAssistant:
         self._unit_of_work_factory = unit_of_work_factory
         self._model = model
         self._tools = tools
+        self._changes = {change.spec.name: change for change in changes}
         self._ceilings = ceilings
         self._alerts = alerts
         self._last_alert_at: datetime | None = None
@@ -456,27 +483,68 @@ class OwnerAssistant:
         business_id: BusinessId,
         text: str,
         history: tuple[tuple[str, str], ...] = (),
+        *,
+        conversation_ref: str = "",
     ) -> str:
         async with self._unit_of_work_factory() as unit_of_work:
             business = await unit_of_work.businesses.get(business_id)
         if business is None:
             return UNAVAILABLE_REPLY
         now = self._now()
+        pending = await self._pending(business_id, now)
+        if pending is not None:
+            if is_yes(text) and pending.conversation_ref == conversation_key(conversation_ref):
+                return await self._confirm(business, pending)
+            await self._close(pending, OwnerCommandState.CANCELLED, now)
+            if is_yes(text):
+                # A YES from another thread is not the one this change asked for.
+                return CANCELLED_NOTE
+        elif is_yes(text):
+            return NOTHING_PENDING_REPLY
         if self._ceilings is not None and await self._ceilings.is_reached(
             business_id, UsageKind.REVIEW_TOKENS, now=now
         ):
             return LIMIT_REPLY
+        return await self._ask(business, text, history, conversation_ref, now)
+
+    async def _ask(
+        self,
+        business: BusinessRecord,
+        text: str,
+        history: tuple[tuple[str, str], ...],
+        conversation_ref: str,
+        now: datetime,
+    ) -> str:
+        business_id = business.business_id
         request = OwnerAssistantRequest(
             business_id=business_id,
             business_name=business.display_name or business.name,
             local_now=now.astimezone(business_zone(business)).strftime("%A %Y-%m-%d, %-I:%M %p %Z"),
             text=text,
-            tools=TOOLS,
+            tools=TOOLS + tuple(change.spec for change in self._changes.values()),
             history=history,
         )
+        staged: list[tuple[OwnerChangeTool, OwnerChangePlan]] = []
 
         async def run_tool(name: str, args: Mapping[str, Any]) -> Any:
-            return await self._tools.run(business, name, args)
+            change = self._changes.get(name)
+            if change is None:
+                return await self._tools.run(business, name, args)
+            if staged:
+                return {"error": "Only one change at a time. Propose just the first one."}
+            try:
+                plan = await change.prepare(business, args)
+            except OwnerChangeRefusedError as refusal:
+                logger.info(
+                    "owner command refused",
+                    extra={"business_id": str(business_id), "tool": name},
+                )
+                return {"error": str(refusal)}
+            staged.append((change, plan))
+            return {
+                "proposed": plan.summary,
+                "status": "not done: the owner must reply YES first; the system asks",
+            }
 
         try:
             answer = await self._model.answer(request, run_tool)
@@ -491,6 +559,9 @@ class OwnerAssistant:
         except OwnerAssistantError:
             logger.warning("owner assistant failed", exc_info=True)
             return UNAVAILABLE_REPLY
+        if staged:
+            change, plan = staged[0]
+            return await self._propose(business, change, plan, text, conversation_ref)
         reply = answer.text.strip()
         if not reply:
             return UNAVAILABLE_REPLY
@@ -501,3 +572,98 @@ class OwnerAssistant:
         if len(reply) > OWNER_ASSISTANT_REPLY_MAX_CHARS:
             reply = reply[: OWNER_ASSISTANT_REPLY_MAX_CHARS - 1].rstrip() + "…"
         return reply
+
+    async def _pending(self, business_id: BusinessId, now: datetime) -> OwnerCommand | None:
+        """The live proposal, if any; one past its time is closed as expired."""
+
+        async with self._unit_of_work_factory() as unit_of_work:
+            command = await unit_of_work.owner_commands.latest_proposed(business_id)
+        if command is None or command.is_live(now):
+            return command
+        await self._close(command, OwnerCommandState.EXPIRED, now)
+        return None
+
+    async def _close(self, command: OwnerCommand, state: OwnerCommandState, now: datetime) -> None:
+        async with self._unit_of_work_factory() as unit_of_work:
+            await unit_of_work.owner_commands.close(command, state, now)
+            await unit_of_work.commit()
+
+    async def _propose(
+        self,
+        business: BusinessRecord,
+        change: OwnerChangeTool,
+        plan: OwnerChangePlan,
+        text: str,
+        conversation_ref: str,
+    ) -> str:
+        """Stores the one pending change (closing any other proposal, a calendar
+        block's included) and asks for YES in words written by code."""
+
+        now = self._now()
+        command = OwnerCommand(
+            command_id=uuid4(),
+            business_id=business.business_id,
+            conversation_ref=conversation_key(conversation_ref),
+            tool=change.spec.name,
+            arguments=dict(plan.arguments),
+            summary=plan.summary,
+            sensitive=change.sensitive,
+            requested_text=text[:OWNER_COMMAND_TEXT_MAX_CHARS],
+            created_at=now,
+            expires_at=now + OWNER_COMMAND_TTL,
+        )
+        async with self._unit_of_work_factory() as unit_of_work:
+            commands = unit_of_work.owner_commands
+            while (other := await commands.latest_proposed(command.business_id)) is not None:
+                await commands.close(other, OwnerCommandState.CANCELLED, now)
+            block = await unit_of_work.calendar_blocks.latest_proposed(command.business_id)
+            if block is not None:
+                await unit_of_work.calendar_blocks.save(
+                    block.with_updates(state=CalendarBlockState.CANCELLED, decided_at=now)
+                )
+            try:
+                await unit_of_work.owner_commands.add(command)
+            except OwnerCommandConflictError:
+                return BUSY_REPLY
+            await unit_of_work.commit()
+        logger.info(
+            "owner command proposed",
+            extra={"business_id": str(command.business_id), "tool": command.tool},
+        )
+        return f"{plan.summary}\n\n{CONFIRM_PROMPT}"
+
+    async def _confirm(self, business: BusinessRecord, command: OwnerCommand) -> str:
+        now = self._now()
+        async with self._unit_of_work_factory() as unit_of_work:
+            claimed = await unit_of_work.owner_commands.claim(command, now)
+            await unit_of_work.commit()
+        if not claimed:
+            return NOTHING_PENDING_REPLY
+        change = self._changes.get(command.tool)
+        state, outcome = OwnerCommandState.FAILED, CHANGE_FAILED_REPLY
+        try:
+            if change is None:
+                raise OwnerChangeRefusedError("I can't make that change by text any more.")
+            outcome = await change.apply(business, command.arguments)
+            state = OwnerCommandState.DONE
+        except OwnerChangeRefusedError as refusal:
+            outcome = f"Nothing was changed: {refusal}"
+        except Exception:
+            logger.exception(
+                "owner command failed",
+                extra={"business_id": str(command.business_id), "tool": command.tool},
+            )
+        async with self._unit_of_work_factory() as unit_of_work:
+            await unit_of_work.owner_commands.save(
+                command.with_updates(state=state, outcome=outcome, decided_at=self._now())
+            )
+            await unit_of_work.commit()
+        logger.info(
+            "owner command applied",
+            extra={
+                "business_id": str(command.business_id),
+                "tool": command.tool,
+                "state": state.value,
+            },
+        )
+        return outcome

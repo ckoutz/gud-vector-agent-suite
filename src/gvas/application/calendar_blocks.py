@@ -37,6 +37,7 @@ from gvas.domain.intake import (
 )
 from gvas.domain.messages import NormalizedOwnerMessage, OutboundOwnerMessage, TextPart
 from gvas.domain.owner_actions import decide_booking
+from gvas.domain.owner_commands import OwnerCommandState
 from gvas.domain.ports import ScheduleBlockPort
 from gvas.domain.repositories import UnitOfWork
 from gvas.domain.workflows import WorkflowContext, WorkflowResult
@@ -123,6 +124,10 @@ class CalendarBlockHandler:
                 await unit_of_work.calendar_blocks.save(
                     pending.with_updates(state=CalendarBlockState.CANCELLED, decided_at=now)
                 )
+            # One pending change at a time: a block replaces a change Gus proposed.
+            command = await unit_of_work.owner_commands.latest_proposed(business_id)
+            if command is not None:
+                await unit_of_work.owner_commands.close(command, OwnerCommandState.CANCELLED, now)
             block = CalendarBlock(
                 block_id=uuid4(),
                 business_id=business_id,

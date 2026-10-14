@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Protocol
 
 from gvas.application.field_notes import FieldNoteIntentContribution, FieldNoteUnitOfWorkFactory
@@ -22,6 +23,7 @@ from gvas.domain.intents import (
     IntentUnresolvedError,
 )
 from gvas.domain.messages import NormalizedOwnerMessage
+from gvas.domain.owner_commands import OwnerCommandState, is_yes
 from gvas.domain.repositories import UnitOfWork
 
 
@@ -58,6 +60,10 @@ class DeterministicIntentResolver:
         self._message_unit_of_work_factory = message_unit_of_work_factory
 
     async def resolve(self, message: NormalizedOwnerMessage) -> IntentResolution:
+        # A change Gus proposed waits for exactly YES; any other message cancels
+        # it and is routed as usual, so only one change is ever pending.
+        if await self._owner_command_answer(message):
+            return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
         # Booking decisions are checked before everything else: the quote
         # selector claims every message in a conversation with an active
         # quote, and a booking command must still reach its own handler.
@@ -82,6 +88,18 @@ class DeterministicIntentResolver:
         if field_note_intent is not None:
             return IntentResolution(intent=field_note_intent, confidence=1)
         return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
+
+    async def _owner_command_answer(self, message: NormalizedOwnerMessage) -> bool:
+        now = datetime.now(UTC)
+        async with self._message_unit_of_work_factory() as unit_of_work:
+            command = await unit_of_work.owner_commands.latest_proposed(message.business_id)
+            if command is None or not command.is_live(now):
+                return False
+            if is_yes(normalized_text(message)):
+                return True
+            await unit_of_work.owner_commands.close(command, OwnerCommandState.CANCELLED, now)
+            await unit_of_work.commit()
+        return False
 
     async def _is_calendar_block(self, message: NormalizedOwnerMessage) -> bool:
         """``unavailable 8-12`` / ``unblock tue`` always; ``yes``/``no`` only while

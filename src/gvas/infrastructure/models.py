@@ -502,6 +502,7 @@ from gvas.infrastructure import completeness_models as completeness_models  # no
 from gvas.infrastructure import delivery_models as delivery_models  # noqa: E402, F401
 from gvas.infrastructure import field_note_models as field_note_models  # noqa: E402, F401
 from gvas.infrastructure import intake_models as intake_models  # noqa: E402, F401
+from gvas.infrastructure import owner_command_models as owner_command_models  # noqa: E402, F401
 from gvas.infrastructure import payment_models as payment_models  # noqa: E402, F401
 from gvas.infrastructure import plan_models as plan_models  # noqa: E402, F401
 from gvas.infrastructure import template_models as template_models  # noqa: E402, F401

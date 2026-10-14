@@ -333,7 +333,12 @@ class _AssistantFake:
         self.asked: list[tuple[object, str, tuple[tuple[str, str], ...]]] = []
 
     async def answer(
-        self, business_id: object, text: str, history: tuple[tuple[str, str], ...] = ()
+        self,
+        business_id: object,
+        text: str,
+        history: tuple[tuple[str, str], ...] = (),
+        *,
+        conversation_ref: str = "",
     ) -> str:
         self.asked.append((business_id, text, history))
         return "You have 2 bookings tomorrow."

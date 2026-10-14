@@ -41,6 +41,7 @@ from gvas.domain.messages import (
 )
 from gvas.domain.outbox import OutboxCommand, OutboxRecord
 from gvas.domain.owner import OwnerLoginTokenRepository, OwnerSessionRepository
+from gvas.domain.owner_commands import OwnerCommandRepository
 from gvas.domain.payments import (
     PaymentEventRepository,
     PaymentLedgerRepository,
@@ -363,6 +364,7 @@ class UnitOfWork(Protocol):
     owner_sessions: OwnerSessionRepository
     calendar_blocks: CalendarBlockRepository
     invoices: InvoiceRepository
+    owner_commands: OwnerCommandRepository
 
     async def __aenter__(self) -> "UnitOfWork": ...
 
