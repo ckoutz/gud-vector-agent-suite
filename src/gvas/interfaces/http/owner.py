@@ -33,6 +33,7 @@ from gvas.domain.enums import QuoteStatus
 from gvas.domain.intake import IntakeConversation
 from gvas.domain.invoices import Invoice, invoice_status
 from gvas.domain.owner import CalendarEvent, calendar_feed_host
+from gvas.domain.owner_commands import OwnerCommand
 from gvas.domain.payments import (
     PLAN_MONTHS_MAX,
     LedgerPayment,
@@ -284,6 +285,19 @@ def owner_request_payload(view: ServiceRequestView) -> dict[str, object]:
             "name": customer.display_name if customer is not None else None,
             "email": customer.email if customer is not None else None,
         },
+    }
+
+
+def owner_command_payload(command: OwnerCommand) -> dict[str, object]:
+    return {
+        "id": str(command.command_id),
+        "tool": command.tool,
+        "summary": command.summary,
+        "requestedText": command.requested_text,
+        "state": command.state.value,
+        "outcome": command.outcome,
+        "createdAt": _iso(command.created_at),
+        "decidedAt": _iso(command.decided_at),
     }
 
 
@@ -544,6 +558,11 @@ def create_owner_router(
     async def service_requests(context: OwnerContext = owner) -> JSONResponse:
         records = await service.service_requests(context)
         return JSONResponse({"requests": [owner_request_payload(item) for item in records]})
+
+    @router.get("/v1/owner/commands", dependencies=limited)
+    async def commands(context: OwnerContext = owner) -> JSONResponse:
+        records = await service.commands(context)
+        return JSONResponse({"commands": [owner_command_payload(item) for item in records]})
 
     @router.get("/v1/owner/calendar", dependencies=limited)
     async def calendar(

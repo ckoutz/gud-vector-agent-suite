@@ -634,3 +634,70 @@ async def test_feed_adapter_follows_safe_redirects_and_refuses_unsafe_ones() -> 
             with pytest.raises(OwnerCalendarError) as raised:
                 await feed.events(f"https://calendar.example.com{path}", WINDOW_START, WINDOW_END)
             assert "calendar.example.com" not in str(raised.value)
+
+
+# -- command log ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_command_log_lists_this_business_texts_newest_first(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from gvas.domain.owner_commands import OwnerCommand, OwnerCommandState
+    from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
+
+    application, business_id = await owner_business(session_factory)
+    other = BusinessId(uuid4())
+    await seed_business(session_factory, other)
+    now = datetime.now(UTC)
+
+    def command(
+        business: BusinessId, summary: str, age: timedelta, **extra: object
+    ) -> OwnerCommand:
+        created = now - age
+        return OwnerCommand(
+            command_id=uuid4(),
+            business_id=business,
+            conversation_ref="owner-thread",
+            tool="change_mark_paid",
+            arguments={"quote": "q"},
+            summary=summary,
+            requested_text="mark LL-1036 paid",
+            created_at=created,
+            expires_at=created + timedelta(minutes=10),
+            **extra,
+        )
+
+    async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+        await unit_of_work.owner_commands.add(
+            command(
+                business_id,
+                "I will mark LL-1036 paid.",
+                timedelta(hours=1),
+                state=OwnerCommandState.DONE,
+                outcome="Done: marked paid.",
+                decided_at=now - timedelta(minutes=59),
+            )
+        )
+        await unit_of_work.owner_commands.add(
+            command(business_id, "I will send an invoice.", timedelta(minutes=20))
+        )
+        await unit_of_work.owner_commands.add(
+            command(other, "Another business's change.", timedelta(minutes=1))
+        )
+        await unit_of_work.commit()
+
+    async with http_client(application) as http:
+        owner = await sign_in(session_factory, http, business_id)
+        response = await http.get("/v1/owner/commands", headers=bearer(owner))
+
+    assert response.status_code == 200
+    rows = response.json()["commands"]
+    assert [row["summary"] for row in rows] == [
+        "I will send an invoice.",
+        "I will mark LL-1036 paid.",
+    ]
+    assert [row["state"] for row in rows] == ["expired", "done"]
+    assert rows[1]["outcome"] == "Done: marked paid."
+    assert rows[1]["requestedText"] == "mark LL-1036 paid"
+    assert "arguments" not in rows[0]
