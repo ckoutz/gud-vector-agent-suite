@@ -469,13 +469,14 @@ async def test_a_failed_alert_still_gives_the_owner_the_setup_reply(
     owner_replies = OwnerReplyFake()
     model = ModelFake(error=OwnerAssistantSetupError("openai refused the request (400): no"))
 
-    await send(
-        build(session_factory, owner_replies, model, alerts=AlertsFake(fail=True)),
-        business_id,
-        "hi",
-    )
+    alerts = AlertsFake(fail=True)
+    application = build(session_factory, owner_replies, model, alerts=alerts)
 
-    assert reply_texts(owner_replies) == [SETUP_REPLY]
+    await send(application, business_id, "hi")
+    await send(application, business_id, "hello?")
+
+    assert reply_texts(owner_replies) == [SETUP_REPLY] * 2
+    assert len(alerts.sent) == 2, "an alert that failed to send doesn't start the hour"
 
 
 @pytest.mark.asyncio
