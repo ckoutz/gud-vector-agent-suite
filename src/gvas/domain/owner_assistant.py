@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
-from gvas.domain.identifiers import BusinessId
+from gvas.domain.identifiers import BusinessId, JsonValue
 from gvas.domain.owner import CalendarEvent
 from gvas.domain.repositories import BusinessRecord
 
@@ -26,6 +26,41 @@ class OwnerAssistantTool:
     description: str
     # JSON-schema ``properties`` of the tool's arguments; all are required.
     parameters: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class OwnerChangePlan:
+    """What a change tool will do: ``summary`` is the exact sentence the owner
+    confirms; ``arguments`` (ids, not names) are applied unchanged on YES."""
+
+    summary: str
+    arguments: Mapping[str, JsonValue]
+
+
+class OwnerChangeRefusedError(Exception):
+    """The change can't be made as asked; the message says why, for the owner."""
+
+
+class OwnerChangeTool(Protocol):
+    """A tool that changes something. The model can only call ``prepare``; the
+    application calls ``apply`` after the owner's YES, never the model."""
+
+    @property
+    def spec(self) -> OwnerAssistantTool: ...
+
+    @property
+    def sensitive(self) -> bool:
+        """Money or a customer-facing message (where a PIN can be required)."""
+        ...
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        """Validates and resolves the request; raises ``OwnerChangeRefusedError``."""
+        ...
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        """Makes the change and says what was done; raises ``OwnerChangeRefusedError``
+        when it no longer applies (nothing changed)."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -73,7 +108,12 @@ class OwnerAnswering(Protocol):
     """Answers one owner message for the business it came from."""
 
     async def answer(
-        self, business_id: BusinessId, text: str, history: tuple[tuple[str, str], ...] = ()
+        self,
+        business_id: BusinessId,
+        text: str,
+        history: tuple[tuple[str, str], ...] = (),
+        *,
+        conversation_ref: str = "",
     ) -> str: ...
 
 

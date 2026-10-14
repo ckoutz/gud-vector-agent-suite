@@ -29,6 +29,7 @@ OWNER_TEXTS_USED_UP_REPLY = (
     "That's all the texts for this demo copy. Start a new demo visit to keep texting Gus."
 )
 OWNER_TEXT_HISTORY_MAX = 10
+DEMO_TEXTS_CONVERSATION = "demo-texts"
 
 
 class _Turn(BaseModel):
@@ -114,6 +115,7 @@ def create_sandbox_router(
             business_id,
             body.text.strip(),
             tuple((turn.role, turn.text) for turn in body.history),
+            conversation_ref=DEMO_TEXTS_CONVERSATION,
         )
         return JSONResponse({"reply": reply})
 
