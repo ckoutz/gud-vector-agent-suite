@@ -554,6 +554,18 @@ class _Decisions:
         when = format_slot_label(request.requested_slot_start, business_zone(business))
         return f"{name}'s visit request for {when}"
 
+    def replaced(
+        self, business: BusinessRecord, request: IntakeConversation, *, approve: bool
+    ) -> str:
+        """For a request to move a booking: what happens to the original time."""
+        old = request.superseded_booking
+        if old is None:
+            return ""
+        kept = old.slot_label(business_zone(business))
+        if approve:
+            return f" It moves their visit from {kept}, which is canceled."
+        return f" Their original time, {kept}, stays booked and they'll be told so."
+
     async def quote(self, business: BusinessRecord, target: object) -> Quote:
         needle = _needle(target)
         async with self._unit_of_work_factory() as unit_of_work:
@@ -600,8 +612,9 @@ class ApproveBookingTool:
         request = await self._decisions.booking(business, args.get("customer"))
         return OwnerChangePlan(
             summary=(
-                f"I will approve {self._decisions.visit(business, request)}. "
-                "They'll be told it's booked."
+                f"I will approve {self._decisions.visit(business, request)}."
+                f"{self._decisions.replaced(business, request, approve=True)} "
+                "They'll be told it's approved, by email with the booking or a link to confirm it."
             ),
             arguments={"reference": request.reference},
         )
@@ -631,8 +644,17 @@ class DeclineBookingTool:
         request = await self._decisions.booking(business, args.get("customer"))
         raw = str(args.get("reason") or "").strip()
         reason = sanitize_owner_reason(raw) if raw else ""
-        told = f', with your note: "{reason}"' if reason else ", with no note."
         arguments: dict[str, JsonValue] = {"reference": request.reference}
+        if request.superseded_booking is not None:
+            # Declining a move keeps the original time; the dashboard sends no note then.
+            return OwnerChangePlan(
+                summary=(
+                    f"I will decline {self._decisions.visit(business, request)}."
+                    f"{self._decisions.replaced(business, request, approve=False)}"
+                ),
+                arguments=arguments,
+            )
+        told = f', with your note: "{reason}"' if reason else ", with no note."
         if reason:
             arguments["reason"] = reason
         return OwnerChangePlan(

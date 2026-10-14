@@ -1,11 +1,13 @@
 """Approve or decline by text, in plain words: the dashboard's decision buttons."""
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.composition.owner_change_tools import decision_change_tools
 from gvas.domain.enums import QuoteStatus
-from gvas.domain.intake import IntakeState
+from gvas.domain.intake import IntakeState, SupersededBooking
 from gvas.domain.owner_assistant import OwnerChangeRefusedError, OwnerChangeTool
 from gvas.domain.repositories import BusinessRecord
 from gvas.infrastructure.repositories import SqlBusinessRepository
@@ -49,7 +51,9 @@ async def test_approve_a_visit_request_by_the_customers_name(
     plan = await approve.prepare(business, {"customer": "olivia"})
 
     assert plan.summary.startswith("I will approve Olivia Grant's visit request for ")
-    assert plan.summary.endswith("They'll be told it's booked.")
+    assert plan.summary.endswith(
+        "They'll be told it's approved, by email with the booking or a link to confirm it."
+    )
     assert (await approve.apply(business, plan.arguments)).startswith("Done: ")
     reference = str(plan.arguments["reference"])
     assert await _olivia_state(session_factory, business, reference) is IntakeState.APPROVED
@@ -119,3 +123,35 @@ async def test_only_requests_waiting_in_the_texting_business_match(
             await tools[name].prepare(other, {"customer": "Olivia"})
     with pytest.raises(OwnerChangeRefusedError, match="Say which one"):
         await tools["change_approve_booking"].prepare(other, {"customer": " "})
+
+
+@pytest.mark.asyncio
+async def test_a_request_to_move_a_booking_says_what_happens_to_the_old_time(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business, tools = await _larkspur(session_factory)
+    first = await tools["change_decline_booking"].prepare(business, {"customer": "Olivia"})
+    reference = str(first.arguments["reference"])
+    async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+        request = await unit_of_work.intake_conversations.lock_by_reference(
+            business.business_id, reference
+        )
+        assert request is not None and request.requested_slot_start is not None
+        old = request.requested_slot_start - timedelta(days=2)
+        await unit_of_work.intake_conversations.save(
+            request.with_updates(NOW, superseded_booking=SupersededBooking(slot_start=old))
+        )
+        await unit_of_work.commit()
+
+    approve = await tools["change_approve_booking"].prepare(business, {"customer": "Olivia"})
+    decline = await tools["change_decline_booking"].prepare(
+        business, {"customer": "Olivia", "reason": "Can't make the new day"}
+    )
+
+    assert "It moves their visit from " in approve.summary
+    assert ", which is canceled." in approve.summary
+    assert decline.summary.endswith("stays booked and they'll be told so.")
+    assert "note" not in decline.summary
+    assert "reason" not in decline.arguments
+    await tools["change_decline_booking"].apply(business, decline.arguments)
+    assert await _olivia_state(session_factory, business, reference) is IntakeState.APPROVED
