@@ -60,6 +60,7 @@ from gvas.domain.owner_actions import (
     decide_booking,
     reject_quote,
 )
+from gvas.domain.owner_commands import OwnerCommand, OwnerCommandState
 from gvas.domain.payments import (
     MANUAL_PROVIDER,
     PLAN_MONTHS_MAX,
@@ -99,6 +100,10 @@ _RECEIPT_METHOD = {PaymentMethod.CHECK: " by check", PaymentMethod.CASH: " in ca
 PLAN_AMOUNT_MAX_MINOR = 10_000_000
 #: The form's one-time key: a retry or double-click reuses it.
 PAYMENT_KEY_PATTERN = r"^[A-Za-z0-9_-]{8,64}$"
+
+
+#: How many text commands the dashboard's log shows.
+OWNER_COMMAND_LOG_LIMIT = 50
 
 
 class OwnerAuthenticationError(PermissionError):
@@ -237,6 +242,22 @@ class OwnerService:
                 context.business.business_id, limit=QUOTE_LIST_LIMIT
             )
         return tuple(quote for quote in quotes if quote.draft is not None)
+
+    async def commands(self, context: OwnerContext) -> tuple[OwnerCommand, ...]:
+        """The latest changes asked for by text, newest first. A proposal
+        nobody answered reads as expired once its ten minutes are up."""
+
+        now = self._now()
+        async with self._unit_of_work_factory() as unit_of_work:
+            commands = await unit_of_work.owner_commands.recent(
+                context.business.business_id, OWNER_COMMAND_LOG_LIMIT
+            )
+        return tuple(
+            command.with_updates(state=OwnerCommandState.EXPIRED)
+            if command.state is OwnerCommandState.PROPOSED and not command.is_live(now)
+            else command
+            for command in commands
+        )
 
     async def customers(self, context: OwnerContext) -> tuple[CustomerSummary, ...]:
         business_id = context.business.business_id
