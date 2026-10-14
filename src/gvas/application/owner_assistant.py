@@ -7,6 +7,7 @@ one business, and none of them can change anything. Text customers wrote
 """
 
 import logging
+import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from typing import Any
@@ -66,6 +67,20 @@ SETUP_REPLY = (
 CONFIRM_PROMPT = "Reply YES in the next 10 minutes to do it. Any other reply cancels it."
 CANCELLED_NOTE = "I cancelled the change that was waiting for your YES, so nothing was done."
 NOTHING_PENDING_REPLY = "Nothing is waiting for a YES, so nothing was changed."
+NO_CHANGE_SET_UP_NOTE = (
+    "(Nothing is set up for a YES, so a YES now changes nothing. "
+    "To make a change, ask again, one change per text.)"
+)
+# Only code asks for YES. When a model reply seems to ask for one with no
+# change proposed, the answer is kept and this note is added, so a quoted
+# customer "YES" costs one extra line and a real false ask can't mislead.
+_ASKS_FOR_YES = (
+    re.compile(r"\bYES\b"),
+    re.compile(
+        r"\b(?:reply|text|say|respond|answer|send)\b[^.!?\n]{0,15}\byes\b|\bconfirm\b",
+        re.IGNORECASE,
+    ),
+)
 BUSY_REPLY = (
     "Another change was being set up at the same moment, so I set up nothing. "
     "Please send that again."
@@ -569,9 +584,17 @@ class OwnerAssistant:
             "owner assistant answered",
             extra={"business_id": str(business_id), "tools": list(answer.tools_called)},
         )
-        if len(reply) > OWNER_ASSISTANT_REPLY_MAX_CHARS:
-            reply = reply[: OWNER_ASSISTANT_REPLY_MAX_CHARS - 1].rstrip() + "…"
-        return reply
+        note = ""
+        if any(pattern.search(reply) for pattern in _ASKS_FOR_YES):
+            logger.warning(
+                "owner assistant asked for YES without a proposal",
+                extra={"business_id": str(business_id), "tools": list(answer.tools_called)},
+            )
+            note = f"\n\n{NO_CHANGE_SET_UP_NOTE}"
+        limit = OWNER_ASSISTANT_REPLY_MAX_CHARS - len(note)
+        if len(reply) > limit:
+            reply = reply[: limit - 1].rstrip() + "…"
+        return reply + note
 
     async def _pending(self, business_id: BusinessId, now: datetime) -> OwnerCommand | None:
         """The live proposal, if any; one past its time is closed as expired."""

@@ -21,6 +21,7 @@ from gvas.application.owner_assistant import (
     CANCELLED_NOTE,
     CHANGE_FAILED_REPLY,
     CONFIRM_PROMPT,
+    NO_CHANGE_SET_UP_NOTE,
     NOTHING_PENDING_REPLY,
 )
 from gvas.composition import Application, build_application
@@ -102,6 +103,16 @@ class ModelFake:
             for text in words[1:]:
                 self.results.append(await run_tool("change_note", {"text": text}))
             return OwnerAssistantAnswer(text="Done! All changed.", tools_called=("change_note",))
+        if request.text == "rename it":
+            return OwnerAssistantAnswer(
+                text="I can rename it to Larkspur Gardens. Reply YES to confirm."
+            )
+        if request.text == "rename":
+            return OwnerAssistantAnswer(text="Please confirm the rename to Larkspur Gardens.")
+        if request.text == "what did ana say?":
+            return OwnerAssistantAnswer(text='Ana wrote "YES, Tuesday works."')
+        if request.text == "is sam booked?":
+            return OwnerAssistantAnswer(text="Yes, Sam's visit is Tue at 8:00 AM, booked.")
         return OwnerAssistantAnswer(text="Hi there.")
 
 
@@ -331,3 +342,16 @@ async def test_the_database_keeps_one_proposal_and_a_claimed_one_is_never_cancel
         (stored,) = await unit_of_work.owner_commands.recent(business_id, 5)
     assert stored.state is OwnerCommandState.APPLYING
     assert len(stored.conversation_ref) == 64
+
+
+@pytest.mark.asyncio
+async def test_a_model_asking_for_yes_without_a_proposal_gets_a_note(setup: Setup) -> None:
+    note = f"\n\n{NO_CHANGE_SET_UP_NOTE}"
+    assert await setup.text("rename it") == (
+        f"I can rename it to Larkspur Gardens. Reply YES to confirm.{note}"
+    )
+    assert await setup.text("rename") == f"Please confirm the rename to Larkspur Gardens.{note}"
+    # The answer is never lost: a quoted customer YES only adds the note.
+    assert await setup.text("what did ana say?") == f'Ana wrote "YES, Tuesday works."{note}'
+    assert await setup.text("is sam booked?") == "Yes, Sam's visit is Tue at 8:00 AM, booked."
+    assert await setup.commands() == []
