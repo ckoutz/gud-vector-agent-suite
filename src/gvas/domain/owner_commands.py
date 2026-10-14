@@ -6,6 +6,7 @@ cancels it. Every command, whatever its outcome, stays as a row: that is the
 command log the dashboard shows.
 """
 
+import hashlib
 import re
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -65,6 +66,16 @@ def is_yes(text: str) -> bool:
     return re.sub(r"[\s.!]+$", "", text.strip()).casefold() == "yes"
 
 
+class OwnerCommandConflictError(Exception):
+    """Another change is already waiting for the owner's YES."""
+
+
+def conversation_key(conversation_ref: str) -> str:
+    """A fixed-length key for the thread a command was proposed in."""
+
+    return hashlib.sha256(conversation_ref.encode()).hexdigest()
+
+
 class OwnerCommandRepository(Protocol):
     async def add(self, command: OwnerCommand) -> None: ...
 
@@ -77,6 +88,11 @@ class OwnerCommandRepository(Protocol):
     async def claim(self, command: OwnerCommand, now: datetime) -> bool:
         """Moves a live proposal to ``applying``; False if it was already
         decided, expired, or claimed by a concurrent YES."""
+        ...
+
+    async def close(self, command: OwnerCommand, state: OwnerCommandState, now: datetime) -> bool:
+        """Cancels or expires a proposal only while it is still one; False if
+        a YES already claimed it."""
         ...
 
     async def recent(self, business_id: BusinessId, limit: int) -> tuple[OwnerCommand, ...]: ...

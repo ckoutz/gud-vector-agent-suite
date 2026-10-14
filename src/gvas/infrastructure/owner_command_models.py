@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from gvas.domain.identifiers import JsonValue
@@ -16,6 +16,13 @@ class OwnerCommandRecord(Base):
     __table_args__ = (
         Index("ix_owner_commands_business_state", "business_id", "state"),
         Index("ix_owner_commands_business_created", "business_id", "created_at"),
+        Index(
+            "uq_owner_commands_one_proposed",
+            "business_id",
+            unique=True,
+            postgresql_where=text("state = 'proposed'"),
+            sqlite_where=text("state = 'proposed'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)

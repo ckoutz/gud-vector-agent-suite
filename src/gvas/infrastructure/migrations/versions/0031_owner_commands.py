@@ -42,9 +42,19 @@ def upgrade() -> None:
     op.create_index(
         "ix_owner_commands_business_created", "owner_commands", ["business_id", "created_at"]
     )
+    # One change waiting for YES per business, even when two texts race.
+    op.create_index(
+        "uq_owner_commands_one_proposed",
+        "owner_commands",
+        ["business_id"],
+        unique=True,
+        postgresql_where=sa.text("state = 'proposed'"),
+        sqlite_where=sa.text("state = 'proposed'"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_owner_commands_one_proposed", table_name="owner_commands")
     op.drop_index("ix_owner_commands_business_created", table_name="owner_commands")
     op.drop_index("ix_owner_commands_business_state", table_name="owner_commands")
     op.drop_table("owner_commands")

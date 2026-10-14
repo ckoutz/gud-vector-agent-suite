@@ -97,9 +97,7 @@ class DeterministicIntentResolver:
                 return False
             if is_yes(normalized_text(message)):
                 return True
-            await unit_of_work.owner_commands.save(
-                command.with_updates(state=OwnerCommandState.CANCELLED, decided_at=now)
-            )
+            await unit_of_work.owner_commands.close(command, OwnerCommandState.CANCELLED, now)
             await unit_of_work.commit()
         return False
 

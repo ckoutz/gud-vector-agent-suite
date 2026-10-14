@@ -36,7 +36,9 @@ from gvas.domain.owner_commands import (
     OWNER_COMMAND_TEXT_MAX_CHARS,
     OWNER_COMMAND_TTL,
     OwnerCommand,
+    OwnerCommandConflictError,
     OwnerCommandState,
+    conversation_key,
     is_yes,
 )
 from gvas.domain.payments import month_totals
@@ -64,6 +66,10 @@ SETUP_REPLY = (
 CONFIRM_PROMPT = "Reply YES in the next 10 minutes to do it. Any other reply cancels it."
 CANCELLED_NOTE = "I cancelled the change that was waiting for your YES, so nothing was done."
 NOTHING_PENDING_REPLY = "Nothing is waiting for a YES, so nothing was changed."
+BUSY_REPLY = (
+    "Another change was being set up at the same moment, so I set up nothing. "
+    "Please send that again."
+)
 CHANGE_FAILED_REPLY = (
     "Something went wrong while making that change, so it may not be done. "
     "Please check the dashboard."
@@ -487,7 +493,7 @@ class OwnerAssistant:
         now = self._now()
         pending = await self._pending(business_id, now)
         if pending is not None:
-            if is_yes(text) and pending.conversation_ref == conversation_ref:
+            if is_yes(text) and pending.conversation_ref == conversation_key(conversation_ref):
                 return await self._confirm(business, pending)
             await self._close(pending, OwnerCommandState.CANCELLED, now)
             if is_yes(text):
@@ -579,11 +585,7 @@ class OwnerAssistant:
 
     async def _close(self, command: OwnerCommand, state: OwnerCommandState, now: datetime) -> None:
         async with self._unit_of_work_factory() as unit_of_work:
-            current = await unit_of_work.owner_commands.latest_proposed(command.business_id)
-            if current is not None and current.command_id == command.command_id:
-                await unit_of_work.owner_commands.save(
-                    current.with_updates(state=state, decided_at=now)
-                )
+            await unit_of_work.owner_commands.close(command, state, now)
             await unit_of_work.commit()
 
     async def _propose(
@@ -601,7 +603,7 @@ class OwnerAssistant:
         command = OwnerCommand(
             command_id=uuid4(),
             business_id=business.business_id,
-            conversation_ref=conversation_ref,
+            conversation_ref=conversation_key(conversation_ref),
             tool=change.spec.name,
             arguments=dict(plan.arguments),
             summary=plan.summary,
@@ -613,15 +615,16 @@ class OwnerAssistant:
         async with self._unit_of_work_factory() as unit_of_work:
             commands = unit_of_work.owner_commands
             while (other := await commands.latest_proposed(command.business_id)) is not None:
-                await commands.save(
-                    other.with_updates(state=OwnerCommandState.CANCELLED, decided_at=now)
-                )
+                await commands.close(other, OwnerCommandState.CANCELLED, now)
             block = await unit_of_work.calendar_blocks.latest_proposed(command.business_id)
             if block is not None:
                 await unit_of_work.calendar_blocks.save(
                     block.with_updates(state=CalendarBlockState.CANCELLED, decided_at=now)
                 )
-            await unit_of_work.owner_commands.add(command)
+            try:
+                await unit_of_work.owner_commands.add(command)
+            except OwnerCommandConflictError:
+                return BUSY_REPLY
             await unit_of_work.commit()
         logger.info(
             "owner command proposed",

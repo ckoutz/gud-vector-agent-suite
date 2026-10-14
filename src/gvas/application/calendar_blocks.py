@@ -127,9 +127,7 @@ class CalendarBlockHandler:
             # One pending change at a time: a block replaces a change Gus proposed.
             command = await unit_of_work.owner_commands.latest_proposed(business_id)
             if command is not None:
-                await unit_of_work.owner_commands.save(
-                    command.with_updates(state=OwnerCommandState.CANCELLED, decided_at=now)
-                )
+                await unit_of_work.owner_commands.close(command, OwnerCommandState.CANCELLED, now)
             block = CalendarBlock(
                 block_id=uuid4(),
                 business_id=business_id,

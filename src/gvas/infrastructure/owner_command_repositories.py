@@ -1,10 +1,11 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from gvas.domain.identifiers import BusinessId
-from gvas.domain.owner_commands import OwnerCommand, OwnerCommandState
+from gvas.domain.owner_commands import OwnerCommand, OwnerCommandConflictError, OwnerCommandState
 from gvas.infrastructure.owner_command_models import OwnerCommandRecord
 
 
@@ -16,7 +17,10 @@ class SqlOwnerCommandRepository:
         row = OwnerCommandRecord(id=command.command_id, business_id=command.business_id)
         _write(row, command)
         self.session.add(row)
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError as error:
+            raise OwnerCommandConflictError("another change is waiting") from error
 
     async def save(self, command: OwnerCommand) -> None:
         row = await self.session.get(OwnerCommandRecord, command.command_id)
@@ -47,6 +51,23 @@ class SqlOwnerCommandRepository:
                 OwnerCommandRecord.expires_at > now,
             )
             .values(state=OwnerCommandState.APPLYING.value, decided_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        await self.session.flush()
+        return bool(getattr(result, "rowcount", 0))
+
+    async def close(self, command: OwnerCommand, state: OwnerCommandState, now: datetime) -> bool:
+        """Cancel or expire a proposal only while it is still a proposal, so a
+        YES that already claimed it keeps it."""
+
+        result = await self.session.execute(
+            update(OwnerCommandRecord)
+            .where(
+                OwnerCommandRecord.id == command.command_id,
+                OwnerCommandRecord.business_id == command.business_id,
+                OwnerCommandRecord.state == OwnerCommandState.PROPOSED.value,
+            )
+            .values(state=state.value, decided_at=now)
             .execution_options(synchronize_session=False)
         )
         await self.session.flush()

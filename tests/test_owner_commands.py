@@ -35,7 +35,14 @@ from gvas.domain.owner_assistant import (
     OwnerChangeRefusedError,
     ToolRunner,
 )
-from gvas.domain.owner_commands import OwnerCommandState, is_yes
+from gvas.domain.owner_commands import (
+    OWNER_COMMAND_TTL,
+    OwnerCommand,
+    OwnerCommandConflictError,
+    OwnerCommandState,
+    conversation_key,
+    is_yes,
+)
 from gvas.domain.repositories import BusinessRecord
 from gvas.infrastructure.telnyx.composition import sms_quotes_only_policy
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
@@ -285,3 +292,42 @@ async def test_proposing_a_change_cancels_a_pending_calendar_block(setup: Setup)
 def test_only_yes_confirms() -> None:
     assert all(is_yes(text) for text in ["YES", "yes", " Yes! ", "yes."])
     assert not any(is_yes(text) for text in ["ok", "y", "yes please", "yess", "no", ""])
+
+
+def _command(business_id: BusinessId, now: datetime) -> OwnerCommand:
+    return OwnerCommand(
+        command_id=uuid4(),
+        business_id=business_id,
+        conversation_ref=conversation_key("x" * 400),
+        tool="change_note",
+        arguments={"text": "a"},
+        summary="I will add the note.",
+        requested_text="note a",
+        created_at=now,
+        expires_at=now + OWNER_COMMAND_TTL,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_database_keeps_one_proposal_and_a_claimed_one_is_never_cancelled(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    factory = SqlUnitOfWorkFactory(session_factory)
+    now = datetime.now(UTC)
+    first = _command(business_id, now)
+    async with factory() as unit_of_work:
+        await unit_of_work.owner_commands.add(first)
+        await unit_of_work.commit()
+    async with factory() as unit_of_work:
+        with pytest.raises(OwnerCommandConflictError):
+            await unit_of_work.owner_commands.add(_command(business_id, now))
+    async with factory() as unit_of_work:
+        assert await unit_of_work.owner_commands.claim(first, now)
+        assert not await unit_of_work.owner_commands.close(first, OwnerCommandState.CANCELLED, now)
+        await unit_of_work.commit()
+    async with factory() as unit_of_work:
+        (stored,) = await unit_of_work.owner_commands.recent(business_id, 5)
+    assert stored.state is OwnerCommandState.APPLYING
+    assert len(stored.conversation_ref) == 64

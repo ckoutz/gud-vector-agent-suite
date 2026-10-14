@@ -37,7 +37,7 @@ Every change goes through the same steps (`OwnerAssistant`, `domain/owner_comman
 
 1. The model calls a `change_*` tool. Its `prepare` runs in code for the business bound from the endpoint, validates the request, resolves names to ids, and returns the exact `summary` sentence. Refusals go back to the model as data. Only one change per message; a second call is refused.
 2. Code, not the model, writes the reply: the summary, then "Reply YES in the next 10 minutes to do it. Any other reply cancels it." The model's own text is dropped, so a misreading shows up in plain words before anything happens.
-3. The proposal is stored as an `owner_commands` row (`proposed`) with the resolved arguments, the owner's message, the thread it came from and `expires_at` = 10 minutes. Proposing closes any other pending command and any pending calendar block; proposing a block closes a pending command. One pending change per business.
+3. The proposal is stored as an `owner_commands` row (`proposed`) with the resolved arguments, the owner's message, the thread it came from and `expires_at` = 10 minutes. Proposing closes any other pending command and any pending calendar block; proposing a block closes a pending command. One pending change per business, enforced by a partial unique index, so two texts racing can't leave two proposals (the loser is told to send it again). The thread is stored as a SHA-256 key, so any thread length fits.
 4. The next message decides it, before any workflow or model sees it (`DeterministicIntentResolver.resolve`, and again in `OwnerAssistant.answer` for the demo):
    - exactly `YES` (any case, trailing `.`/`!`) in the same thread, before expiry: the row is claimed with a conditional update (`proposed` → `applying`, so two YESes can't apply it twice), then `apply` runs with the stored arguments, never re-read from the model. The outcome is stored (`done` or `failed`) and texted back.
    - anything else, including "ok", "sure", a YES from another thread, or a new request: the row becomes `cancelled`, and the message is handled as usual.
@@ -50,6 +50,8 @@ Every change goes through the same steps (`OwnerAssistant`, `domain/owner_comman
 | Customer text proposes a change | It can only reach the model as `customer_wrote` data; even then the owner reads the summary and must reply YES. |
 | Replay / double apply | Conditional claim on `proposed` and `expires_at > now`. |
 | Stale proposals | 10-minute expiry; one pending per business; any other message cancels. |
+| Cancel racing a YES | Cancel and expire are conditional on `proposed`, so they never overwrite a claimed (`applying`) row. |
+| Crash mid-change | Known limit: if the process stops after `apply` but before the outcome is saved, the row stays `applying`. The command log shows it as unfinished, and the owner checks the dashboard. The change itself runs in one transaction, so it is either fully done or not done. |
 | Audit | Every proposal stays as a row with its outcome, the owner's request and timestamps (the command log; the dashboard page comes in a later PR). |
 | Sensitive changes | Each tool says whether it's `sensitive` (money, customer-facing messages). A PIN for those is planned as an off-by-default per-business setting; until then YES alone confirms. |
 | Security settings | PIN, owner numbers, sign-in, notification e-mail and connected accounts have no change tool: dashboard only. |
