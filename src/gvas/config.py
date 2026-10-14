@@ -180,6 +180,8 @@ class ResendSettings(BaseSettings):
     from_address: str = ""
     reply_to_address: str = ""
     portal_url: str = "https://gudvector.com/portal/login"
+    # Where Güd Vector's own alerts go (e.g. owner texts failing on setup).
+    alert_to_address: str = "info@gudvector.com"
     timeout_seconds: float = Field(default=30.0, gt=0)
 
     @property

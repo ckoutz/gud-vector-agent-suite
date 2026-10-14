@@ -85,6 +85,7 @@ from gvas.infrastructure.openai_intake_agent import OpenAIIntakeAgent
 from gvas.infrastructure.openai_owner_assistant import OpenAIOwnerAssistant
 from gvas.infrastructure.openai_quote_drafting import OpenAIFreeTextQuoteDrafter
 from gvas.infrastructure.openai_transcription import OpenAITranscriber
+from gvas.infrastructure.owner_assistant_alerts import EmailOwnerAssistantAlerts
 from gvas.infrastructure.owner_reply_routing import ChannelOwnerReplyRouter
 from gvas.infrastructure.portal import PortalQuoteDelivery, PortalSettings, SqlPortalHandoffLedger
 from gvas.infrastructure.quote_drafting import (
@@ -610,6 +611,9 @@ def build_production_ports(
         calendar_feed=IcsCalendarFeed(client),
         intake_agent=intake_agent,
         owner_assistant=owner_assistant,
+        owner_assistant_alerts=EmailOwnerAssistantAlerts(
+            owner_email, settings.resend.alert_to_address
+        ),
         customer_email=resend_quotes,
         owner_email=owner_email,
         quote_delivery=quote_delivery,

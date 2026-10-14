@@ -74,7 +74,7 @@ from gvas.composition.snapshots import BuildFieldNoteCaseSnapshotService
 from gvas.config import IntakeSettings, Settings
 from gvas.domain.completeness import CompletenessReviewPort
 from gvas.domain.identifiers import BusinessId
-from gvas.domain.owner_assistant import OwnerAssistantPort
+from gvas.domain.owner_assistant import OwnerAssistantAlertPort, OwnerAssistantPort
 from gvas.domain.ports import (
     AppointmentLookupPort,
     AttachmentAccessPort,
@@ -151,6 +151,8 @@ class ApplicationPorts:
     # Owner messages that match no command get a plain-language, read-only
     # answer from this model; absent means the owner gets the command list.
     owner_assistant: OwnerAssistantPort | None = None
+    # Who hears when owner texts fail on a setup problem; absent means logs only.
+    owner_assistant_alerts: OwnerAssistantAlertPort | None = None
     availability: AvailabilityPort | None = None
     customer_email: CustomerQuoteDeliveryPort | None = None
     # The ledger the metered adapters write to; the ceiling guard reads the same
@@ -334,6 +336,7 @@ def build_application(
             ports.owner_assistant,
             OwnerReadTools(unit_of_work_factory, owner, now=now),
             ceilings=ceiling_guard,
+            alerts=ports.owner_assistant_alerts,
             now=now,
         )
         if ports.owner_assistant is not None

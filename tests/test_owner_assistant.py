@@ -28,8 +28,9 @@ from gvas.application.owner_assistant import (
 )
 from gvas.composition import Application, build_application
 from gvas.config import OpenAISettings
+from gvas.domain.enums import DeliveryStatus
 from gvas.domain.identifiers import BusinessId
-from gvas.domain.messages import TextPart
+from gvas.domain.messages import DeliveryReceipt, TextPart
 from gvas.domain.owner_assistant import (
     OwnerAssistantAnswer,
     OwnerAssistantError,
@@ -38,12 +39,14 @@ from gvas.domain.owner_assistant import (
     OwnerAssistantTool,
     ToolRunner,
 )
+from gvas.domain.owner_email import OwnerEmailRequest
 from gvas.infrastructure.openai_owner_assistant import (
     SYSTEM_PROMPT,
     TOOL_RESULT_MAX_CHARS,
     OpenAIOwnerAssistant,
     _fit,
 )
+from gvas.infrastructure.owner_assistant_alerts import EmailOwnerAssistantAlerts
 from gvas.infrastructure.telnyx.composition import (
     SMS_QUOTES_ONLY_REPLY_PREFIX,
     sms_quotes_only_policy,
@@ -59,6 +62,22 @@ class Clock:
     def __call__(self) -> datetime:
         self._now += timedelta(seconds=1)
         return self._now
+
+    def advance(self, delta: timedelta) -> None:
+        self._now += delta
+
+
+class AlertsFake:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.sent: list[tuple[BusinessId, str, str]] = []
+        self._fail = fail
+
+    async def setup_problem(
+        self, business_id: BusinessId, business_name: str, detail: str, at: datetime
+    ) -> None:
+        self.sent.append((business_id, business_name, detail))
+        if self._fail:
+            raise RuntimeError("resend down")
 
 
 class ModelFake:
@@ -89,6 +108,9 @@ def build(
     session_factory: async_sessionmaker[AsyncSession],
     owner_replies: OwnerReplyFake,
     model: ModelFake | None,
+    *,
+    alerts: AlertsFake | None = None,
+    clock: Clock | None = None,
 ) -> Application:
     ports = replace(
         application_ports(
@@ -102,8 +124,9 @@ def build(
             sms_quotes_only_policy("the team chat", owner_assistant=model is not None),
         ),
         owner_assistant=model,
+        owner_assistant_alerts=alerts,
     )
-    return build_application(ports, session_factory=session_factory, now=Clock())
+    return build_application(ports, session_factory=session_factory, now=clock or Clock())
 
 
 def reply_texts(owner_replies: OwnerReplyFake) -> list[str]:
@@ -116,7 +139,9 @@ def reply_texts(owner_replies: OwnerReplyFake) -> list[str]:
 
 
 async def send(application: Application, business_id: BusinessId, text: str) -> None:
-    await application.ingest_service.ingest(normalize(message_payload(text=text), business_id))
+    await application.ingest_service.ingest(
+        normalize(message_payload(id=str(uuid4()), text=text), business_id)
+    )
     await application.worker.drain()
     await application.worker.drain()
 
@@ -406,3 +431,93 @@ def test_gus_is_told_to_state_every_visits_status() -> None:
     assert "Every time you mention a visit, say its status" in prompt
     assert '"requested, waiting for your approval"' in prompt
     assert "never call a requested visit booked" in prompt
+
+
+@pytest.mark.asyncio
+async def test_setup_failures_alert_at_most_once_an_hour_naming_the_business(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    owner_replies = OwnerReplyFake()
+    alerts = AlertsFake()
+    clock = Clock()
+    application = build(
+        session_factory,
+        owner_replies,
+        ModelFake(error=OwnerAssistantSetupError("openai refused the request (401): bad key")),
+        alerts=alerts,
+        clock=clock,
+    )
+
+    await send(application, business_id, "hi")
+    await send(application, business_id, "hello?")
+    assert alerts.sent == [(business_id, "Business", "openai refused the request (401): bad key")]
+
+    clock.advance(timedelta(hours=1))
+    await send(application, business_id, "still there?")
+    assert len(alerts.sent) == 2
+    assert reply_texts(owner_replies) == [SETUP_REPLY] * 3
+
+
+@pytest.mark.asyncio
+async def test_a_failed_alert_still_gives_the_owner_the_setup_reply(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    owner_replies = OwnerReplyFake()
+    model = ModelFake(error=OwnerAssistantSetupError("openai refused the request (400): no"))
+
+    await send(
+        build(session_factory, owner_replies, model, alerts=AlertsFake(fail=True)),
+        business_id,
+        "hi",
+    )
+
+    assert reply_texts(owner_replies) == [SETUP_REPLY]
+
+
+@pytest.mark.asyncio
+async def test_a_passing_failure_sends_no_alert(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = BusinessId(uuid4())
+    await seed_business(session_factory, business_id)
+    alerts = AlertsFake()
+    model = ModelFake(error=OwnerAssistantError("openai answered 503: busy"))
+
+    await send(build(session_factory, OwnerReplyFake(), model, alerts=alerts), business_id, "hi")
+
+    assert alerts.sent == []
+
+
+class OwnerEmailFake:
+    def __init__(self) -> None:
+        self.sent: list[OwnerEmailRequest] = []
+
+    async def send(self, request: OwnerEmailRequest) -> DeliveryReceipt:
+        self.sent.append(request)
+        return DeliveryReceipt(
+            status=DeliveryStatus.ACCEPTED,
+            provider_message_id="m1",
+            occurred_at=datetime.now(UTC),
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_alert_email_says_what_failed_and_for_which_business() -> None:
+    email = OwnerEmailFake()
+    business_id = BusinessId(uuid4())
+    await EmailOwnerAssistantAlerts(email, "info@gudvector.com").setup_problem(
+        business_id,
+        "Larkspur Lawn & Garden",
+        "openai refused the request (402): out of credit",
+        datetime(2026, 10, 13, 1, 23, tzinfo=UTC),
+    )
+
+    [sent] = email.sent
+    assert sent.to == "info@gudvector.com"
+    assert "Larkspur Lawn & Garden" in sent.subject
+    assert "(402): out of credit" in sent.text
+    assert str(business_id) in sent.text
