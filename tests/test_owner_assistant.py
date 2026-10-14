@@ -546,3 +546,19 @@ async def test_after_a_failed_alert_a_different_problem_is_reported_as_itself(
         "openai refused the request (402): no credit",
     ]
     assert alerts.times[0] != alerts.times[1]
+
+
+@pytest.mark.asyncio
+async def test_alert_email_keys_differ_for_different_failures_and_match_for_a_retry() -> None:
+    email = OwnerEmailFake()
+    alerts = EmailOwnerAssistantAlerts(email, "info@gudvector.com")
+    business_id = BusinessId(uuid4())
+    at = datetime(2026, 10, 13, 1, 23, 5, tzinfo=UTC)
+
+    await alerts.setup_problem(business_id, "B", "openai refused the request (401): bad key", at)
+    await alerts.setup_problem(business_id, "B", "openai refused the request (401): bad key", at)
+    await alerts.setup_problem(business_id, "B", "openai refused the request (402): no credit", at)
+
+    keys = [request.idempotency_key for request in email.sent]
+    assert keys[0] == keys[1]
+    assert keys[2] != keys[0]

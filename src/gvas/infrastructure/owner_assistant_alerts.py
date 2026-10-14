@@ -1,5 +1,6 @@
 """E-mails Güd Vector when owner texts fail on a setup problem."""
 
+import hashlib
 from datetime import datetime
 
 from gvas.domain.identifiers import BusinessId
@@ -33,6 +34,13 @@ class EmailOwnerAssistantAlerts:
                 to=self._to,
                 subject=f"Güd Office alert: owner texts failing for {business_name}",
                 text=text,
-                idempotency_key=f"owner-assistant-setup:{business_id}:{at:%Y%m%d%H%M}",
+                idempotency_key=_key(business_id, detail, at),
             )
         )
+
+
+def _key(business_id: BusinessId, detail: str, at: datetime) -> str:
+    """Same alert, same key (a retried send is deduplicated); any other alert differs."""
+
+    digest = hashlib.sha256(detail.encode()).hexdigest()[:16]
+    return f"owner-assistant-setup:{business_id}:{at.isoformat()}:{digest}"
