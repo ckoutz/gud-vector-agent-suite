@@ -1048,7 +1048,9 @@ class BlockTimeTool:
                 await schedule.set_day_hours(business_id, day, remaining)
             except AvailabilityError as error:
                 try:
-                    landed = (await schedule.day_hours(business_id, day)).intervals == remaining
+                    now_open = (await schedule.day_hours(business_id, day)).intervals
+                    # Landed if the range is closed now, whatever else changed.
+                    landed = subtract_interval(now_open, start, end) == now_open
                 except AvailabilityError:
                     raise OwnerChangeRefusedError(
                         _BLOCK_UNSURE_REPLY.format(day=_key(day))

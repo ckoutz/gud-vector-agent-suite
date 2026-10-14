@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.application.calendar_blocks import BLOCK_NOT_CONFIGURED_REPLY
 from gvas.composition.owner_change_tools import calendar_change_tools
-from gvas.domain.calendar_blocks import Interval, format_day
+from gvas.domain.calendar_blocks import Interval, format_day, subtract_interval
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import AvailabilityError
 from gvas.domain.owner_assistant import OwnerChangeRefusedError, OwnerChangeTool
@@ -26,6 +26,17 @@ class DownSchedule(ScheduleFake):
     async def set_day_hours(
         self, business_id: BusinessId, day: date, intervals: tuple[Interval, ...] | None
     ) -> None:
+        raise AvailabilityError("calendly returned http 502")
+
+
+class RacedSchedule(ScheduleFake):
+    """The write lands and errors, and meanwhile 15:00-16:00 is closed too."""
+
+    async def set_day_hours(
+        self, business_id: BusinessId, day: date, intervals: tuple[Interval, ...] | None
+    ) -> None:
+        assert intervals is not None
+        self.overrides[day] = subtract_interval(intervals, 15 * 60, 16 * 60)
         raise AvailabilityError("calendly returned http 502")
 
 
@@ -110,6 +121,18 @@ async def test_a_write_that_lands_then_errors_is_kept_so_it_can_be_unblocked(
     undo = await unblock.prepare(business, {"day": DAY.isoformat()})
     await unblock.apply(business, undo.arguments)
     assert DAY not in schedule.overrides
+
+
+@pytest.mark.asyncio
+async def test_a_landed_write_is_kept_even_when_other_hours_changed_too(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business, block, unblock = await _tools(session_factory, RacedSchedule())
+    plan = await block.prepare(business, {"day": DAY.isoformat(), "start": "9:00", "end": "10:00"})
+
+    assert (await block.apply(business, plan.arguments)).startswith("Done: blocked")
+    undo = await unblock.prepare(business, {"day": DAY.isoformat()})
+    assert "(9:00 AM–10:00 AM)" in undo.summary
 
 
 @pytest.mark.asyncio
