@@ -63,7 +63,7 @@ from gvas.composition.dispatcher import OutboxCommandDispatcher, OutboxWorker
 from gvas.composition.failure_notices import NotifyExhaustedCommandService
 from gvas.composition.field_note_workflow import FieldNoteWorkflowHandler
 from gvas.composition.intents import DeterministicIntentResolver
-from gvas.composition.owner_change_tools import money_change_tools
+from gvas.composition.owner_change_tools import decision_change_tools, money_change_tools
 from gvas.composition.report_delivery import DeliverFieldNotesReportService
 from gvas.composition.report_email import EmailFieldNotesReportService
 from gvas.composition.report_publication import (
@@ -344,7 +344,8 @@ def build_application(
             ceilings=ceiling_guard,
             alerts=ports.owner_assistant_alerts,
             changes=ports.owner_change_tools
-            + money_change_tools(unit_of_work_factory, owner, now=now),
+            + money_change_tools(unit_of_work_factory, owner, now=now)
+            + decision_change_tools(unit_of_work_factory, owner, now=now),
             now=now,
         )
         if ports.owner_assistant is not None

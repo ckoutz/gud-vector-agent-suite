@@ -1,4 +1,4 @@
-"""The dashboard's money actions as owner-text change tools.
+"""The dashboard's money and decision actions as owner-text change tools.
 
 Each tool resolves the owner's words to one quote in code, writes the exact
 sentence the owner confirms, and on YES calls the same ``OwnerService`` method
@@ -20,6 +20,7 @@ from gvas.application.owner import (
 from gvas.application.owner_assistant import business_zone, money_text
 from gvas.domain.enums import BillingInterval, CustomerQuoteStatus, QuoteBilling, QuoteStatus
 from gvas.domain.identifiers import BusinessId, JsonValue
+from gvas.domain.intake import IntakeConversation, format_slot_label, sanitize_owner_reason
 from gvas.domain.invoices import Invoice
 from gvas.domain.owner import OwnerSession
 from gvas.domain.owner_assistant import (
@@ -33,6 +34,7 @@ from gvas.domain.quotes import Quote, public_quote_id
 from gvas.domain.repositories import BusinessRecord, UnitOfWork
 
 QUOTE_LIST_LIMIT = 500
+BOOKING_LIST_LIMIT = 200
 TEXTS_RECORDED_BY = "owner texts"
 TEXTS_NOTE = "Recorded by text."
 _METHODS = {"check": PaymentMethod.CHECK, "cash": PaymentMethod.CASH, "other": PaymentMethod.OTHER}
@@ -505,4 +507,230 @@ def money_change_tools(
         MarkUnpaidTool(money),
         RecordPlanPaymentTool(money),
         UndoPlanPaymentTool(money),
+    )
+
+
+def _needle(target: object) -> str:
+    needle = " ".join(str(target or "").split()).casefold()
+    if len(needle) < 2:
+        raise OwnerChangeRefusedError("Say which one: the customer's name.")
+    return needle
+
+
+def _one_match[T](found: list[T], target: object, label: Callable[[T], str], what: str) -> T:
+    if not found:
+        raise OwnerChangeRefusedError(f'Nothing from "{target}" is waiting for your {what}.')
+    if len(found) > 1:
+        names = ", ".join(label(item) for item in found[:5])
+        raise OwnerChangeRefusedError(f"More than one matches ({names}). Say which one.")
+    return found[0]
+
+
+class _Decisions:
+    """Finds the request or quote the owner means among the ones waiting on them."""
+
+    def __init__(self, unit_of_work_factory: Callable[[], UnitOfWork], money: _Money) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self.money = money
+
+    async def booking(self, business: BusinessRecord, target: object) -> IntakeConversation:
+        needle = _needle(target)
+        async with self._unit_of_work_factory() as unit_of_work:
+            waiting = await unit_of_work.intake_conversations.list_awaiting_owner(
+                business.business_id, limit=BOOKING_LIST_LIMIT
+            )
+        found = [
+            request
+            for request in waiting
+            if request.reference.casefold() == needle
+            or needle in (request.collected.name or "").casefold()
+        ]
+        return _one_match(found, target, lambda r: self.visit(business, r), "OK")
+
+    def visit(self, business: BusinessRecord, request: IntakeConversation) -> str:
+        name = request.collected.name or "the customer"
+        if request.requested_slot_start is None:
+            return f"{name}'s visit request"
+        when = format_slot_label(request.requested_slot_start, business_zone(business))
+        return f"{name}'s visit request for {when}"
+
+    async def quote(self, business: BusinessRecord, target: object) -> Quote:
+        needle = _needle(target)
+        async with self._unit_of_work_factory() as unit_of_work:
+            waiting = await unit_of_work.quotes.list_for_business(
+                business.business_id, limit=QUOTE_LIST_LIMIT, status=QuoteStatus.AWAITING_APPROVAL
+            )
+        found = [q for q in waiting if q.draft is not None and needle in _name(q).casefold()]
+        return _one_match(found, target, lambda q: f"{_name(q)} {_total(q)}", "OK")
+
+
+async def _decide_booking(
+    decisions: _Decisions,
+    business: BusinessRecord,
+    arguments: Mapping[str, JsonValue],
+    *,
+    approve: bool,
+) -> str:
+    reason = arguments.get("reason")
+    outcome = await _dashboard(
+        decisions.money.owner.decide_booking(
+            decisions.money.context(business),
+            _str(arguments, "reference"),
+            approve=approve,
+            reason=str(reason) if reason else None,
+        )
+    )
+    if not outcome.applied:
+        raise OwnerChangeRefusedError(outcome.text)
+    return f"Done: {outcome.text}"
+
+
+class ApproveBookingTool:
+    spec = OwnerAssistantTool(
+        "change_approve_booking",
+        "Propose approving a visit request waiting for the owner (the dashboard's Approve).",
+        {"customer": _CUSTOMER},
+    )
+    sensitive = False
+
+    def __init__(self, decisions: _Decisions) -> None:
+        self._decisions = decisions
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        request = await self._decisions.booking(business, args.get("customer"))
+        return OwnerChangePlan(
+            summary=(
+                f"I will approve {self._decisions.visit(business, request)}. "
+                "They'll be told it's booked."
+            ),
+            arguments={"reference": request.reference},
+        )
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        return await _decide_booking(self._decisions, business, arguments, approve=True)
+
+
+class DeclineBookingTool:
+    spec = OwnerAssistantTool(
+        "change_decline_booking",
+        "Propose declining a visit request waiting for the owner (the dashboard's Decline).",
+        {
+            "customer": _CUSTOMER,
+            "reason": {
+                "type": ["string", "null"],
+                "description": "A short note for the customer in the owner's words, or null.",
+            },
+        },
+    )
+    sensitive = False
+
+    def __init__(self, decisions: _Decisions) -> None:
+        self._decisions = decisions
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        request = await self._decisions.booking(business, args.get("customer"))
+        raw = str(args.get("reason") or "").strip()
+        reason = sanitize_owner_reason(raw) if raw else ""
+        told = f', with your note: "{reason}"' if reason else ", with no note."
+        arguments: dict[str, JsonValue] = {"reference": request.reference}
+        if reason:
+            arguments["reason"] = reason
+        return OwnerChangePlan(
+            summary=(
+                f"I will decline {self._decisions.visit(business, request)}. "
+                f"They'll be told it's declined{told}"
+            ),
+            arguments=arguments,
+        )
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        return await _decide_booking(self._decisions, business, arguments, approve=False)
+
+
+async def _decide_quote(
+    decisions: _Decisions,
+    business: BusinessRecord,
+    arguments: Mapping[str, JsonValue],
+    *,
+    approve: bool,
+) -> str:
+    await _dashboard(
+        decisions.money.owner.decide_quote(
+            decisions.money.context(business), _str(arguments, "quote"), approve=approve
+        )
+    )
+    customer = arguments["customer"]
+    if approve:
+        return f"Done: the quote for {customer} is approved and on its way to them."
+    return f"Done: the quote for {customer} is rejected. It wasn't sent."
+
+
+class ApproveQuoteTool:
+    spec = OwnerAssistantTool(
+        "change_approve_quote",
+        "Propose approving a quote waiting for the owner's OK, which sends it to the customer.",
+        {"customer": _CUSTOMER},
+    )
+    sensitive = True
+
+    def __init__(self, decisions: _Decisions) -> None:
+        self._decisions = decisions
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        quote = await self._decisions.quote(business, args.get("customer"))
+        return OwnerChangePlan(
+            summary=(
+                f"I will approve the {_total(quote)} quote for {_name(quote)} "
+                f"({_items(quote)}) and send it to them."
+            ),
+            arguments={"quote": public_quote_id(quote.quote_id), "customer": _name(quote)},
+        )
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        return await _decide_quote(self._decisions, business, arguments, approve=True)
+
+
+class RejectQuoteTool:
+    spec = OwnerAssistantTool(
+        "change_reject_quote",
+        "Propose rejecting a quote waiting for the owner's OK, so it is never sent.",
+        {"customer": _CUSTOMER},
+    )
+    sensitive = False
+
+    def __init__(self, decisions: _Decisions) -> None:
+        self._decisions = decisions
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        quote = await self._decisions.quote(business, args.get("customer"))
+        return OwnerChangePlan(
+            summary=(
+                f"I will reject the {_total(quote)} quote for {_name(quote)} "
+                f"({_items(quote)}). It won't be sent."
+            ),
+            arguments={"quote": public_quote_id(quote.quote_id), "customer": _name(quote)},
+        )
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        return await _decide_quote(self._decisions, business, arguments, approve=False)
+
+
+def _items(quote: Quote) -> str:
+    lines = quote.draft.line_items if quote.draft is not None else ()
+    text = ", ".join(item.description for item in lines[:3])
+    return text + (", …" if len(lines) > 3 else "")
+
+
+def decision_change_tools(
+    unit_of_work_factory: Callable[[], UnitOfWork],
+    owner: OwnerService,
+    *,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> tuple[OwnerChangeTool, ...]:
+    decisions = _Decisions(unit_of_work_factory, _Money(unit_of_work_factory, owner, now))
+    return (
+        ApproveBookingTool(decisions),
+        DeclineBookingTool(decisions),
+        ApproveQuoteTool(decisions),
+        RejectQuoteTool(decisions),
     )
