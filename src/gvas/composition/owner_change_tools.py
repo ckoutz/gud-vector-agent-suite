@@ -838,11 +838,16 @@ class SettingsTool:
             if not value.strip() and field not in _CLEARABLE:
                 raise OwnerChangeRefusedError("That setting can't be left empty.")
         fields = await _dashboard(_checked(self._money.owner, SettingsUpdate(**asked)))
+        changed = {
+            field: value
+            for field, value in fields.items()
+            if value != _current_setting(business, field)
+        }
         changes: list[str] = []
         for _, field, label in _SETTINGS:
-            if field not in fields or fields[field] == _current_setting(business, field):
+            if field not in changed:
                 continue
-            new = fields[field]
+            new = changed[field]
             if field == "timezone":
                 changes.append(f"set {label} to {_zone_name(new)}")
             elif not new:
@@ -853,7 +858,8 @@ class SettingsTool:
             raise OwnerChangeRefusedError("That's already what Settings say.")
         return OwnerChangePlan(
             summary=_sentence(f"I will {'; and '.join(changes)}"),
-            arguments={"fields": {field: fields[field] for field in fields}},
+            # Only what the summary names: YES must not rewrite anything else.
+            arguments={"fields": dict(changed)},
         )
 
     async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:

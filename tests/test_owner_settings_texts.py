@@ -87,6 +87,10 @@ async def test_refuses_bad_empty_unchanged_and_dashboard_only_settings(
     business = await _reload(session_factory, business.business_id)
     with pytest.raises(OwnerChangeRefusedError, match="already what Settings say"):
         await tool.prepare(business, {"business_name": " Larkspur ", "greeting": None})
+    only_zone = await tool.prepare(
+        business, {"business_name": "Larkspur", "time_zone": "America/Chicago"}
+    )
+    assert only_zone.arguments == {"fields": {"timezone": "America/Chicago"}}
     with pytest.raises(OwnerChangeRefusedError, match="which setting"):
         await tool.prepare(business, {"notification_email": "x@example.com"})
     assert "notification_email" not in tool.spec.parameters
