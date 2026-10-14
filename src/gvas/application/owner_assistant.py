@@ -7,6 +7,7 @@ one business, and none of them can change anything. Text customers wrote
 """
 
 import logging
+import re
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from typing import Any
@@ -66,6 +67,19 @@ SETUP_REPLY = (
 CONFIRM_PROMPT = "Reply YES in the next 10 minutes to do it. Any other reply cancels it."
 CANCELLED_NOTE = "I cancelled the change that was waiting for your YES, so nothing was done."
 NOTHING_PENDING_REPLY = "Nothing is waiting for a YES, so nothing was changed."
+NO_CHANGE_SET_UP_REPLY = (
+    "I didn't set that change up, so nothing is waiting for a YES. "
+    "Please ask again, one change per text."
+)
+# Only code asks for YES. A model reply that does it anyway, with no change
+# proposed, would have the owner send a YES that does nothing.
+_ASKS_FOR_YES = (
+    re.compile(r"\bYES\b"),
+    re.compile(
+        r"\b(?:reply|text|say|respond|answer|send)\b[^.!?\n]{0,15}\byes\b|\bto confirm\b",
+        re.IGNORECASE,
+    ),
+)
 BUSY_REPLY = (
     "Another change was being set up at the same moment, so I set up nothing. "
     "Please send that again."
@@ -565,6 +579,12 @@ class OwnerAssistant:
         reply = answer.text.strip()
         if not reply:
             return UNAVAILABLE_REPLY
+        if any(pattern.search(reply) for pattern in _ASKS_FOR_YES):
+            logger.warning(
+                "owner assistant asked for YES without a proposal",
+                extra={"business_id": str(business_id), "tools": list(answer.tools_called)},
+            )
+            return NO_CHANGE_SET_UP_REPLY
         logger.info(
             "owner assistant answered",
             extra={"business_id": str(business_id), "tools": list(answer.tools_called)},

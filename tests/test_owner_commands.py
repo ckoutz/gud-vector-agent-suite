@@ -21,6 +21,7 @@ from gvas.application.owner_assistant import (
     CANCELLED_NOTE,
     CHANGE_FAILED_REPLY,
     CONFIRM_PROMPT,
+    NO_CHANGE_SET_UP_REPLY,
     NOTHING_PENDING_REPLY,
 )
 from gvas.composition import Application, build_application
@@ -102,6 +103,12 @@ class ModelFake:
             for text in words[1:]:
                 self.results.append(await run_tool("change_note", {"text": text}))
             return OwnerAssistantAnswer(text="Done! All changed.", tools_called=("change_note",))
+        if request.text == "rename it":
+            return OwnerAssistantAnswer(
+                text="I can rename it to Larkspur Gardens. Reply YES to confirm."
+            )
+        if request.text == "is sam booked?":
+            return OwnerAssistantAnswer(text="Yes, Sam's visit is Tue at 8:00 AM, booked.")
         return OwnerAssistantAnswer(text="Hi there.")
 
 
@@ -331,3 +338,12 @@ async def test_the_database_keeps_one_proposal_and_a_claimed_one_is_never_cancel
         (stored,) = await unit_of_work.owner_commands.recent(business_id, 5)
     assert stored.state is OwnerCommandState.APPLYING
     assert len(stored.conversation_ref) == 64
+
+
+@pytest.mark.asyncio
+async def test_a_model_asking_for_yes_without_a_proposal_is_not_passed_on(setup: Setup) -> None:
+    reply = await setup.text("rename it")
+
+    assert reply == NO_CHANGE_SET_UP_REPLY
+    assert await setup.commands() == []
+    assert await setup.text("is sam booked?") == "Yes, Sam's visit is Tue at 8:00 AM, booked."
