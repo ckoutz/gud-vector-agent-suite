@@ -1,16 +1,19 @@
-"""The dashboard's money, decision and settings actions as owner-text change tools.
+"""The dashboard's money, decision and settings actions, and calendar blocks,
+as owner-text change tools.
 
 Each tool resolves the owner's words to one quote in code, writes the exact
 sentence the owner confirms, and on YES calls the same ``OwnerService`` method
 the dashboard button calls, so the rules are the dashboard's rules.
 """
 
-from collections.abc import Callable, Mapping
+import re
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from gvas.application.calendar_blocks import BLOCK_NOT_CONFIGURED_REPLY, BLOCK_UNREACHABLE_REPLY
 from gvas.application.owner import (
     OwnerConflictError,
     OwnerContext,
@@ -20,9 +23,22 @@ from gvas.application.owner import (
     SettingsUpdate,
 )
 from gvas.application.owner_assistant import business_zone, money_text
+from gvas.domain.calendar_blocks import (
+    MINUTES_PER_DAY,
+    CalendarBlock,
+    CalendarBlockState,
+    format_day,
+    format_minute,
+    subtract_interval,
+)
 from gvas.domain.enums import BillingInterval, CustomerQuoteStatus, QuoteBilling, QuoteStatus
 from gvas.domain.identifiers import BusinessId, JsonValue
-from gvas.domain.intake import IntakeConversation, format_slot_label, sanitize_owner_reason
+from gvas.domain.intake import (
+    AvailabilityError,
+    IntakeConversation,
+    format_slot_label,
+    sanitize_owner_reason,
+)
 from gvas.domain.invoices import Invoice
 from gvas.domain.owner import OwnerSession
 from gvas.domain.owner_assistant import (
@@ -32,6 +48,7 @@ from gvas.domain.owner_assistant import (
     OwnerChangeTool,
 )
 from gvas.domain.payments import LedgerPayment, PaymentKind, PaymentMethod, PaymentSource
+from gvas.domain.ports import ScheduleBlockPort
 from gvas.domain.quotes import Quote, public_quote_id
 from gvas.domain.repositories import BusinessRecord, UnitOfWork
 from gvas.domain.time_zones import zone_label
@@ -889,3 +906,231 @@ def settings_change_tools(
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> tuple[OwnerChangeTool, ...]:
     return (SettingsTool(_Money(unit_of_work_factory, owner, now)),)
+
+
+_DAY_ARG = {"type": "string", "description": "The date, YYYY-MM-DD, in the business's time zone."}
+_BLOCK_UNSURE_REPLY = (
+    "I couldn't reach the calendar, so I can't tell whether the block landed. "
+    'Text "unblock {day}" to make sure that time is open, or ask again to block it.'
+)
+_TIME = re.compile(r"(\d{1,2}):(\d{2})")
+
+
+def _minute(value: object, *, end: bool) -> int:
+    match = _TIME.fullmatch(str(value).strip())
+    if match is not None:
+        total = int(match[1]) * 60 + int(match[2])
+        if int(match[2]) < 60 and (total < MINUTES_PER_DAY or (end and total == MINUTES_PER_DAY)):
+            return total
+    raise OwnerChangeRefusedError("Give the times like 8:00 to 12:00.")
+
+
+def _span(day: date, start: int, end: int) -> str:
+    """``Tue Oct 6, 8:00 AM–12:00 PM``."""
+
+    last = "midnight" if end == MINUTES_PER_DAY else format_minute(end)
+    return f"{format_day(day)}, {format_minute(start)}–{last}"
+
+
+def _key(day: date) -> str:
+    return f"{day.month}/{day.day}"
+
+
+def _hours(block: CalendarBlock) -> str:
+    return _span(block.day, block.start_minute, block.end_minute).split(", ", 1)[1]
+
+
+class _Calendar:
+    def __init__(
+        self,
+        unit_of_work_factory: Callable[[], UnitOfWork],
+        schedule: ScheduleBlockPort,
+        now: Callable[[], datetime],
+    ) -> None:
+        self.unit_of_work_factory = unit_of_work_factory
+        self.now = now
+        self._schedule = schedule
+
+    def schedule(self, business: BusinessRecord) -> ScheduleBlockPort:
+        if not self._schedule.serves(business.business_id):
+            raise OwnerChangeRefusedError(BLOCK_NOT_CONFIGURED_REPLY)
+        return self._schedule
+
+    async def day(self, business: BusinessRecord, value: object) -> date:
+        """A date from today on, in the calendar's own zone (its hours' wall clock)."""
+
+        try:
+            day = date.fromisoformat(str(value))
+        except ValueError as error:
+            raise OwnerChangeRefusedError("Which day? Give a date, like Tue Oct 6.") from error
+        name = await _reachable(self._schedule.schedule_timezone(business.business_id))
+        try:
+            zone = ZoneInfo(name) if name else business_zone(business)
+        except ZoneInfoNotFoundError:
+            zone = business_zone(business)
+        if day < self.now().astimezone(zone).date():
+            raise OwnerChangeRefusedError(f"{format_day(day)} has already passed.")
+        return day
+
+
+async def _reachable[T](call: Awaitable[T]) -> T:
+    try:
+        result = await call
+    except AvailabilityError as error:
+        raise OwnerChangeRefusedError(BLOCK_UNREACHABLE_REPLY) from error
+    return result
+
+
+class BlockTimeTool:
+    spec = OwnerAssistantTool(
+        "change_block_time",
+        "Propose blocking time on the booking calendar so no customer can book it, on the "
+        "website chat or the booking link. One date and one time range per change.",
+        {
+            "day": _DAY_ARG,
+            "start": {"type": "string", "description": "Start, 24-hour HH:MM."},
+            "end": {"type": "string", "description": "End, 24-hour HH:MM; 24:00 is midnight."},
+        },
+    )
+    sensitive = False
+
+    def __init__(self, calendar: _Calendar) -> None:
+        self._calendar = calendar
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        schedule = self._calendar.schedule(business)
+        day = await self._calendar.day(business, args.get("day"))
+        start, end = _minute(args.get("start"), end=False), _minute(args.get("end"), end=True)
+        if end <= start:
+            raise OwnerChangeRefusedError("The end time must be after the start time.")
+        hours = await _reachable(schedule.day_hours(business.business_id, day))
+        if subtract_interval(hours.intervals, start, end) == hours.intervals:
+            raise OwnerChangeRefusedError(
+                f"You aren't open then ({_span(day, start, end)}), so there's nothing to block."
+            )
+        return OwnerChangePlan(
+            summary=(
+                f"I will block {_span(day, start, end)} on your booking calendar, so no "
+                "customer can book it. Visits already booked stay as they are."
+            ),
+            arguments={"day": day.isoformat(), "start": start, "end": end},
+        )
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        schedule = self._calendar.schedule(business)
+        # Rechecked at YES: past midnight the day may be gone.
+        day = await self._calendar.day(business, arguments["day"])
+        start, end = int(str(arguments["start"])), int(str(arguments["end"]))
+        now = self._calendar.now()
+        business_id = business.business_id
+        async with self._calendar.unit_of_work_factory() as unit_of_work:
+            hours = await _reachable(schedule.day_hours(business_id, day))
+            remaining = subtract_interval(hours.intervals, start, end)
+            if remaining == hours.intervals:
+                raise OwnerChangeRefusedError("That time isn't open any more, so nothing changed.")
+            # Saved, with the hours it replaces, before Calendly is touched: a
+            # write that lands and then errors can still be unblocked.
+            block = CalendarBlock(
+                block_id=uuid4(),
+                business_id=business_id,
+                day=day,
+                start_minute=start,
+                end_minute=end,
+                state=CalendarBlockState.APPLIED,
+                previous=hours,
+                created_at=now,
+                expires_at=now,
+                decided_at=now,
+            )
+            await unit_of_work.calendar_blocks.add(block)
+            await unit_of_work.commit()
+            try:
+                await schedule.set_day_hours(business_id, day, remaining)
+            except AvailabilityError as error:
+                try:
+                    now_open = (await schedule.day_hours(business_id, day)).intervals
+                    # Landed if the range is closed now, whatever else changed.
+                    landed = subtract_interval(now_open, start, end) == now_open
+                except AvailabilityError:
+                    raise OwnerChangeRefusedError(
+                        _BLOCK_UNSURE_REPLY.format(day=_key(day))
+                    ) from error
+                if not landed:
+                    await unit_of_work.calendar_blocks.save(
+                        block.with_updates(state=CalendarBlockState.REMOVED)
+                    )
+                    await unit_of_work.commit()
+                    raise OwnerChangeRefusedError(BLOCK_UNREACHABLE_REPLY) from error
+        return (
+            f"Done: blocked {_span(day, start, end)}, so no one can book it. "
+            f'To open it again, text "unblock {_key(day)}".'
+        )
+
+
+class UnblockDayTool:
+    spec = OwnerAssistantTool(
+        "change_unblock_day",
+        "Propose removing every block on one date, so its usual hours can be booked again.",
+        {"day": _DAY_ARG},
+    )
+    sensitive = False
+
+    def __init__(self, calendar: _Calendar) -> None:
+        self._calendar = calendar
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        self._calendar.schedule(business)
+        day = await self._calendar.day(business, args.get("day"))
+        async with self._calendar.unit_of_work_factory() as unit_of_work:
+            blocks = await unit_of_work.calendar_blocks.applied_on(business.business_id, day)
+        if not blocks:
+            raise OwnerChangeRefusedError(f"Nothing is blocked on {format_day(day)}.")
+        times = ", ".join(_hours(block) for block in blocks)
+        return OwnerChangePlan(
+            summary=(
+                f"I will unblock {format_day(day)} ({times}), so your usual hours "
+                "can be booked again."
+            ),
+            # The blocks read back: YES must not remove one added since.
+            arguments={"day": day.isoformat(), "blocks": [str(b.block_id) for b in blocks]},
+        )
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        schedule = self._calendar.schedule(business)
+        day = date.fromisoformat(str(arguments["day"]))
+        named = arguments["blocks"]
+        assert isinstance(named, list)
+        now = self._calendar.now()
+        async with self._calendar.unit_of_work_factory() as unit_of_work:
+            blocks = await unit_of_work.calendar_blocks.applied_on(business.business_id, day)
+            if sorted(str(block.block_id) for block in blocks) != sorted(map(str, named)):
+                raise OwnerChangeRefusedError(
+                    f"The blocks on {format_day(day)} changed since I asked, so nothing "
+                    "changed. Ask again if you still want it open."
+                )
+            previous = blocks[0].previous
+            await _reachable(
+                schedule.set_day_hours(
+                    business.business_id,
+                    day,
+                    previous.intervals if previous is not None and previous.overridden else None,
+                )
+            )
+            for block in blocks:
+                await unit_of_work.calendar_blocks.save(
+                    block.with_updates(state=CalendarBlockState.REMOVED, decided_at=now)
+                )
+            await unit_of_work.commit()
+        return f"Done: unblocked {format_day(day)}. Your usual hours are open again."
+
+
+def calendar_change_tools(
+    unit_of_work_factory: Callable[[], UnitOfWork],
+    schedule: ScheduleBlockPort | None,
+    *,
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> tuple[OwnerChangeTool, ...]:
+    if schedule is None:
+        return ()
+    calendar = _Calendar(unit_of_work_factory, schedule, now)
+    return (BlockTimeTool(calendar), UnblockDayTool(calendar))
