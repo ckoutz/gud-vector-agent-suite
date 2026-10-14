@@ -20,6 +20,7 @@ from gvas.domain.owner import CalendarEventSource
 from gvas.domain.owner_assistant import (
     OWNER_ASSISTANT_REPLY_MAX_CHARS,
     BusinessCalendarPort,
+    OwnerAssistantAlertPort,
     OwnerAssistantError,
     OwnerAssistantPort,
     OwnerAssistantRequest,
@@ -43,6 +44,7 @@ CUSTOMER_MATCH_MAX = 5
 QUOTE_FILTERS = ("all", "waiting_for_owner", "sent", "accepted", "paid", "declined")
 
 UNAVAILABLE_REPLY = "Sorry, I can't answer right now. The dashboard has everything in the meantime."
+SETUP_ALERT_INTERVAL = timedelta(hours=1)
 SETUP_REPLY = (
     "Sorry, I can't answer texts right now: the AI service is refusing my requests, "
     "a setup problem on Güd Vector's side. The dashboard has everything in the meantime."
@@ -413,13 +415,41 @@ class OwnerAssistant:
         tools: OwnerReadTools,
         *,
         ceilings: UsageCeilingGuard | None = None,
+        alerts: OwnerAssistantAlertPort | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._model = model
         self._tools = tools
         self._ceilings = ceilings
+        self._alerts = alerts
+        self._last_alert_at: datetime | None = None
+        self._unsent_alert: tuple[BusinessId, str, str, datetime] | None = None
         self._now = now
+
+    async def _alert(self, business_id: BusinessId, business_name: str, detail: str) -> None:
+        """At most one sent alert per ``SETUP_ALERT_INTERVAL``; later failures are only
+        logged. A send that fails doesn't count. If the next failure is the same problem,
+        the unsent alert is resent unchanged (same e-mail idempotency key, in case the
+        first send did land); a different problem is reported as itself."""
+
+        if self._alerts is None:
+            return
+        now = self._now()
+        if self._last_alert_at is not None and now - self._last_alert_at < SETUP_ALERT_INTERVAL:
+            return
+        alert = (business_id, business_name, detail, now)
+        if self._unsent_alert is not None and self._unsent_alert[:3] == alert[:3]:
+            alert = self._unsent_alert
+        self._last_alert_at = now
+        try:
+            await self._alerts.setup_problem(*alert)
+        except Exception:
+            self._last_alert_at = None
+            self._unsent_alert = alert
+            logger.exception("ALERT owner assistant setup alert could not be sent")
+        else:
+            self._unsent_alert = None
 
     async def answer(
         self,
@@ -456,6 +486,7 @@ class OwnerAssistant:
                 error,
                 extra={"business_id": str(business_id), "alert": "owner_assistant_setup"},
             )
+            await self._alert(business_id, request.business_name, str(error))
             return SETUP_REPLY
         except OwnerAssistantError:
             logger.warning("owner assistant failed", exc_info=True)

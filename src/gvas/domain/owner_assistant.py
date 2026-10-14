@@ -55,6 +55,14 @@ class OwnerAssistantSetupError(OwnerAssistantError):
     credit): retrying won't help until someone fixes the setup."""
 
 
+class OwnerAssistantAlertPort(Protocol):
+    """Tells Güd Vector that owner texts are failing on a setup problem."""
+
+    async def setup_problem(
+        self, business_id: BusinessId, business_name: str, detail: str, at: datetime
+    ) -> None: ...
+
+
 class OwnerAssistantPort(Protocol):
     async def answer(
         self, request: OwnerAssistantRequest, run_tool: ToolRunner
