@@ -1,5 +1,7 @@
 """Edit a customer's name or phone by text."""
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -87,6 +89,7 @@ async def test_a_yes_after_the_details_changed_changes_nothing(
             luis.customer_id,
             display_name="Luis Romero",
             phone="+15105550100",
+            expected=("Luis Romero", "+15105550161"),
             now=NOW,
         )
         await unit_of_work.commit()
@@ -106,7 +109,8 @@ async def test_a_yes_after_the_details_changed_changes_nothing(
         ({"customer": "example.com", "name": "X Y"}, "More than one"),
         ({"customer": "Luis", "phone": "12"}, "doesn't look like a phone"),
         ({"customer": "Luis", "phone": "+1 (510) 555-0161"}, "already what you have"),
-        ({"customer": "Luis", "name": "x" * 256}, "too long"),
+        ({"customer": "Luis", "name": "x" * 201}, "too long"),
+        ({"customer": "Luis", "phone": "+1 (510) 555-0199 ext 123"}, "doesn't look like"),
     ],
 )
 async def test_refuses(
@@ -116,3 +120,27 @@ async def test_refuses(
 
     with pytest.raises(OwnerChangeRefusedError, match=refusal):
         await tool.prepare(business, args)
+
+
+@pytest.mark.asyncio
+async def test_an_older_yes_to_texts_cannot_come_back_after_a_new_phone(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business, tool = await _larkspur(session_factory)
+    luis = await _customer(session_factory, business, "Luis Romero")
+    async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+        await unit_of_work.customers.set_sms_consent(
+            business.business_id, luis.customer_id, True, NOW - timedelta(days=1)
+        )
+        await unit_of_work.commit()
+    plan = await tool.prepare(business, {"customer": "Luis", "phone": "5105550199"})
+    await tool.apply(business, plan.arguments)
+
+    # A chat opened before the change carries the old yes and its time; booking
+    # from it replays that answer, which is older than the new number.
+    async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+        await unit_of_work.customers.set_sms_consent(
+            business.business_id, luis.customer_id, True, NOW - timedelta(days=1)
+        )
+        await unit_of_work.commit()
+    assert (await _customer(session_factory, business, "Luis Romero")).sms_consent is None

@@ -179,6 +179,7 @@ class SqlCustomerRepository:
         *,
         display_name: str | None,
         phone: str | None,
+        expected: tuple[str | None, str | None],
         now: datetime,
     ) -> CustomerRecord | None:
         row = await self.session.scalar(
@@ -186,7 +187,7 @@ class SqlCustomerRepository:
             .where(Customer.business_id == business_id, Customer.id == customer_id)
             .with_for_update()
         )
-        if row is None:
+        if row is None or (row.display_name, row.phone) != expected:
             return None
         if phone != row.phone and row.sms_consent is True:
             row.sms_consent = None

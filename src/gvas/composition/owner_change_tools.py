@@ -917,6 +917,9 @@ def _phone_label(phone: str | None) -> str:
     return phone or "no phone"
 
 
+_NAME_MAX = 200  # IntakeCollected.name: a longer one would break their next chat.
+
+
 class EditCustomerTool:
     spec = OwnerAssistantTool(
         "change_customer",
@@ -973,7 +976,7 @@ class EditCustomerTool:
         changes: dict[str, JsonValue] = {}
         said: list[str] = []
         if name:
-            if len(name) > 255:
+            if len(name) > _NAME_MAX:
                 raise OwnerChangeRefusedError("That name is too long.")
             if name != customer.display_name:
                 changes["display_name"] = name
@@ -1014,24 +1017,26 @@ class EditCustomerTool:
                 raise OwnerChangeRefusedError(
                     "That customer isn't in your records any more, so nothing changed."
                 )
-            if (customer.display_name, customer.phone) != (
-                before.get("display_name"),
-                before.get("phone"),
-            ):
-                raise OwnerChangeRefusedError(
-                    f"{customer.name}'s details changed since I asked, so nothing changed. "
-                    "Ask again if you still want it."
-                )
-            name = changes.get("display_name", customer.display_name)
-            phone = changes.get("phone", customer.phone)
+            old_name, old_phone = before.get("display_name"), before.get("phone")
+            name = changes.get("display_name", old_name)
+            phone = changes.get("phone", old_phone)
+            # Compared under the row lock, so a newer edit is never overwritten.
             updated = await unit_of_work.customers.update_details(
                 business.business_id,
                 customer_id,
                 display_name=None if name is None else str(name),
                 phone=None if phone is None else str(phone),
+                expected=(
+                    None if old_name is None else str(old_name),
+                    None if old_phone is None else str(old_phone),
+                ),
                 now=self._now(),
             )
-            assert updated is not None
+            if updated is None:
+                raise OwnerChangeRefusedError(
+                    f"{customer.name}'s details changed since I asked, so nothing changed. "
+                    "Ask again if you still want it."
+                )
             await unit_of_work.commit()
         return (
             f"Done: {updated.name}'s details are updated, and the dashboard shows them. "

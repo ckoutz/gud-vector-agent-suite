@@ -37,6 +37,8 @@ SERVICE_REQUEST_MAX_CHARS = 2000
 def customer_phone(value: str) -> str | None:
     """E.164 for a typed phone number (ten digits read as US), else ``None``."""
 
+    if any(character.isalpha() for character in value):
+        return None  # "ext 123", "x12": an extension isn't part of the number.
     digits = "".join(character for character in value if character.isdigit())
     if value.strip().startswith("+"):
         return f"+{digits}" if 8 <= len(digits) <= 15 else None
@@ -268,10 +270,12 @@ class CustomerRepository(Protocol):
         *,
         display_name: str | None,
         phone: str | None,
+        expected: tuple[str | None, str | None],
         now: datetime,
     ) -> CustomerRecord | None:
-        """Sets the name and phone. A new phone clears a yes to texts: that number
-        never agreed. ``None`` when there is no such customer."""
+        """Sets the name and phone if they are still ``expected`` (name, phone),
+        else ``None``, as for no such customer. A new phone clears a yes to
+        texts: that number never agreed."""
         ...
 
 
