@@ -40,7 +40,9 @@ from gvas.domain.owner_commands import (
     OwnerCommandConflictError,
     OwnerCommandState,
     conversation_key,
+    is_no,
     is_yes,
+    is_yes_and_more,
 )
 from gvas.domain.payments import month_totals
 from gvas.domain.quotes import Quote
@@ -64,8 +66,30 @@ SETUP_REPLY = (
     "Sorry, I can't answer texts right now: the AI service is refusing my requests, "
     "a setup problem on Güd Vector's side. The dashboard has everything in the meantime."
 )
-CONFIRM_PROMPT = "Reply YES in the next 10 minutes to do it. Any other reply cancels it."
-CANCELLED_NOTE = "I cancelled the change that was waiting for your YES, so nothing was done."
+CONFIRM_PROMPT = "Reply YES in the next 10 minutes to do it, or NO to cancel it."
+ONE_CHANGE_NOTE = (
+    "(I can set up one change per YES, so the rest of your text isn't in it. "
+    "Once this one is done or cancelled, ask me for the rest.)"
+)
+
+
+def cancelled_note(summary: str) -> str:
+    """``I cancelled the pending change: block … Nothing was changed.``"""
+
+    what = summary.split(". ", 1)[0].rstrip(".")
+    what = what.removeprefix("I will ")
+    if len(what) > 200:
+        what = what[:199].rstrip() + "…"
+    return f"I cancelled the pending change: {what}. Nothing was changed."
+
+
+def still_waiting_note(summary: str) -> str:
+    return (
+        f"Nothing is done yet. This change is still waiting for a plain YES:\n{summary}\n\n"
+        "Reply YES on its own to do it, or NO to cancel it. Then ask me for the rest."
+    )
+
+
 NOTHING_PENDING_REPLY = "Nothing is waiting for a YES, so nothing was changed."
 NO_CHANGE_SET_UP_NOTE = (
     "(Nothing is set up for a YES, so a YES now changes nothing. "
@@ -507,20 +531,26 @@ class OwnerAssistant:
             return UNAVAILABLE_REPLY
         now = self._now()
         pending = await self._pending(business_id, now)
+        cancelled = ""
         if pending is not None:
-            if is_yes(text) and pending.conversation_ref == conversation_key(conversation_ref):
+            same_thread = pending.conversation_ref == conversation_key(conversation_ref)
+            if same_thread and is_yes(text):
                 return await self._confirm(business, pending)
+            if same_thread and is_yes_and_more(text):
+                return still_waiting_note(pending.summary)
             await self._close(pending, OwnerCommandState.CANCELLED, now)
-            if is_yes(text):
-                # A YES from another thread is not the one this change asked for.
-                return CANCELLED_NOTE
+            cancelled = cancelled_note(pending.summary)
+            # A YES from another thread is not the one this change asked for.
+            if is_yes(text) or is_no(text):
+                return cancelled
+            cancelled += "\n\n"
         elif is_yes(text):
             return NOTHING_PENDING_REPLY
         if self._ceilings is not None and await self._ceilings.is_reached(
             business_id, UsageKind.REVIEW_TOKENS, now=now
         ):
-            return LIMIT_REPLY
-        return await self._ask(business, text, history, conversation_ref, now)
+            return cancelled + LIMIT_REPLY
+        return cancelled + await self._ask(business, text, history, conversation_ref, now)
 
     async def _ask(
         self,
@@ -540,12 +570,14 @@ class OwnerAssistant:
             history=history,
         )
         staged: list[tuple[OwnerChangeTool, OwnerChangePlan]] = []
+        more_asked: list[str] = []
 
         async def run_tool(name: str, args: Mapping[str, Any]) -> Any:
             change = self._changes.get(name)
             if change is None:
                 return await self._tools.run(business, name, args)
             if staged:
+                more_asked.append(name)
                 return {"error": "Only one change at a time. Propose just the first one."}
             try:
                 plan = await change.prepare(business, args)
@@ -576,7 +608,8 @@ class OwnerAssistant:
             return UNAVAILABLE_REPLY
         if staged:
             change, plan = staged[0]
-            return await self._propose(business, change, plan, text, conversation_ref)
+            proposal = await self._propose(business, change, plan, text, conversation_ref)
+            return f"{proposal}\n\n{ONE_CHANGE_NOTE}" if more_asked else proposal
         reply = answer.text.strip()
         if not reply:
             return UNAVAILABLE_REPLY

@@ -24,7 +24,6 @@ from gvas.domain.intents import (
     IntentUnresolvedError,
 )
 from gvas.domain.messages import NormalizedOwnerMessage
-from gvas.domain.owner_commands import OwnerCommandState, is_yes
 from gvas.domain.quotes import Quote, quote_trigger_request_text
 from gvas.domain.repositories import UnitOfWork
 
@@ -62,8 +61,9 @@ class DeterministicIntentResolver:
         self._message_unit_of_work_factory = message_unit_of_work_factory
 
     async def resolve(self, message: NormalizedOwnerMessage) -> IntentResolution:
-        # A change Gus proposed waits for exactly YES; any other message cancels
-        # it and is routed as usual, so only one change is ever pending.
+        # While a change Gus proposed is waiting, every message goes to Gus: a
+        # plain YES applies it, a yes with more on it keeps it waiting, and
+        # anything else cancels it and says so before the rest of the answer.
         if await self._owner_command_answer(message):
             return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
         # Booking decisions are checked before everything else: the quote
@@ -97,13 +97,7 @@ class DeterministicIntentResolver:
         now = datetime.now(UTC)
         async with self._message_unit_of_work_factory() as unit_of_work:
             command = await unit_of_work.owner_commands.latest_proposed(message.business_id)
-            if command is None or not command.is_live(now):
-                return False
-            if is_yes(normalized_text(message)):
-                return True
-            await unit_of_work.owner_commands.close(command, OwnerCommandState.CANCELLED, now)
-            await unit_of_work.commit()
-        return False
+            return command is not None and command.is_live(now)
 
     async def _is_calendar_block(self, message: NormalizedOwnerMessage) -> bool:
         """``unavailable 8-12`` / ``unblock tue`` always; ``yes``/``no`` only while

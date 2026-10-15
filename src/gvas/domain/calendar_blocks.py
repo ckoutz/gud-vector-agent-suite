@@ -230,6 +230,8 @@ def format_minute(minute: int) -> str:
 def format_block(block: CalendarBlock) -> str:
     """``Tue Oct 6, 8:00 AM-12:00 PM``."""
 
+    if block.start_minute == 0 and block.end_minute == MINUTES_PER_DAY:
+        return f"all day {format_day(block.day)}"
     end = "midnight" if block.end_minute == MINUTES_PER_DAY else format_minute(block.end_minute)
     return f"{format_day(block.day)}, {format_minute(block.start_minute)}–{end}"
 

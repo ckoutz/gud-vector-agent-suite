@@ -18,11 +18,13 @@ from composition_fakes import (
     application_ports,
 )
 from gvas.application.owner_assistant import (
-    CANCELLED_NOTE,
     CHANGE_FAILED_REPLY,
     CONFIRM_PROMPT,
     NO_CHANGE_SET_UP_NOTE,
     NOTHING_PENDING_REPLY,
+    ONE_CHANGE_NOTE,
+    cancelled_note,
+    still_waiting_note,
 )
 from gvas.composition import Application, build_application
 from gvas.domain.calendar_blocks import CalendarBlock, CalendarBlockState
@@ -43,6 +45,7 @@ from gvas.domain.owner_commands import (
     OwnerCommandState,
     conversation_key,
     is_yes,
+    is_yes_and_more,
 )
 from gvas.domain.repositories import BusinessRecord
 from gvas.infrastructure.telnyx.composition import sms_quotes_only_policy
@@ -202,10 +205,16 @@ async def test_yes_applies_the_stored_change_once_without_the_model(setup: Setup
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("other", ["ok", "sure", "yes but tomorrow", "hello"])
-async def test_any_other_reply_cancels_the_change(setup: Setup, other: str) -> None:
+@pytest.mark.parametrize("other", ["ok", "sure", "hello", "no", "Nope", "cancel"])
+async def test_any_other_reply_cancels_the_change_and_says_so_first(
+    setup: Setup, other: str
+) -> None:
     await setup.text("note gate")
-    await setup.text(other)
+    reply = await setup.text(other)
+
+    assert reply.startswith(
+        'I cancelled the pending change: add the note "gate". Nothing was changed.'
+    )
 
     assert await setup.text("YES") == NOTHING_PENDING_REPLY
     assert setup.tool.applied == []
@@ -240,6 +249,7 @@ async def test_only_one_change_per_message(setup: Setup) -> None:
     reply = await setup.text("notes gate dog")
 
     assert reply.startswith('I will add the note "gate".')
+    assert reply.endswith(ONE_CHANGE_NOTE)
     assert setup.model.results[1] == {
         "error": "Only one change at a time. Propose just the first one."
     }
@@ -270,7 +280,7 @@ async def test_yes_from_another_thread_cancels_instead_of_applying(setup: Setup)
     await assistant.answer(setup.business_id, "note gate", conversation_ref="sms:a")
 
     assert await assistant.answer(setup.business_id, "YES", conversation_ref="sms:b") == (
-        CANCELLED_NOTE
+        cancelled_note('I will add the note "gate".')
     )
     assert setup.tool.applied == []
     assert await setup.commands() == [(OwnerCommandState.CANCELLED, None)]
@@ -300,9 +310,39 @@ async def test_proposing_a_change_cancels_a_pending_calendar_block(setup: Setup)
     assert block.state is CalendarBlockState.PROPOSED  # the stored row changed, not this copy
 
 
-def test_only_yes_confirms() -> None:
-    assert all(is_yes(text) for text in ["YES", "yes", " Yes! ", "yes."])
-    assert not any(is_yes(text) for text in ["ok", "y", "yes please", "yess", "no", ""])
+def test_only_a_plain_yes_confirms() -> None:
+    plain = [
+        "YES",
+        "yes",
+        " Yes! ",
+        "yes.",
+        "y",
+        "Yep",
+        "yeah",
+        "yup",
+        "Yes please",
+        "go ahead",
+        "Do it!",
+    ]
+    assert all(is_yes(text) for text in plain)
+    more = ["Yes and Friday too", "yes but make it 2 to 4", "y, and Friday", "go ahead with friday"]
+    assert all(is_yes_and_more(text) and not is_yes(text) for text in more)
+    others = ["ok", "sure", "yess", "yesterday", "you there?", "no", ""]
+    assert not any(is_yes(text) or is_yes_and_more(text) for text in others)
+
+
+@pytest.mark.asyncio
+async def test_a_yes_with_more_on_it_keeps_the_change_waiting(setup: Setup) -> None:
+    await setup.text("note gate")
+    requests = len(setup.model.requests)
+
+    reply = await setup.text("Yes and Friday too")
+
+    assert reply == still_waiting_note('I will add the note "gate".')
+    assert reply.startswith("Nothing is done yet.")
+    assert len(setup.model.requests) == requests  # the model never saw it
+    assert setup.tool.applied == []
+    assert await setup.text("yep") == 'Done: added the note "gate".'
 
 
 def _command(business_id: BusinessId, now: datetime) -> OwnerCommand:
