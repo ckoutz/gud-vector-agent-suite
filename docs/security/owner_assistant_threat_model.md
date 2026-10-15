@@ -92,3 +92,12 @@ sent through Telnyx, and the demo backend refuses real provider keys.
 
 - `change_block_time` and `change_unblock_day` take a list of dates; one read-back names every day ("all day Thu Oct 15 and all day Fri Oct 16"), and one YES does them all. Days where nothing can change (closed then, or nothing blocked) are left out and the read-back says so.
 - At YES each day is done on its own: its own recheck (passed days are skipped), its own undo record saved before Calendly is written, and its own read-back after an error. A day that fails never undoes a day that saved; the reply names each day saved and each day not saved, with why, and every saved day can be unblocked by text.
+
+
+## Customer messages (`change_message_customer`)
+
+- The owner's exact words go to one customer from the business's own customer list (matched in code; the model only names them). Booking-only contacts with no customer record can't be messaged.
+- Before YES, the code-written read-back shows the recipient's name, the address or phone it goes to, the channel, the subject and the full message, word for word. The stored arguments hold exactly that.
+- Texts go only to a customer whose record says `sms_consent` is True, and the text worker checks consent again at send time; everyone else gets e-mail. If the route (consent, phone or e-mail) changed between the read-back and YES, nothing is sent and the owner is asked again.
+- Sending goes through the outbox (`intake_customer.email` / `intake_customer.text`), with a per-proposal idempotency key, so a retried worker never sends twice. The demo's delivery adapters send nothing.
+- Marked `sensitive`, so the off-by-default PIN covers it when switched on.
