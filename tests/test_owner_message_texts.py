@@ -1,13 +1,20 @@
 """Message a customer by text: the full message and recipient before YES."""
 
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.composition.failure_notices import owner_message_recipient
 from gvas.composition.owner_change_tools import message_change_tools
-from gvas.domain.intake import INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE, INTAKE_CUSTOMER_TEXT_COMMAND_TYPE
+from gvas.domain.identifiers import CustomerId
+from gvas.domain.intake import (
+    INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
+    INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
+    intake_customer_text_command,
+)
 from gvas.domain.owner_assistant import OwnerChangeRefusedError, OwnerChangeTool
 from gvas.domain.repositories import BusinessRecord
 from gvas.infrastructure.customer_repositories import SqlCustomerRepository
@@ -19,14 +26,14 @@ from test_seed_demo import NOW, _business
 
 
 async def _larkspur(
-    session_factory: async_sessionmaker[AsyncSession],
+    session_factory: async_sessionmaker[AsyncSession], *, can_text: bool = True
 ) -> tuple[BusinessRecord, OwnerChangeTool]:
     business_id = await _business(session_factory)
     await seed_demo.seed_demo(session_factory, business_id, reset=False, now=NOW)
     async with session_factory() as session:
         business = await SqlBusinessRepository(session).get(business_id)
     assert business is not None
-    (tool,) = message_change_tools(SqlUnitOfWorkFactory(session_factory))
+    (tool,) = message_change_tools(SqlUnitOfWorkFactory(session_factory), can_text=can_text)
     return business, tool
 
 
@@ -127,3 +134,30 @@ async def test_refuses_unknown_ambiguous_empty_and_too_long(
     with pytest.raises(OwnerChangeRefusedError, match="at most 2000"):
         await tool.prepare(business, {"customer": "Luis", "message": "x" * 2001})
     assert tool.sensitive
+
+
+@pytest.mark.asyncio
+async def test_without_texting_set_up_a_consented_customer_gets_e_mail(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business, tool = await _larkspur(session_factory, can_text=False)
+    await _consent(session_factory, business, True)
+
+    plan = await tool.prepare(business, {"customer": "Luis", "message": "See you at 10."})
+
+    assert plan.summary.startswith("I will e-mail Luis Romero at luis.romero@example.com")
+    assert plan.arguments["channel"] == "e-mail"
+
+
+def test_a_failed_owner_message_gets_its_own_notice_not_the_booking_one() -> None:
+    def text(key: str) -> Any:
+        return intake_customer_text_command(
+            business_id=uuid4(),  # type: ignore[arg-type]
+            customer_id=CustomerId(uuid4()),
+            phone="+15105550161",
+            text="See you at 10.",
+            idempotency_key=key,
+        )
+
+    assert owner_message_recipient(text("owner-message:b:k")) == "+15105550161"
+    assert owner_message_recipient(text("intake:booking:k")) is None

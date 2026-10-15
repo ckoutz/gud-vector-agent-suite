@@ -133,3 +133,7 @@ class BusinessCalendarPort(Protocol):
     async def business_calendar(
         self, business: BusinessRecord, start: datetime, end: datetime
     ) -> BusinessCalendarView: ...
+
+
+# Idempotency-key prefix of customer messages the owner confirmed by text.
+OWNER_MESSAGE_KEY_PREFIX = "owner-message:"

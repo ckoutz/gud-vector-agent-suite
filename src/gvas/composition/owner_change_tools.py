@@ -46,6 +46,7 @@ from gvas.domain.intake import (
 from gvas.domain.invoices import Invoice
 from gvas.domain.owner import OwnerSession
 from gvas.domain.owner_assistant import (
+    OWNER_MESSAGE_KEY_PREFIX,
     OwnerAssistantTool,
     OwnerChangePlan,
     OwnerChangeRefusedError,
@@ -1365,10 +1366,11 @@ def _phone_text(phone: str) -> str:
     return phone
 
 
-def _route(customer: CustomerRecord) -> tuple[str, str]:
-    """By text only to a customer who said yes to texts; otherwise e-mail."""
+def _route(customer: CustomerRecord, can_text: bool) -> tuple[str, str]:
+    """By text only to a customer who said yes to texts, when texting is set up;
+    otherwise e-mail."""
 
-    if customer.sms_consent is True and customer.phone:
+    if can_text and customer.sms_consent is True and customer.phone:
         return "text", customer.phone
     return "e-mail", customer.email
 
@@ -1389,15 +1391,16 @@ class MessageCustomerTool:
     )
     sensitive = True
 
-    def __init__(self, unit_of_work_factory: Callable[[], UnitOfWork]) -> None:
+    def __init__(self, unit_of_work_factory: Callable[[], UnitOfWork], can_text: bool) -> None:
         self._unit_of_work_factory = unit_of_work_factory
+        self._can_text = can_text
 
     async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
         message = str(args.get("message") or "").strip()
         if not message:
             raise OwnerChangeRefusedError("Say what the message should say.")
         customer = await self._customer(business, args.get("customer"))
-        channel, address = _route(customer)
+        channel, address = _route(customer, self._can_text)
         if len(message) > MESSAGE_LIMITS[channel]:
             raise OwnerChangeRefusedError(
                 f"That's {len(message)} characters; a {channel} from me can be at most "
@@ -1424,10 +1427,10 @@ class MessageCustomerTool:
     async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
         customer_id = CustomerId(UUID(_str(arguments, "customer_id")))
         channel, address = _str(arguments, "channel"), _str(arguments, "address")
-        key = f"owner-message:{business.business_id}:{_str(arguments, 'key')}"
+        key = f"{OWNER_MESSAGE_KEY_PREFIX}{business.business_id}:{_str(arguments, 'key')}"
         async with self._unit_of_work_factory() as unit_of_work:
             customer = await unit_of_work.customers.get(business.business_id, customer_id)
-            if customer is None or _route(customer) != (channel, address):
+            if customer is None or _route(customer, self._can_text) != (channel, address):
                 raise OwnerChangeRefusedError(
                     f"{arguments['name']}'s contact details changed since I read them "
                     "back. Ask me again."
@@ -1474,6 +1477,6 @@ class MessageCustomerTool:
 
 
 def message_change_tools(
-    unit_of_work_factory: Callable[[], UnitOfWork],
+    unit_of_work_factory: Callable[[], UnitOfWork], *, can_text: bool
 ) -> tuple[OwnerChangeTool, ...]:
-    return (MessageCustomerTool(unit_of_work_factory),)
+    return (MessageCustomerTool(unit_of_work_factory, can_text),)
