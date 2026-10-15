@@ -24,7 +24,7 @@ from gvas.domain.intents import (
     IntentUnresolvedError,
 )
 from gvas.domain.messages import NormalizedOwnerMessage
-from gvas.domain.owner_commands import OwnerCommandState, is_yes
+from gvas.domain.owner_commands import is_no, is_yes, is_yes_and_more
 from gvas.domain.quotes import Quote, quote_trigger_request_text
 from gvas.domain.repositories import UnitOfWork
 
@@ -62,18 +62,34 @@ class DeterministicIntentResolver:
         self._message_unit_of_work_factory = message_unit_of_work_factory
 
     async def resolve(self, message: NormalizedOwnerMessage) -> IntentResolution:
-        # A change Gus proposed waits for exactly YES; any other message cancels
-        # it and is routed as usual, so only one change is ever pending.
-        if await self._owner_command_answer(message):
+        # While a change Gus proposed is waiting, every message goes to Gus: a
+        # plain YES applies it, a yes with more on it keeps it waiting, and
+        # anything else cancels it and says so before the rest of the answer.
+        # Gus has tools for booking decisions and calendar blocks, so those go
+        # to him too; quote and field-note commands keep their own workflows
+        # and leave the change waiting, untouched.
+        text = normalized_text(message)
+        pending = await self._owner_command_pending(message)
+        if pending and (is_yes(text) or is_yes_and_more(text) or is_no(text)):
             return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
         # Booking decisions are checked before everything else: the quote
         # selector claims every message in a conversation with an active
         # quote, and a booking command must still reach its own handler.
-        if booking_decision(normalized_text(message)) is not None:
+        if not pending and booking_decision(text) is not None:
             return IntentResolution(intent=BOOKING_INTENT, confidence=1)
-        if await self._is_calendar_block(message):
+        if not pending and await self._is_calendar_block(message):
             return IntentResolution(intent=CALENDAR_BLOCK_INTENT, confidence=1)
         quote_resolution, active_quote = await self._resolve_quote(message)
+        workflow_command = (
+            has_field_note_trigger(message)
+            or has_field_note_command_trigger(message)
+            or (
+                quote_resolution is not None
+                and not _plain_words_while_awaiting_ok(message, active_quote)
+            )
+        )
+        if pending and not workflow_command:
+            return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
         if has_field_note_trigger(message):
             if quote_resolution is not None:
                 return IntentResolution(intent=WORKFLOW_CONFLICT_INTENT, confidence=1)
@@ -93,17 +109,11 @@ class DeterministicIntentResolver:
             return IntentResolution(intent=field_note_intent, confidence=1)
         return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
 
-    async def _owner_command_answer(self, message: NormalizedOwnerMessage) -> bool:
+    async def _owner_command_pending(self, message: NormalizedOwnerMessage) -> bool:
         now = datetime.now(UTC)
         async with self._message_unit_of_work_factory() as unit_of_work:
             command = await unit_of_work.owner_commands.latest_proposed(message.business_id)
-            if command is None or not command.is_live(now):
-                return False
-            if is_yes(normalized_text(message)):
-                return True
-            await unit_of_work.owner_commands.close(command, OwnerCommandState.CANCELLED, now)
-            await unit_of_work.commit()
-        return False
+            return command is not None and command.is_live(now)
 
     async def _is_calendar_block(self, message: NormalizedOwnerMessage) -> bool:
         """``unavailable 8-12`` / ``unblock tue`` always; ``yes``/``no`` only while

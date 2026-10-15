@@ -36,11 +36,13 @@ PRs; this document is extended with each one.
 Every change goes through the same steps (`OwnerAssistant`, `domain/owner_commands.py`):
 
 1. The model calls a `change_*` tool. Its `prepare` runs in code for the business bound from the endpoint, validates the request, resolves names to ids, and returns the exact `summary` sentence. Refusals go back to the model as data. Only one change per message; a second call is refused.
-2. Code, not the model, writes the reply: the summary, then "Reply YES in the next 10 minutes to do it. Any other reply cancels it." The model's own text is dropped, so a misreading shows up in plain words before anything happens.
+2. Code, not the model, writes the reply: the summary, then "Reply YES in the next 10 minutes to do it, or NO to cancel it." The model's own text is dropped, so a misreading shows up in plain words before anything happens.
 3. The proposal is stored as an `owner_commands` row (`proposed`) with the resolved arguments, the owner's message, the thread it came from and `expires_at` = 10 minutes. Proposing closes any other pending command and any pending calendar block; proposing a block closes a pending command. One pending change per business, enforced by a partial unique index, so two texts racing can't leave two proposals (the loser is told to send it again). The thread is stored as a SHA-256 key, so any thread length fits.
 4. The next message decides it, before any workflow or model sees it (`DeterministicIntentResolver.resolve`, and again in `OwnerAssistant.answer` for the demo):
-   - exactly `YES` (any case, trailing `.`/`!`) in the same thread, before expiry: the row is claimed with a conditional update (`proposed` → `applying`, so two YESes can't apply it twice), then `apply` runs with the stored arguments, never re-read from the model. The outcome is stored (`done` or `failed`) and texted back.
-   - anything else, including "ok", "sure", a YES from another thread, or a new request: the row becomes `cancelled`, and the message is handled as usual.
+   - a plain yes on its own (`yes`, `y`, `yep`, `yeah`, `yup`, `yes please`, `go ahead`, `do it`; any case, trailing `.`/`!`) in the same thread, before expiry: the row is claimed with a conditional update (`proposed` → `applying`, so two YESes can't apply it twice), then `apply` runs with the stored arguments, never re-read from the model. The outcome is stored (`done` or `failed`) and texted back.
+   - a yes with more on it ("Yes and Friday too", "yes but make it 2 to 4") in the same thread: nothing is applied or cancelled; code replies that the change is still waiting, repeats its summary and asks for a plain YES or NO, since the extra words may change what the yes meant. The model never sees it.
+   - anything else, including "ok", "sure", a YES from another thread, or a new request: the row becomes `cancelled`, and the reply starts with "I cancelled the pending change: <summary>. Nothing was changed." in code's words. While a change waits, messages go to Gus (booking decisions and `unavailable`/`unblock` included, since he has tools for them), so that line is never skipped. Only `quote:` and field-note commands keep their own workflows; they leave the change waiting, untouched. If a YES claimed the change first, the reply says so instead of "cancelled".
+   - if the model tries a second change in the same message, the proposal says in code's words that the rest of the text isn't in it.
    - after 10 minutes the row becomes `expired`; a late YES gets "Nothing is waiting for a YES".
 5. The model is never in the confirm path: YES needs no model call, so an outage or a prompt injection can't confirm or alter a stored command.
 
@@ -92,8 +94,22 @@ sent through Telnyx, and the demo backend refuses real provider keys.
 - The undo record (`CalendarBlock` with the hours it replaces) is committed before Calendly is written. A write that lands and then errors can still be unblocked; one that never landed is marked removed.
 - Unblocking lists every block on the day before YES, and refuses if the blocks changed since.
 
+### Several days in one change
+
+- `change_block_time` and `change_unblock_day` take a list of dates; one read-back names every day ("all day Thu Oct 15 and all day Fri Oct 16"), and one YES does them all. Days where nothing can change (closed then, or nothing blocked) are left out and the read-back says so.
+- At YES each day is done on its own: its own recheck (passed days are skipped), its own undo record saved before Calendly is written, and its own read-back after an error. A day that fails never undoes a day that saved; the reply names each day saved and each day not saved, with why, and every saved day can be unblocked by text.
+
 ## Customer details (name, phone)
 
 - `change_customer` changes only a customer's name and phone, matched among the business's own customers by name, e-mail or phone; no match or more than one is refused. The e-mail isn't in the schema: it's the customer's sign-in identity, so it stays out of texts.
 - The proposal names the customer and the new values. YES refuses if the name or phone changed since the proposal.
 - A new phone clears a yes to texts: that number never agreed, so Gus won't text it until the customer agrees again. The proposal says so. Invoices already sent keep the old details.
+
+## Customer messages (`change_message_customer`)
+
+- The owner's exact words go to one customer from the business's own customer list (matched in code; the model only names them). Booking-only contacts with no customer record can't be messaged.
+- Before YES, the code-written read-back shows the recipient's name, the address or phone it goes to, the channel, the subject and the full message, word for word. The stored arguments hold exactly that.
+- Texts go only to a customer whose record says `sms_consent` is True, and the text worker checks consent again at send time; everyone else, and everyone when the deployment has no texting provider, gets e-mail. If the route (consent, phone or e-mail) changed between the read-back and YES, nothing is sent and the owner is asked again.
+- Messages are capped (480 characters by text, 900 by e-mail) so the read-back and any failure notice quote the whole message in one owner text.
+- Sending goes through the outbox (`intake_customer.email` / `intake_customer.text`), with a per-proposal idempotency key, so a retried worker never sends twice. The demo's delivery adapters send nothing. If a send fails for good, the owner gets a notice naming the recipient and quoting the whole message (`Your message to … could not be sent: "…"`), not the booking-customer one, in the business's latest owner thread (the thread the YES came from, unless another owner message arrived since).
+- Marked `sensitive`, so the off-by-default PIN covers it when switched on.

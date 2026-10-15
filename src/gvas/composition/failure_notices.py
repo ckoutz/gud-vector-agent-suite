@@ -42,6 +42,7 @@ from gvas.domain.outbox import (
     OutboxRecord,
     owner_reply_command,
 )
+from gvas.domain.owner_assistant import OWNER_MESSAGE_KEY_PREFIX
 from gvas.domain.plans import PLAN_SET_COPY_COMMAND_TYPE
 from gvas.domain.quotes import QUOTE_DELIVERY_COMMAND_TYPE, QUOTE_TEXT_COMMAND_TYPE, Quote
 from gvas.domain.reporting import (
@@ -208,6 +209,7 @@ class NotifyExhaustedCommandService:
             return None
         summary, recovery = guidance
         text = f"{summary}\n{recovery}"
+        text = owner_message_failure_notice(command) or text
         if command.command_type == QUOTE_TEXT_COMMAND_TYPE:
             quote = await self._quote(command)
             if quote is not None:
@@ -333,6 +335,31 @@ class NotifyExhaustedCommandService:
             conversation_ref=case.conversation_ref,
             inbound_message_id=case.origin_inbound_message_id,
         )
+
+
+def owner_message_failure_notice(command: OutboxCommand) -> str | None:
+    """Names the recipient and quotes the whole message, so the owner knows
+    which message to resend even when several to one customer failed."""
+
+    recipient = owner_message_recipient(command)
+    if recipient is None:
+        return None
+    words = str(command.payload.get("body") or command.payload.get("text") or "")
+    return (
+        f'Your message to {recipient} could not be sent: "{words}"\n'
+        "Send it to them yourself, or ask me to send it again."
+    )
+
+
+def owner_message_recipient(command: OutboxCommand) -> str | None:
+    """Where a customer message the owner confirmed by text was going."""
+
+    if command.command_type not in (
+        INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
+        INTAKE_CUSTOMER_TEXT_COMMAND_TYPE,
+    ) or not str(command.payload.get("idempotency_key", "")).startswith(OWNER_MESSAGE_KEY_PREFIX):
+        return None
+    return str(command.payload.get("to") or command.payload.get("phone") or "the customer")
 
 
 def quote_text_failure_notice(quote: Quote) -> str:

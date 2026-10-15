@@ -1,5 +1,5 @@
-"""The dashboard's money, decision and settings actions, and calendar blocks,
-as owner-text change tools.
+"""The dashboard's money, decision and settings actions, calendar blocks and
+customer messages, as owner-text change tools.
 
 Each tool resolves the owner's words to one quote in code, writes the exact
 sentence the owner confirms, and on YES calls the same ``OwnerService`` method
@@ -7,7 +7,7 @@ the dashboard button calls, so the rules are the dashboard's rules.
 """
 
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
@@ -37,16 +37,21 @@ from gvas.domain.identifiers import BusinessId, CustomerId, JsonValue
 from gvas.domain.intake import (
     AvailabilityError,
     IntakeConversation,
+    IntakeCustomerEmail,
     format_slot_label,
+    intake_customer_email_command,
+    intake_customer_text_command,
     sanitize_owner_reason,
 )
 from gvas.domain.invoices import Invoice
 from gvas.domain.owner import OwnerSession
 from gvas.domain.owner_assistant import (
+    OWNER_MESSAGE_KEY_PREFIX,
     OwnerAssistantTool,
     OwnerChangePlan,
     OwnerChangeRefusedError,
     OwnerChangeTool,
+    OwnerChangeUncertainError,
 )
 from gvas.domain.payments import LedgerPayment, PaymentKind, PaymentMethod, PaymentSource
 from gvas.domain.ports import ScheduleBlockPort
@@ -1069,19 +1074,122 @@ def _minute(value: object, *, end: bool) -> int:
     raise OwnerChangeRefusedError("Give the times like 8:00 to 12:00.")
 
 
-def _span(day: date, start: int, end: int) -> str:
-    """``Tue Oct 6, 8:00 AM–12:00 PM``."""
+def _last(end: int) -> str:
+    return "midnight" if end == MINUTES_PER_DAY else format_minute(end)
 
-    last = "midnight" if end == MINUTES_PER_DAY else format_minute(end)
-    return f"{format_day(day)}, {format_minute(start)}–{last}"
+
+def _all_day(start: int, end: int) -> bool:
+    return start == 0 and end == MINUTES_PER_DAY
+
+
+def _span(day: date, start: int, end: int) -> str:
+    """``Tue Oct 6, 8:00 AM–12:00 PM``, or ``all day Tue Oct 6``."""
+
+    if _all_day(start, end):
+        return f"all day {format_day(day)}"
+    return f"{format_day(day)}, {format_minute(start)}–{_last(end)}"
+
+
+def _and(items: Sequence[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _days(days: Sequence[date]) -> str:
+    return _and([format_day(day) for day in days])
+
+
+def _spans(days: Sequence[date], start: int, end: int) -> str:
+    """``all day Thu Oct 15 and all day Fri Oct 16``, or ``Thu Oct 15 and Fri Oct 16,
+    12:00 PM–2:00 PM``."""
+
+    if _all_day(start, end) or len(days) == 1:
+        return _and([_span(day, start, end) for day in days])
+    return f"{_days(days)}, {format_minute(start)}–{_last(end)}"
+
+
+def _it(days: Sequence[object]) -> str:
+    return "it" if len(days) == 1 else "them"
 
 
 def _key(day: date) -> str:
     return f"{day.month}/{day.day}"
 
 
+def _reopen(days: Sequence[date]) -> str:
+    """The text that opens ``days`` again (``unblock 10/15`` is one day only)."""
+
+    if len(days) == 1:
+        return f"unblock {_key(days[0])}"
+    return f"open {_and([_key(day) for day in days])} again"
+
+
 def _hours(block: CalendarBlock) -> str:
-    return _span(block.day, block.start_minute, block.end_minute).split(", ", 1)[1]
+    if _all_day(block.start_minute, block.end_minute):
+        return "all day"
+    return f"{format_minute(block.start_minute)}–{_last(block.end_minute)}"
+
+
+class _DayNotChanged(Exception):  # noqa: N818 - a per-day outcome, not a failure of the change
+    """One day of a change that didn't happen: ``reason`` for a list of days,
+    ``reply`` when it was the only day."""
+
+    def __init__(self, reason: str, reply: str, *, uncertain: bool = False) -> None:
+        super().__init__(reply)
+        self.reason = reason
+        self.reply = reply
+        self.uncertain = uncertain
+
+
+def _misses(missed: Sequence[tuple[date, _DayNotChanged]], not_done: str) -> str:
+    """``Not blocked: Fri Oct 16 (why). Not sure: Sat Oct 17 (why).``"""
+
+    parts = []
+    for label, uncertain in ((not_done, False), ("Not sure", True)):
+        days = [(day, why) for day, why in missed if why.uncertain is uncertain]
+        if days:
+            reasons = "; ".join(f"{format_day(day)} ({why.reason})" for day, why in days)
+            parts.append(f"{label}: {reasons}.")
+    return " ".join(parts)
+
+
+def _refuse_if_none_done(
+    done: Sequence[date], missed: Sequence[tuple[date, _DayNotChanged]], not_done: str
+) -> None:
+    if done:
+        return
+    unsure = any(why.uncertain for _, why in missed)
+    error = OwnerChangeUncertainError if unsure else OwnerChangeRefusedError
+    if len(missed) == 1:
+        raise error(missed[0][1].reply)
+    header = "I couldn't confirm any change." if unsure else "Nothing changed."
+    raise error(f"{header} {_misses(missed, not_done)}")
+
+
+def _outcome(
+    done: Sequence[date],
+    missed: Sequence[tuple[date, _DayNotChanged]],
+    *,
+    did: str,
+    not_done: str,
+    after: str,
+) -> str:
+    """``Done: …`` for the days that changed and ``Not …: day (why)`` for the rest."""
+
+    reply = f"Done: {did}. {after}"
+    if missed:
+        reply += f"\n{_misses(missed, not_done)} Ask again for {_it(missed)} if you still want."
+    return reply
+
+
+_DAYS_MAX = 31
+_DAYS_ARG = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": (
+        "Every date the owner named, YYYY-MM-DD in the business's time zone; a range "
+        "like Monday through Wednesday is each date in it."
+    ),
+}
 
 
 class _Calendar:
@@ -1116,6 +1224,16 @@ class _Calendar:
             raise OwnerChangeRefusedError(f"{format_day(day)} has already passed.")
         return day
 
+    async def days(self, business: BusinessRecord, args: Mapping[str, Any]) -> list[date]:
+        """The ``days`` asked for (one ``day`` still works), in order, each once."""
+
+        values = args.get("days", [args["day"]] if "day" in args else [])
+        if not isinstance(values, list) or not values:
+            raise OwnerChangeRefusedError("Which day? Give a date, like Tue Oct 6.")
+        if len(values) > _DAYS_MAX:
+            raise OwnerChangeRefusedError(f"I can change up to {_DAYS_MAX} days at a time.")
+        return sorted({await self.day(business, value) for value in values})
+
 
 async def _reachable[T](call: Awaitable[T]) -> T:
     try:
@@ -1129,9 +1247,10 @@ class BlockTimeTool:
     spec = OwnerAssistantTool(
         "change_block_time",
         "Propose blocking time on the booking calendar so no customer can book it, on the "
-        "website chat or the booking link. One date and one time range per change.",
+        "website chat or the booking link. One time range, on one or more dates (all of "
+        "them in one change); a whole day is 00:00 to 24:00.",
         {
-            "day": _DAY_ARG,
+            "days": _DAYS_ARG,
             "start": {"type": "string", "description": "Start, 24-hour HH:MM."},
             "end": {"type": "string", "description": "End, 24-hour HH:MM; 24:00 is midnight."},
         },
@@ -1143,35 +1262,79 @@ class BlockTimeTool:
 
     async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
         schedule = self._calendar.schedule(business)
-        day = await self._calendar.day(business, args.get("day"))
+        days = await self._calendar.days(business, args)
         start, end = _minute(args.get("start"), end=False), _minute(args.get("end"), end=True)
         if end <= start:
             raise OwnerChangeRefusedError("The end time must be after the start time.")
-        hours = await _reachable(schedule.day_hours(business.business_id, day))
-        if subtract_interval(hours.intervals, start, end) == hours.intervals:
+        open_days: list[date] = []
+        closed: list[date] = []
+        for day in days:
+            hours = await _reachable(schedule.day_hours(business.business_id, day))
+            shut = subtract_interval(hours.intervals, start, end) == hours.intervals
+            (closed if shut else open_days).append(day)
+        if not open_days:
             raise OwnerChangeRefusedError(
-                f"You aren't open then ({_span(day, start, end)}), so there's nothing to block."
+                f"You aren't open then ({_spans(days, start, end)}), so there's nothing to block."
             )
+        summary = (
+            f"I will block {_spans(open_days, start, end)} on your booking calendar, so no "
+            "customer can book it. Visits already booked stay as they are."
+        )
+        if closed:
+            summary += f" You aren't open then on {_days(closed)}, so I left {_it(closed)} out."
         return OwnerChangePlan(
-            summary=(
-                f"I will block {_span(day, start, end)} on your booking calendar, so no "
-                "customer can book it. Visits already booked stay as they are."
-            ),
-            arguments={"day": day.isoformat(), "start": start, "end": end},
+            summary=summary,
+            arguments={"days": [day.isoformat() for day in open_days], "start": start, "end": end},
         )
 
     async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
         schedule = self._calendar.schedule(business)
-        # Rechecked at YES: past midnight the day may be gone.
-        day = await self._calendar.day(business, arguments["day"])
         start, end = int(str(arguments["start"])), int(str(arguments["end"]))
+        values = arguments.get("days", [arguments.get("day")])
+        assert isinstance(values, list)
+        done: list[date] = []
+        missed: list[tuple[date, _DayNotChanged]] = []
+        # Day by day, each with its own undo record: one day failing leaves the
+        # others blocked, and each can be unblocked on its own.
+        for value in values:
+            day = date.fromisoformat(str(value))
+            try:
+                await self._block(business, schedule, day, start, end)
+            except _DayNotChanged as why:
+                missed.append((day, why))
+            else:
+                done.append(day)
+        _refuse_if_none_done(done, missed, "Not blocked")
+        return _outcome(
+            done,
+            missed,
+            did=f"blocked {_spans(done, start, end)}, so no one can book {_it(done)}",
+            not_done="Not blocked",
+            after=f'To open {_it(done)} again, text "{_reopen(done)}".',
+        )
+
+    async def _block(
+        self, business: BusinessRecord, schedule: ScheduleBlockPort, day: date, start: int, end: int
+    ) -> None:
+        try:
+            # Rechecked at YES: past midnight the day may be gone.
+            await self._calendar.day(business, day.isoformat())
+        except OwnerChangeRefusedError as refusal:
+            raise _DayNotChanged("it has already passed", str(refusal)) from refusal
+        unreachable = _DayNotChanged("I couldn't reach the calendar", BLOCK_UNREACHABLE_REPLY)
         now = self._calendar.now()
         business_id = business.business_id
         async with self._calendar.unit_of_work_factory() as unit_of_work:
-            hours = await _reachable(schedule.day_hours(business_id, day))
+            try:
+                hours = await schedule.day_hours(business_id, day)
+            except AvailabilityError as error:
+                raise unreachable from error
             remaining = subtract_interval(hours.intervals, start, end)
             if remaining == hours.intervals:
-                raise OwnerChangeRefusedError("That time isn't open any more, so nothing changed.")
+                raise _DayNotChanged(
+                    "that time isn't open any more",
+                    "That time isn't open any more, so nothing changed.",
+                )
             # Saved, with the hours it replaces, before Calendly is touched: a
             # write that lands and then errors can still be unblocked.
             block = CalendarBlock(
@@ -1196,26 +1359,26 @@ class BlockTimeTool:
                     # Landed if the range is closed now, whatever else changed.
                     landed = subtract_interval(now_open, start, end) == now_open
                 except AvailabilityError:
-                    raise OwnerChangeRefusedError(
-                        _BLOCK_UNSURE_REPLY.format(day=_key(day))
+                    raise _DayNotChanged(
+                        f'I couldn\'t tell whether it saved; text "unblock {_key(day)}" to be '
+                        "sure it's open",
+                        _BLOCK_UNSURE_REPLY.format(day=_key(day)),
+                        uncertain=True,
                     ) from error
                 if not landed:
                     await unit_of_work.calendar_blocks.save(
                         block.with_updates(state=CalendarBlockState.REMOVED)
                     )
                     await unit_of_work.commit()
-                    raise OwnerChangeRefusedError(BLOCK_UNREACHABLE_REPLY) from error
-        return (
-            f"Done: blocked {_span(day, start, end)}, so no one can book it. "
-            f'To open it again, text "unblock {_key(day)}".'
-        )
+                    raise unreachable from error
 
 
 class UnblockDayTool:
     spec = OwnerAssistantTool(
         "change_unblock_day",
-        "Propose removing every block on one date, so its usual hours can be booked again.",
-        {"day": _DAY_ARG},
+        "Propose removing every block on one or more dates (all of them in one change), so "
+        "their usual hours can be booked again.",
+        {"days": _DAYS_ARG},
     )
     sensitive = False
 
@@ -1224,48 +1387,102 @@ class UnblockDayTool:
 
     async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
         self._calendar.schedule(business)
-        day = await self._calendar.day(business, args.get("day"))
+        days = await self._calendar.days(business, args)
+        found: list[tuple[date, Sequence[CalendarBlock]]] = []
         async with self._calendar.unit_of_work_factory() as unit_of_work:
-            blocks = await unit_of_work.calendar_blocks.applied_on(business.business_id, day)
-        if not blocks:
-            raise OwnerChangeRefusedError(f"Nothing is blocked on {format_day(day)}.")
-        times = ", ".join(_hours(block) for block in blocks)
+            for day in days:
+                blocks = await unit_of_work.calendar_blocks.applied_on(business.business_id, day)
+                if blocks:
+                    found.append((day, blocks))
+        if not found:
+            raise OwnerChangeRefusedError(f"Nothing is blocked on {_days(days)}.")
+        listed = _and(
+            [
+                f"{format_day(day)} ({', '.join(_hours(block) for block in blocks)})"
+                for day, blocks in found
+            ]
+        )
+        summary = f"I will unblock {listed}, so your usual hours can be booked again."
+        unblocked = [day for day in days if day not in {day for day, _ in found}]
+        if unblocked:
+            summary += f" Nothing is blocked on {_days(unblocked)}, so I left {_it(unblocked)} out."
         return OwnerChangePlan(
-            summary=(
-                f"I will unblock {format_day(day)} ({times}), so your usual hours "
-                "can be booked again."
-            ),
+            summary=summary,
             # The blocks read back: YES must not remove one added since.
-            arguments={"day": day.isoformat(), "blocks": [str(b.block_id) for b in blocks]},
+            arguments={
+                "days": [
+                    {"day": day.isoformat(), "blocks": [str(b.block_id) for b in blocks]}
+                    for day, blocks in found
+                ]
+            },
         )
 
     async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
         schedule = self._calendar.schedule(business)
-        day = date.fromisoformat(str(arguments["day"]))
-        named = arguments["blocks"]
-        assert isinstance(named, list)
+        entries = arguments.get(
+            "days", [{"day": arguments.get("day"), "blocks": arguments.get("blocks")}]
+        )
+        assert isinstance(entries, list)
+        done: list[date] = []
+        missed: list[tuple[date, _DayNotChanged]] = []
+        for entry in entries:
+            assert isinstance(entry, dict)
+            day = date.fromisoformat(str(entry["day"]))
+            named = entry["blocks"]
+            assert isinstance(named, list)
+            try:
+                await self._unblock(business, schedule, day, [str(block) for block in named])
+            except _DayNotChanged as why:
+                missed.append((day, why))
+            else:
+                done.append(day)
+        _refuse_if_none_done(done, missed, "Still blocked")
+        return _outcome(
+            done,
+            missed,
+            did=f"unblocked {_days(done)}",
+            not_done="Still blocked",
+            after="Your usual hours are open again.",
+        )
+
+    async def _unblock(
+        self, business: BusinessRecord, schedule: ScheduleBlockPort, day: date, named: list[str]
+    ) -> None:
         now = self._calendar.now()
         async with self._calendar.unit_of_work_factory() as unit_of_work:
             blocks = await unit_of_work.calendar_blocks.applied_on(business.business_id, day)
-            if sorted(str(block.block_id) for block in blocks) != sorted(map(str, named)):
-                raise OwnerChangeRefusedError(
+            if sorted(str(block.block_id) for block in blocks) != sorted(named):
+                raise _DayNotChanged(
+                    "its blocks changed since I asked",
                     f"The blocks on {format_day(day)} changed since I asked, so nothing "
-                    "changed. Ask again if you still want it open."
+                    "changed. Ask again if you still want it open.",
                 )
             previous = blocks[0].previous
-            await _reachable(
-                schedule.set_day_hours(
-                    business.business_id,
-                    day,
-                    previous.intervals if previous is not None and previous.overridden else None,
-                )
-            )
+            target = previous.intervals if previous is not None and previous.overridden else None
+            try:
+                await schedule.set_day_hours(business.business_id, day, target)
+            except AvailabilityError as error:
+                # The write may have landed: read the day back before saying so.
+                try:
+                    hours = await schedule.day_hours(business.business_id, day)
+                except AvailabilityError:
+                    raise _DayNotChanged(
+                        "I couldn't tell whether it opened; "
+                        f'text "unblock {_key(day)}" to be sure',
+                        "I couldn't reach the calendar, so I can't tell whether "
+                        f'{format_day(day)} opened. Text "unblock {_key(day)}" to try again.',
+                        uncertain=True,
+                    ) from error
+                opened = not hours.overridden if target is None else hours.intervals == target
+                if not opened:
+                    raise _DayNotChanged(
+                        "I couldn't reach the calendar", BLOCK_UNREACHABLE_REPLY
+                    ) from error
             for block in blocks:
                 await unit_of_work.calendar_blocks.save(
                     block.with_updates(state=CalendarBlockState.REMOVED, decided_at=now)
                 )
             await unit_of_work.commit()
-        return f"Done: unblocked {format_day(day)}. Your usual hours are open again."
 
 
 def calendar_change_tools(
@@ -1278,3 +1495,132 @@ def calendar_change_tools(
         return ()
     calendar = _Calendar(unit_of_work_factory, schedule, now)
     return (BlockTimeTool(calendar), UnblockDayTool(calendar))
+
+
+# The read-back, and any failure notice, quote the whole message in one owner text.
+MESSAGE_LIMITS = {"text": 480, "e-mail": 900}
+
+
+def _phone_text(phone: str) -> str:
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    return phone
+
+
+def _route(customer: CustomerRecord, can_text: bool) -> tuple[str, str]:
+    """By text only to a customer who said yes to texts, when texting is set up;
+    otherwise e-mail."""
+
+    if can_text and customer.sms_consent is True and customer.phone:
+        return "text", customer.phone
+    return "e-mail", customer.email
+
+
+class MessageCustomerTool:
+    spec = OwnerAssistantTool(
+        "change_message_customer",
+        "Propose sending one of the business's customers a message from the owner, word "
+        "for word. It goes by text only to a customer who agreed to texts, otherwise by "
+        "e-mail. The owner sees the full message and the recipient before YES.",
+        {
+            "customer": _CUSTOMER,
+            "message": {
+                "type": "string",
+                "description": "The exact words to send, as the owner gave them. Add nothing.",
+            },
+        },
+    )
+    sensitive = True
+
+    def __init__(self, unit_of_work_factory: Callable[[], UnitOfWork], can_text: bool) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._can_text = can_text
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        message = str(args.get("message") or "").strip()
+        if not message:
+            raise OwnerChangeRefusedError("Say what the message should say.")
+        customer = await self._customer(business, args.get("customer"))
+        channel, address = _route(customer, self._can_text)
+        if len(message) > MESSAGE_LIMITS[channel]:
+            raise OwnerChangeRefusedError(
+                f"That's {len(message)} characters; a {channel} from me can be at most "
+                f"{MESSAGE_LIMITS[channel]}. Make it shorter."
+            )
+        subject = f"Message from {business.display_name or business.name}"
+        if channel == "text":
+            how = f"text {customer.name} at {_phone_text(address)}"
+        else:
+            how = f'e-mail {customer.name} at {address}, subject "{subject}"'
+        return OwnerChangePlan(
+            summary=f'I will {how}, this message, word for word:\n"{message}"',
+            arguments={
+                "customer_id": str(customer.customer_id),
+                "name": customer.name,
+                "channel": channel,
+                "address": address,
+                "subject": subject,
+                "message": message,
+                "key": uuid4().hex,
+            },
+        )
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        customer_id = CustomerId(UUID(_str(arguments, "customer_id")))
+        channel, address = _str(arguments, "channel"), _str(arguments, "address")
+        key = f"{OWNER_MESSAGE_KEY_PREFIX}{business.business_id}:{_str(arguments, 'key')}"
+        async with self._unit_of_work_factory() as unit_of_work:
+            customer = await unit_of_work.customers.get(business.business_id, customer_id)
+            if customer is None or _route(customer, self._can_text) != (channel, address):
+                raise OwnerChangeRefusedError(
+                    f"{arguments['name']}'s contact details changed since I read them "
+                    "back. Ask me again."
+                )
+            if channel == "text":
+                command = intake_customer_text_command(
+                    business.business_id,
+                    customer_id=customer_id,
+                    phone=address,
+                    text=_str(arguments, "message"),
+                    idempotency_key=key,
+                )
+            else:
+                command = intake_customer_email_command(
+                    IntakeCustomerEmail(
+                        business_id=business.business_id,
+                        to=address,
+                        subject=_str(arguments, "subject"),
+                        body=_str(arguments, "message"),
+                        idempotency_key=key,
+                    )
+                )
+            await unit_of_work.outbox.enqueue(command)
+            await unit_of_work.commit()
+        return f"Done: your message to {arguments['name']} is on its way by {channel}."
+
+    async def _customer(self, business: BusinessRecord, target: object) -> CustomerRecord:
+        needle = _needle(target)
+        async with self._unit_of_work_factory() as unit_of_work:
+            customers = await unit_of_work.customers.list_for_business(business.business_id)
+        exact = [c for c in customers if c.name.casefold() == needle]
+        found = exact or [
+            c for c in customers if needle in (c.display_name or "").casefold() or needle == c.email
+        ]
+        if not found:
+            raise OwnerChangeRefusedError(
+                f'I can\'t find a customer named "{target}". I can only message customers '
+                "in your customer list."
+            )
+        if len(found) > 1:
+            names = ", ".join(c.name for c in found[:5])
+            raise OwnerChangeRefusedError(f"More than one matches ({names}). Say which one.")
+        return found[0]
+
+
+def message_change_tools(
+    unit_of_work_factory: Callable[[], UnitOfWork], *, can_text: bool
+) -> tuple[OwnerChangeTool, ...]:
+    return (MessageCustomerTool(unit_of_work_factory, can_text),)
