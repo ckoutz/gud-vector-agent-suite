@@ -1,10 +1,10 @@
 # Güd Vector — Project Status Dashboard
 
-**Last updated:** 2026-10-15 13:05 UTC (auto-refreshed by the Devin dashboard automation)
+**Last updated:** 2026-10-15 19:05 UTC (auto-refreshed by the Devin dashboard automation)
 
 ## Where we are
 
-Nothing changed since the 07:05 refresh. No new merges, no new PRs. The GVAS web service answers `/healthz` 200 `{"status":"ok"}` in 0.30 s. `/health` and `/` return the app's own FastAPI 404, which is expected because those routes don't exist. The deployed OpenAPI still lists 41 paths, including `/v1/owner/commands` (#87). Whether #88–#92 are deployed can't be told from the public surface, and the Railway API isn't reachable from this run. Telnyx toll-free verification for +18775411550 is **Verified**. gudvector.com resolves (216.198.79.1, Vercel) and returns 200. On both gudvector.com and gudvector-site.vercel.app, an unknown quote token renders "couldn't find", so both are wired to GVAS. Stripe is in sandbox, the production webhook is `enabled` with 7 events, and the route rejects unsigned posts with 401 `invalid_signature`. Two PRs are open, both clean with 4/4 checks passing: GVAS #90 and site #34. **Tooling note:** this run's GitHub write access was degraded (git clone through the Devin git proxy returned 403, and the PR tool returned Unauthorized). PR data comes from the GitHub REST API.
+Nothing new merged or opened since the 13:05 refresh. Two PRs are still open, both clean with 4/4 checks passing: GVAS #90 and site #34. **New this run:** GitHub deployment statuses show the Railway web service `gud-vector-agent-suite / production` deployed GVAS main `6b73d70` (#92) successfully at 02:17 UTC on 2026-10-15. That means #88–#92 are live on web-production-9d848, and the earlier "deployed commit unknown" note is resolved. The Larkspur demo web (`web-demo-5831`) is on the same commit. GVAS `/healthz` returns 200 `{"status":"ok"}` (0.35 s). `/health` and `/` return the app's own FastAPI 404 because those routes don't exist. OpenAPI lists 41 paths. Vercel production for all three site projects is on site main `89a6584`. gudvector.com resolves (216.198.79.1, Vercel) and returns 200. On both domains, an unknown quote token renders "couldn't find", so both are wired to GVAS. Telnyx toll-free verification for +18775411550 is **Verified**. Stripe is in sandbox and the production webhook is `enabled` with 7 events. **Tooling note:** git clone through the Devin git proxy returned 403 again, and the Railway and Vercel APIs aren't on this run's network allowlist. Data comes from the GitHub REST API and public endpoints. This file was written through the GitHub contents API.
 
 ## Demo pipeline
 
@@ -15,7 +15,7 @@ Status comes from public endpoints and API checks only. This refresh did not run
 | Contact form | LIVE | gudvector.com and gudvector-site.vercel.app 200 (Resend). |
 | Calendly | LIVE | Lookup/availability/booking deployed. The `/calendly/events` webhook is **not mounted** (not in OpenAPI), so scheduling-link bookings fall back to day-only matching. |
 | Quote drafting | LIVE | Slack/Telnyx owner channels deployed; backend healthy. |
-| Owner approval | LIVE | Slack/SMS commands, signed e-mail links and dashboard approve/decline deployed. Owner-texts tools #83–#92 are merged; #90 is PR OPEN; whether #88–#92 are deployed is unknown. |
+| Owner approval | LIVE | Slack/SMS commands, signed e-mail links and dashboard approve/decline deployed. Owner-texts tools #78–#92 deployed (web on `6b73d70`); #90 (edit customer) is PR OPEN. |
 | Email/SMS delivery | LIVE | Resend e-mail. Telnyx TFV **Verified**; customer SMS goes out when `sms_consent = true`. |
 | /q/\<token\> portal | LIVE | `/q/nonexistent-token` 200 "couldn't find" on both domains. |
 | Stripe payment | LIVE (sandbox) | Webhook `enabled`, 7 events, livemode=false; unsigned post → 401 `invalid_signature`. |
@@ -26,8 +26,8 @@ Status comes from public endpoints and API checks only. This refresh did not run
 
 | Repo | PR | Title | Base | Mergeable | CI | Age | Merge order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| gud-vector-agent-suite | [#90](https://github.com/ckoutz/gud-vector-agent-suite/pull/90) | Owner texts: change a customer's name or phone in plain words, behind YES | main | MERGEABLE | 4/4 passing | 1.5 days | **1**. Independent. Deploy web afterwards. |
-| gudvector-site | [#34](https://github.com/ckoutz/gudvector-site/pull/34) | Owner Settings: "Changes by text", the log of every change asked for by text | main | MERGEABLE | 4/4 passing | 1.5 days | **2**. Any time; its backend (`GET /v1/owner/commands`, #87) is live. |
+| gud-vector-agent-suite | [#90](https://github.com/ckoutz/gud-vector-agent-suite/pull/90) | Owner texts: change a customer's name or phone in plain words, behind YES | main | MERGEABLE (clean) | 4/4 passing | 1.7 days | **1**. Independent. Check the Railway web deploy afterwards. |
+| gudvector-site | [#34](https://github.com/ckoutz/gudvector-site/pull/34) | Owner Settings: "Changes by text", the log of every change asked for by text | main | MERGEABLE (clean) | 4/4 passing | 1.7 days | **2**. Any time; its backend (`GET /v1/owner/commands`, #87) is live. |
 
 No stacked PRs.
 
@@ -35,13 +35,14 @@ No stacked PRs.
 
 | Target | Result |
 | --- | --- |
-| GVAS main | `6b73d70` 2026-10-15 02:16 UTC: Merge #92 (owner texts: message a customer) |
-| GVAS web `/health` | 404 `{"detail":"Not Found"}` (0.36 s): the app's own 404, because the route doesn't exist. `/` gives the same 404 (0.37 s). |
-| GVAS web `/healthz` | **200** `{"status":"ok"}` (0.30 s) |
-| GVAS web deployed commit | unknown (no Railway API access). It includes #87 or later. |
-| gudvector-site main | `89a6584` 2026-10-12 20:22 UTC: Merge #33 (dashboard behind a proxy) |
-| gudvector-site.vercel.app | `/` 200 (0.47 s); `/q/nonexistent-token` 200 "couldn't find" (1.51 s). No "temporarily unavailable". |
-| gudvector.com | Resolves (216.198.79.1, Vercel); `/` 200 (0.30 s); `/q/nonexistent-token` 200 "couldn't find" (0.36 s). **Domain is up.** |
+| GVAS main | `6b73d70` 2026-10-15 02:16 UTC: Merge #92 (owner texts: message a customer). Main CI 4/4 success. |
+| GVAS web deployed commit | **`6b73d70`** (GitHub deployment `gud-vector-agent-suite / production` success, 2026-10-15 02:17 UTC, web-production-9d848). Worker also success on `6b73d70`. |
+| Larkspur demo (Railway) | web + worker on `6b73d70`, success (web-demo-5831). |
+| GVAS web `/healthz` | **200** `{"status":"ok"}` (0.35 s) |
+| GVAS web `/health`, `/` | 404 `{"detail":"Not Found"}` (0.37 s / 0.28 s): the app's own 404, because the routes don't exist. |
+| gudvector-site main | `89a6584` 2026-10-12 20:22 UTC: Merge #33. Vercel Production success for gudvector-site, gudvector-sitev2 and larkspur-dashboard. |
+| gudvector-site.vercel.app | `/` 200 (0.40 s); `/q/nonexistent-token` 200 "couldn't find" (1.24 s). No "temporarily unavailable". |
+| gudvector.com | Resolves (216.198.79.1, Vercel); `/` 200 (0.10–0.27 s); `/q/nonexistent-token` 200 "couldn't find" (0.55 s). www redirects 308 to the apex. **Domain is up.** |
 
 ## Integrations
 
@@ -58,7 +59,8 @@ No stacked PRs.
 ## Owner to-do
 
 - [ ] Merge open PRs: GVAS #90, then site #34 (independent, clean, green). No stacks.
-- [ ] Trigger a Railway **web** deploy after backend merges (web doesn't auto-deploy; worker does). Confirm #88–#92 (and #90) are live.
+- [ ] After merging #90, confirm the Railway **web** deploy lands. Web may not auto-deploy on push, although `6b73d70` did reach web 1 minute after merge.
+- [x] Railway web is on GVAS main `6b73d70`; #88–#92 are deployed.
 - [ ] Set `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` and register the Calendly webhook (`/calendly/events` not mounted).
 - [x] Namecheap: registrant WHOIS verification done. gudvector.com resolves and returns 200.
 - [x] gudvector.com DNS points at Vercel and serves the current gudvector-site build.
