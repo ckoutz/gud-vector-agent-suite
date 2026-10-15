@@ -34,6 +34,21 @@ SERVICE_REQUEST_STATUS_NEW = "new"
 SERVICE_REQUEST_MAX_CHARS = 2000
 
 
+def customer_phone(value: str) -> str | None:
+    """E.164 for a typed phone number (ten digits read as US), else ``None``."""
+
+    if any(character.isalpha() for character in value):
+        return None  # "ext 123", "x12": an extension isn't part of the number.
+    digits = "".join(character for character in value if character.isdigit())
+    if value.strip().startswith("+"):
+        return f"+{digits}" if 8 <= len(digits) <= 15 else None
+    if len(digits) == 10:
+        return f"+1{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    return None
+
+
 class CustomerModel(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -246,6 +261,21 @@ class CustomerRepository(Protocol):
         self, business_id: BusinessId, customer_id: CustomerId, consent: bool, at: datetime
     ) -> None:
         """Records the answer unless the customer already has a newer one."""
+        ...
+
+    async def update_details(
+        self,
+        business_id: BusinessId,
+        customer_id: CustomerId,
+        *,
+        display_name: str | None,
+        phone: str | None,
+        expected: tuple[str | None, str | None],
+        now: datetime,
+    ) -> CustomerRecord | None:
+        """Sets the name and phone if they are still ``expected`` (name, phone),
+        else ``None``, as for no such customer. A new phone clears a yes to
+        texts: that number never agreed."""
         ...
 
 
