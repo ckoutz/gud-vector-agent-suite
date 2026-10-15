@@ -7,7 +7,10 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from gvas.composition.failure_notices import owner_message_recipient
+from gvas.composition.failure_notices import (
+    owner_message_failure_notice,
+    owner_message_recipient,
+)
 from gvas.composition.owner_change_tools import message_change_tools
 from gvas.domain.identifiers import CustomerId
 from gvas.domain.intake import (
@@ -160,4 +163,9 @@ def test_a_failed_owner_message_gets_its_own_notice_not_the_booking_one() -> Non
         )
 
     assert owner_message_recipient(text("owner-message:b:k")) == "+15105550161"
+    assert owner_message_failure_notice(text("owner-message:b:k")) == (
+        'Your message to +15105550161 could not be sent: "See you at 10."\n'
+        "Send it to them yourself, or ask me to send it again."
+    )
+    assert owner_message_failure_notice(text("intake:booking:k")) is None
     assert owner_message_recipient(text("intake:booking:k")) is None

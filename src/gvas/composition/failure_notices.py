@@ -209,11 +209,7 @@ class NotifyExhaustedCommandService:
             return None
         summary, recovery = guidance
         text = f"{summary}\n{recovery}"
-        if owner_message_recipient(command) is not None:
-            text = (
-                f"Your message to {owner_message_recipient(command)} could not be sent.\n"
-                "Send it to them yourself, or ask me to send it again."
-            )
+        text = owner_message_failure_notice(command) or text
         if command.command_type == QUOTE_TEXT_COMMAND_TYPE:
             quote = await self._quote(command)
             if quote is not None:
@@ -339,6 +335,22 @@ class NotifyExhaustedCommandService:
             conversation_ref=case.conversation_ref,
             inbound_message_id=case.origin_inbound_message_id,
         )
+
+
+def owner_message_failure_notice(command: OutboxCommand) -> str | None:
+    """Names the recipient and quotes the message, so the owner knows which
+    message to resend even when several to one customer failed."""
+
+    recipient = owner_message_recipient(command)
+    if recipient is None:
+        return None
+    words = str(command.payload.get("body") or command.payload.get("text") or "")
+    if len(words) > 160:
+        words = words[:159].rstrip() + "…"
+    return (
+        f'Your message to {recipient} could not be sent: "{words}"\n'
+        "Send it to them yourself, or ask me to send it again."
+    )
 
 
 def owner_message_recipient(command: OutboxCommand) -> str | None:
