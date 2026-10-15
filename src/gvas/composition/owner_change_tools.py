@@ -984,10 +984,23 @@ class _DayNotChanged(Exception):  # noqa: N818 - a per-day outcome, not a failur
     """One day of a change that didn't happen: ``reason`` for a list of days,
     ``reply`` when it was the only day."""
 
-    def __init__(self, reason: str, reply: str) -> None:
+    def __init__(self, reason: str, reply: str, *, uncertain: bool = False) -> None:
         super().__init__(reply)
         self.reason = reason
         self.reply = reply
+        self.uncertain = uncertain
+
+
+def _misses(missed: Sequence[tuple[date, _DayNotChanged]], not_done: str) -> str:
+    """``Not blocked: Fri Oct 16 (why). Not sure: Sat Oct 17 (why).``"""
+
+    parts = []
+    for label, uncertain in ((not_done, False), ("Not sure", True)):
+        days = [(day, why) for day, why in missed if why.uncertain is uncertain]
+        if days:
+            reasons = "; ".join(f"{format_day(day)} ({why.reason})" for day, why in days)
+            parts.append(f"{label}: {reasons}.")
+    return " ".join(parts)
 
 
 def _refuse_if_none_done(
@@ -997,8 +1010,9 @@ def _refuse_if_none_done(
         return
     if len(missed) == 1:
         raise OwnerChangeRefusedError(missed[0][1].reply)
-    reasons = "; ".join(f"{format_day(day)} ({why.reason})" for day, why in missed)
-    raise OwnerChangeRefusedError(f"Nothing changed. {not_done}: {reasons}.")
+    unsure = any(why.uncertain for _, why in missed)
+    header = "I couldn't confirm any change." if unsure else "Nothing changed."
+    raise OwnerChangeRefusedError(f"{header} {_misses(missed, not_done)}")
 
 
 def _outcome(
@@ -1013,8 +1027,7 @@ def _outcome(
 
     reply = f"Done: {did}. {after}"
     if missed:
-        reasons = "; ".join(f"{format_day(day)} ({why.reason})" for day, why in missed)
-        reply += f"\n{not_done}: {reasons}. Ask again for {_it(missed)} if you still want."
+        reply += f"\n{_misses(missed, not_done)} Ask again for {_it(missed)} if you still want."
     return reply
 
 
@@ -1200,6 +1213,7 @@ class BlockTimeTool:
                         f'I couldn\'t tell whether it saved; text "unblock {_key(day)}" to be '
                         "sure it's open",
                         _BLOCK_UNSURE_REPLY.format(day=_key(day)),
+                        uncertain=True,
                     ) from error
                 if not landed:
                     await unit_of_work.calendar_blocks.save(
@@ -1294,16 +1308,26 @@ class UnblockDayTool:
                     "changed. Ask again if you still want it open.",
                 )
             previous = blocks[0].previous
+            target = previous.intervals if previous is not None and previous.overridden else None
             try:
-                await schedule.set_day_hours(
-                    business.business_id,
-                    day,
-                    previous.intervals if previous is not None and previous.overridden else None,
-                )
+                await schedule.set_day_hours(business.business_id, day, target)
             except AvailabilityError as error:
-                raise _DayNotChanged(
-                    "I couldn't reach the calendar", BLOCK_UNREACHABLE_REPLY
-                ) from error
+                # The write may have landed: read the day back before saying so.
+                try:
+                    hours = await schedule.day_hours(business.business_id, day)
+                except AvailabilityError:
+                    raise _DayNotChanged(
+                        "I couldn't tell whether it opened; "
+                        f'text "unblock {_key(day)}" to be sure',
+                        "I couldn't reach the calendar, so I can't tell whether "
+                        f'{format_day(day)} opened. Text "unblock {_key(day)}" to try again.',
+                        uncertain=True,
+                    ) from error
+                opened = not hours.overridden if target is None else hours.intervals == target
+                if not opened:
+                    raise _DayNotChanged(
+                        "I couldn't reach the calendar", BLOCK_UNREACHABLE_REPLY
+                    ) from error
             for block in blocks:
                 await unit_of_work.calendar_blocks.save(
                     block.with_updates(state=CalendarBlockState.REMOVED, decided_at=now)

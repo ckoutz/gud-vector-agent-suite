@@ -18,6 +18,7 @@ from composition_fakes import (
     application_ports,
 )
 from gvas.application.owner_assistant import (
+    ALREADY_ANSWERED_REPLY,
     CHANGE_FAILED_REPLY,
     CONFIRM_PROMPT,
     NO_CHANGE_SET_UP_NOTE,
@@ -343,6 +344,29 @@ async def test_a_yes_with_more_on_it_keeps_the_change_waiting(setup: Setup) -> N
     assert len(setup.model.requests) == requests  # the model never saw it
     assert setup.tool.applied == []
     assert await setup.text("yep") == 'Done: added the note "gate".'
+
+
+@pytest.mark.asyncio
+async def test_a_change_another_yes_claimed_is_not_called_cancelled(setup: Setup) -> None:
+    await setup.text("note gate")
+    async with SqlUnitOfWorkFactory(setup.session_factory)() as unit_of_work:
+        command = await unit_of_work.owner_commands.latest_proposed(setup.business_id)
+        assert command is not None
+    assistant = setup.application.owner_assistant
+    assert assistant is not None
+    # A YES claims it between this "no" reading the proposal and closing it.
+    pending = assistant._pending
+
+    async def claimed_meanwhile(business_id: BusinessId, now: datetime) -> OwnerCommand | None:
+        found = await pending(business_id, now)
+        async with SqlUnitOfWorkFactory(setup.session_factory)() as unit_of_work:
+            assert await unit_of_work.owner_commands.claim(command, datetime.now(UTC))
+            await unit_of_work.commit()
+        return found
+
+    assistant._pending = claimed_meanwhile  # type: ignore[method-assign]
+
+    assert await setup.text("no") == ALREADY_ANSWERED_REPLY
 
 
 def _command(business_id: BusinessId, now: datetime) -> OwnerCommand:

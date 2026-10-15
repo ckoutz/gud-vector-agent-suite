@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.application.calendar_blocks import BLOCK_NOT_CONFIGURED_REPLY
 from gvas.composition.owner_change_tools import calendar_change_tools
-from gvas.domain.calendar_blocks import Interval, format_day, subtract_interval
+from gvas.domain.calendar_blocks import DayHours, Interval, format_day, subtract_interval
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import AvailabilityError
 from gvas.domain.owner_assistant import OwnerChangeRefusedError, OwnerChangeTool
@@ -53,6 +53,26 @@ class OneDayDownSchedule(ScheduleFake):
         if day == self.down:
             raise AvailabilityError("calendly returned http 502")
         await super().set_day_hours(business_id, day, intervals)
+
+
+class BlindSchedule(ScheduleFake):
+    """The first write errors, and from then on nothing can be read back."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.blind = False
+
+    async def day_hours(self, business_id: BusinessId, day: date) -> DayHours:
+        if self.blind:
+            raise AvailabilityError("calendly returned http 502")
+        return await super().day_hours(business_id, day)
+
+    async def set_day_hours(
+        self, business_id: BusinessId, day: date, intervals: tuple[Interval, ...] | None
+    ) -> None:
+        await super().set_day_hours(business_id, day, intervals)
+        self.blind = True
+        raise AvailabilityError("calendly returned http 502")
 
 
 class ElsewhereSchedule(ScheduleFake):
@@ -378,3 +398,39 @@ async def test_days_where_the_time_is_closed_are_left_out_and_said(
     plan = await block.prepare(business, {"days": _iso(DAY, NEXT), "start": "9:00", "end": "10:00"})
     assert plan.summary.endswith(f"You aren't open then on {format_day(NEXT)}, so I left it out.")
     assert plan.arguments["days"] == _iso(DAY)
+
+
+@pytest.mark.asyncio
+async def test_a_block_that_may_have_saved_is_never_called_nothing_changed(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    schedule = BlindSchedule()
+    business, block, _ = await _tools(session_factory, schedule)
+    plan = await block.prepare(business, {"days": _iso(DAY, NEXT), "start": "9:00", "end": "10:00"})
+
+    with pytest.raises(OwnerChangeRefusedError) as refused:
+        await block.apply(business, plan.arguments)
+    assert str(refused.value) == (
+        f"I couldn't confirm any change. Not blocked: {format_day(NEXT)} (I couldn't reach the "
+        f"calendar). Not sure: {format_day(DAY)} (I couldn't tell whether it saved; text "
+        f'"unblock {DAY.month}/{DAY.day}" to be sure it\'s open).'
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unblock_that_lands_then_errors_counts_as_opened(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    schedule = ScheduleFake()
+    business, block, unblock = await _tools(session_factory, schedule)
+    plan = await block.prepare(business, {"days": _iso(DAY, NEXT), "start": "9:00", "end": "10:00"})
+    await block.apply(business, plan.arguments)
+    undo = await unblock.prepare(business, {"days": _iso(DAY, NEXT)})
+    schedule.fail_after_write = True
+
+    assert await unblock.apply(business, undo.arguments) == (
+        f"Done: unblocked {format_day(DAY)} and {format_day(NEXT)}. "
+        "Your usual hours are open again."
+    )
+    with pytest.raises(OwnerChangeRefusedError, match="Nothing is blocked"):
+        await unblock.prepare(business, {"days": _iso(DAY, NEXT)})

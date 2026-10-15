@@ -67,6 +67,9 @@ SETUP_REPLY = (
     "a setup problem on Güd Vector's side. The dashboard has everything in the meantime."
 )
 CONFIRM_PROMPT = "Reply YES in the next 10 minutes to do it, or NO to cancel it."
+ALREADY_ANSWERED_REPLY = (
+    "That change was already answered by another message, so this one didn't change it."
+)
 ONE_CHANGE_NOTE = (
     "(I can set up one change per YES, so the rest of your text isn't in it. "
     "Once this one is done or cancelled, ask me for the rest.)"
@@ -538,12 +541,15 @@ class OwnerAssistant:
                 return await self._confirm(business, pending)
             if same_thread and is_yes_and_more(text):
                 return still_waiting_note(pending.summary)
-            await self._close(pending, OwnerCommandState.CANCELLED, now)
-            cancelled = cancelled_note(pending.summary)
-            # A YES from another thread is not the one this change asked for.
-            if is_yes(text) or is_no(text):
-                return cancelled
-            cancelled += "\n\n"
+            if not await self._close(pending, OwnerCommandState.CANCELLED, now):
+                if is_yes(text) or is_no(text):
+                    return ALREADY_ANSWERED_REPLY
+            else:
+                cancelled = cancelled_note(pending.summary)
+                # A YES from another thread is not the one this change asked for.
+                if is_yes(text) or is_no(text):
+                    return cancelled
+                cancelled += "\n\n"
         elif is_yes(text):
             return NOTHING_PENDING_REPLY
         if self._ceilings is not None and await self._ceilings.is_reached(
@@ -639,10 +645,13 @@ class OwnerAssistant:
         await self._close(command, OwnerCommandState.EXPIRED, now)
         return None
 
-    async def _close(self, command: OwnerCommand, state: OwnerCommandState, now: datetime) -> None:
+    async def _close(self, command: OwnerCommand, state: OwnerCommandState, now: datetime) -> bool:
+        """False when the proposal was answered meanwhile (a YES claimed it)."""
+
         async with self._unit_of_work_factory() as unit_of_work:
-            await unit_of_work.owner_commands.close(command, state, now)
+            closed = await unit_of_work.owner_commands.close(command, state, now)
             await unit_of_work.commit()
+        return closed
 
     async def _propose(
         self,
