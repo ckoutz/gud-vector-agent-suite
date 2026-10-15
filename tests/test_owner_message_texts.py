@@ -153,12 +153,12 @@ async def test_without_texting_set_up_a_consented_customer_gets_e_mail(
 
 
 def test_a_failed_owner_message_gets_its_own_notice_not_the_booking_one() -> None:
-    def text(key: str) -> Any:
+    def text(key: str, words: str = "See you at 10.") -> Any:
         return intake_customer_text_command(
             business_id=uuid4(),  # type: ignore[arg-type]
             customer_id=CustomerId(uuid4()),
             phone="+15105550161",
-            text="See you at 10.",
+            text=words,
             idempotency_key=key,
         )
 
@@ -168,4 +168,6 @@ def test_a_failed_owner_message_gets_its_own_notice_not_the_booking_one() -> Non
         "Send it to them yourself, or ask me to send it again."
     )
     assert owner_message_failure_notice(text("intake:booking:k")) is None
+    long = "x" * 300
+    assert f'"{long}"' in str(owner_message_failure_notice(text("owner-message:b:k", long)))
     assert owner_message_recipient(text("intake:booking:k")) is None

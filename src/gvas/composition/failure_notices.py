@@ -338,15 +338,13 @@ class NotifyExhaustedCommandService:
 
 
 def owner_message_failure_notice(command: OutboxCommand) -> str | None:
-    """Names the recipient and quotes the message, so the owner knows which
-    message to resend even when several to one customer failed."""
+    """Names the recipient and quotes the whole message, so the owner knows
+    which message to resend even when several to one customer failed."""
 
     recipient = owner_message_recipient(command)
     if recipient is None:
         return None
     words = str(command.payload.get("body") or command.payload.get("text") or "")
-    if len(words) > 160:
-        words = words[:159].rstrip() + "…"
     return (
         f'Your message to {recipient} could not be sent: "{words}"\n'
         "Send it to them yourself, or ask me to send it again."
