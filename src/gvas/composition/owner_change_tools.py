@@ -46,6 +46,7 @@ from gvas.domain.owner_assistant import (
     OwnerChangePlan,
     OwnerChangeRefusedError,
     OwnerChangeTool,
+    OwnerChangeUncertainError,
 )
 from gvas.domain.payments import LedgerPayment, PaymentKind, PaymentMethod, PaymentSource
 from gvas.domain.ports import ScheduleBlockPort
@@ -1008,11 +1009,12 @@ def _refuse_if_none_done(
 ) -> None:
     if done:
         return
-    if len(missed) == 1:
-        raise OwnerChangeRefusedError(missed[0][1].reply)
     unsure = any(why.uncertain for _, why in missed)
+    error = OwnerChangeUncertainError if unsure else OwnerChangeRefusedError
+    if len(missed) == 1:
+        raise error(missed[0][1].reply)
     header = "I couldn't confirm any change." if unsure else "Nothing changed."
-    raise OwnerChangeRefusedError(f"{header} {_misses(missed, not_done)}")
+    raise error(f"{header} {_misses(missed, not_done)}")
 
 
 def _outcome(

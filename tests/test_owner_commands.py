@@ -369,6 +369,28 @@ async def test_a_change_another_yes_claimed_is_not_called_cancelled(setup: Setup
     assert await setup.text("no") == ALREADY_ANSWERED_REPLY
 
 
+@pytest.mark.asyncio
+async def test_other_words_after_a_claimed_change_say_it_was_answered(setup: Setup) -> None:
+    await setup.text("note gate")
+    async with SqlUnitOfWorkFactory(setup.session_factory)() as unit_of_work:
+        command = await unit_of_work.owner_commands.latest_proposed(setup.business_id)
+        assert command is not None
+    assistant = setup.application.owner_assistant
+    assert assistant is not None
+    pending = assistant._pending
+
+    async def claimed_meanwhile(business_id: BusinessId, now: datetime) -> OwnerCommand | None:
+        found = await pending(business_id, now)
+        async with SqlUnitOfWorkFactory(setup.session_factory)() as unit_of_work:
+            assert await unit_of_work.owner_commands.claim(command, datetime.now(UTC))
+            await unit_of_work.commit()
+        return found
+
+    assistant._pending = claimed_meanwhile  # type: ignore[method-assign]
+
+    assert await setup.text("hello") == f"{ALREADY_ANSWERED_REPLY}\n\nHi there."
+
+
 def _command(business_id: BusinessId, now: datetime) -> OwnerCommand:
     return OwnerCommand(
         command_id=uuid4(),

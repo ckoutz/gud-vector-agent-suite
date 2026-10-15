@@ -10,7 +10,11 @@ from gvas.composition.owner_change_tools import calendar_change_tools
 from gvas.domain.calendar_blocks import DayHours, Interval, format_day, subtract_interval
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import AvailabilityError
-from gvas.domain.owner_assistant import OwnerChangeRefusedError, OwnerChangeTool
+from gvas.domain.owner_assistant import (
+    OwnerChangeRefusedError,
+    OwnerChangeTool,
+    OwnerChangeUncertainError,
+)
 from gvas.domain.repositories import BusinessRecord
 from gvas.infrastructure.repositories import SqlBusinessRepository
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
@@ -410,6 +414,7 @@ async def test_a_block_that_may_have_saved_is_never_called_nothing_changed(
 
     with pytest.raises(OwnerChangeRefusedError) as refused:
         await block.apply(business, plan.arguments)
+    assert refused.type is OwnerChangeUncertainError  # never "Nothing was changed: …"
     assert str(refused.value) == (
         f"I couldn't confirm any change. Not blocked: {format_day(NEXT)} (I couldn't reach the "
         f"calendar). Not sure: {format_day(DAY)} (I couldn't tell whether it saved; text "

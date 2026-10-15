@@ -32,6 +32,7 @@ from gvas.domain.owner_assistant import (
     OwnerChangePlan,
     OwnerChangeRefusedError,
     OwnerChangeTool,
+    OwnerChangeUncertainError,
 )
 from gvas.domain.owner_commands import (
     OWNER_COMMAND_TEXT_MAX_CHARS,
@@ -68,7 +69,8 @@ SETUP_REPLY = (
 )
 CONFIRM_PROMPT = "Reply YES in the next 10 minutes to do it, or NO to cancel it."
 ALREADY_ANSWERED_REPLY = (
-    "That change was already answered by another message, so this one didn't change it."
+    "Your change was already answered by another message, so this message didn't cancel "
+    "or change it."
 )
 ONE_CHANGE_NOTE = (
     "(I can set up one change per YES, so the rest of your text isn't in it. "
@@ -544,6 +546,7 @@ class OwnerAssistant:
             if not await self._close(pending, OwnerCommandState.CANCELLED, now):
                 if is_yes(text) or is_no(text):
                     return ALREADY_ANSWERED_REPLY
+                cancelled = f"{ALREADY_ANSWERED_REPLY}\n\n"
             else:
                 cancelled = cancelled_note(pending.summary)
                 # A YES from another thread is not the one this change asked for.
@@ -711,6 +714,8 @@ class OwnerAssistant:
                 raise OwnerChangeRefusedError("I can't make that change by text any more.")
             outcome = await change.apply(business, command.arguments)
             state = OwnerCommandState.DONE
+        except OwnerChangeUncertainError as unsure:
+            outcome = str(unsure)
         except OwnerChangeRefusedError as refusal:
             outcome = f"Nothing was changed: {refusal}"
         except Exception:

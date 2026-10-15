@@ -41,6 +41,10 @@ class OwnerChangeRefusedError(Exception):
     """The change can't be made as asked; the message says why, for the owner."""
 
 
+class OwnerChangeUncertainError(OwnerChangeRefusedError):
+    """The change may have happened anyway; the message says what to check."""
+
+
 class OwnerChangeTool(Protocol):
     """A tool that changes something. The model can only call ``prepare``; the
     application calls ``apply`` after the owner's YES, never the model."""
