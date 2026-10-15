@@ -66,6 +66,7 @@ from gvas.composition.intents import DeterministicIntentResolver
 from gvas.composition.owner_change_tools import (
     calendar_change_tools,
     decision_change_tools,
+    message_change_tools,
     money_change_tools,
     settings_change_tools,
 )
@@ -352,7 +353,8 @@ def build_application(
             + money_change_tools(unit_of_work_factory, owner, now=now)
             + decision_change_tools(unit_of_work_factory, owner, now=now)
             + settings_change_tools(unit_of_work_factory, owner, now=now)
-            + calendar_change_tools(unit_of_work_factory, ports.schedule_blocks, now=now),
+            + calendar_change_tools(unit_of_work_factory, ports.schedule_blocks, now=now)
+            + message_change_tools(unit_of_work_factory, can_text=ports.customer_text is not None),
             now=now,
         )
         if ports.owner_assistant is not None

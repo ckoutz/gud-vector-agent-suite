@@ -1,5 +1,5 @@
-"""The dashboard's money, decision and settings actions, and calendar blocks,
-as owner-text change tools.
+"""The dashboard's money, decision and settings actions, calendar blocks and
+customer messages, as owner-text change tools.
 
 Each tool resolves the owner's words to one quote in code, writes the exact
 sentence the owner confirms, and on YES calls the same ``OwnerService`` method
@@ -10,7 +10,7 @@ import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from gvas.application.calendar_blocks import BLOCK_NOT_CONFIGURED_REPLY, BLOCK_UNREACHABLE_REPLY
@@ -31,17 +31,22 @@ from gvas.domain.calendar_blocks import (
     format_minute,
     subtract_interval,
 )
+from gvas.domain.customers import CustomerRecord
 from gvas.domain.enums import BillingInterval, CustomerQuoteStatus, QuoteBilling, QuoteStatus
-from gvas.domain.identifiers import BusinessId, JsonValue
+from gvas.domain.identifiers import BusinessId, CustomerId, JsonValue
 from gvas.domain.intake import (
     AvailabilityError,
     IntakeConversation,
+    IntakeCustomerEmail,
     format_slot_label,
+    intake_customer_email_command,
+    intake_customer_text_command,
     sanitize_owner_reason,
 )
 from gvas.domain.invoices import Invoice
 from gvas.domain.owner import OwnerSession
 from gvas.domain.owner_assistant import (
+    OWNER_MESSAGE_KEY_PREFIX,
     OwnerAssistantTool,
     OwnerChangePlan,
     OwnerChangeRefusedError,
@@ -1347,3 +1352,132 @@ def calendar_change_tools(
         return ()
     calendar = _Calendar(unit_of_work_factory, schedule, now)
     return (BlockTimeTool(calendar), UnblockDayTool(calendar))
+
+
+# The read-back, and any failure notice, quote the whole message in one owner text.
+MESSAGE_LIMITS = {"text": 480, "e-mail": 900}
+
+
+def _phone_text(phone: str) -> str:
+    digits = "".join(ch for ch in phone if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("1"):
+        digits = digits[1:]
+    if len(digits) == 10:
+        return f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
+    return phone
+
+
+def _route(customer: CustomerRecord, can_text: bool) -> tuple[str, str]:
+    """By text only to a customer who said yes to texts, when texting is set up;
+    otherwise e-mail."""
+
+    if can_text and customer.sms_consent is True and customer.phone:
+        return "text", customer.phone
+    return "e-mail", customer.email
+
+
+class MessageCustomerTool:
+    spec = OwnerAssistantTool(
+        "change_message_customer",
+        "Propose sending one of the business's customers a message from the owner, word "
+        "for word. It goes by text only to a customer who agreed to texts, otherwise by "
+        "e-mail. The owner sees the full message and the recipient before YES.",
+        {
+            "customer": _CUSTOMER,
+            "message": {
+                "type": "string",
+                "description": "The exact words to send, as the owner gave them. Add nothing.",
+            },
+        },
+    )
+    sensitive = True
+
+    def __init__(self, unit_of_work_factory: Callable[[], UnitOfWork], can_text: bool) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._can_text = can_text
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        message = str(args.get("message") or "").strip()
+        if not message:
+            raise OwnerChangeRefusedError("Say what the message should say.")
+        customer = await self._customer(business, args.get("customer"))
+        channel, address = _route(customer, self._can_text)
+        if len(message) > MESSAGE_LIMITS[channel]:
+            raise OwnerChangeRefusedError(
+                f"That's {len(message)} characters; a {channel} from me can be at most "
+                f"{MESSAGE_LIMITS[channel]}. Make it shorter."
+            )
+        subject = f"Message from {business.display_name or business.name}"
+        if channel == "text":
+            how = f"text {customer.name} at {_phone_text(address)}"
+        else:
+            how = f'e-mail {customer.name} at {address}, subject "{subject}"'
+        return OwnerChangePlan(
+            summary=f'I will {how}, this message, word for word:\n"{message}"',
+            arguments={
+                "customer_id": str(customer.customer_id),
+                "name": customer.name,
+                "channel": channel,
+                "address": address,
+                "subject": subject,
+                "message": message,
+                "key": uuid4().hex,
+            },
+        )
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        customer_id = CustomerId(UUID(_str(arguments, "customer_id")))
+        channel, address = _str(arguments, "channel"), _str(arguments, "address")
+        key = f"{OWNER_MESSAGE_KEY_PREFIX}{business.business_id}:{_str(arguments, 'key')}"
+        async with self._unit_of_work_factory() as unit_of_work:
+            customer = await unit_of_work.customers.get(business.business_id, customer_id)
+            if customer is None or _route(customer, self._can_text) != (channel, address):
+                raise OwnerChangeRefusedError(
+                    f"{arguments['name']}'s contact details changed since I read them "
+                    "back. Ask me again."
+                )
+            if channel == "text":
+                command = intake_customer_text_command(
+                    business.business_id,
+                    customer_id=customer_id,
+                    phone=address,
+                    text=_str(arguments, "message"),
+                    idempotency_key=key,
+                )
+            else:
+                command = intake_customer_email_command(
+                    IntakeCustomerEmail(
+                        business_id=business.business_id,
+                        to=address,
+                        subject=_str(arguments, "subject"),
+                        body=_str(arguments, "message"),
+                        idempotency_key=key,
+                    )
+                )
+            await unit_of_work.outbox.enqueue(command)
+            await unit_of_work.commit()
+        return f"Done: your message to {arguments['name']} is on its way by {channel}."
+
+    async def _customer(self, business: BusinessRecord, target: object) -> CustomerRecord:
+        needle = _needle(target)
+        async with self._unit_of_work_factory() as unit_of_work:
+            customers = await unit_of_work.customers.list_for_business(business.business_id)
+        exact = [c for c in customers if c.name.casefold() == needle]
+        found = exact or [
+            c for c in customers if needle in (c.display_name or "").casefold() or needle == c.email
+        ]
+        if not found:
+            raise OwnerChangeRefusedError(
+                f'I can\'t find a customer named "{target}". I can only message customers '
+                "in your customer list."
+            )
+        if len(found) > 1:
+            names = ", ".join(c.name for c in found[:5])
+            raise OwnerChangeRefusedError(f"More than one matches ({names}). Say which one.")
+        return found[0]
+
+
+def message_change_tools(
+    unit_of_work_factory: Callable[[], UnitOfWork], *, can_text: bool
+) -> tuple[OwnerChangeTool, ...]:
+    return (MessageCustomerTool(unit_of_work_factory, can_text),)

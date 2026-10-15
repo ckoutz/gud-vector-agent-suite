@@ -163,6 +163,7 @@ async def test_hello_by_text_gets_a_plain_language_answer_for_its_own_business(
     assert [request.business_id for request in model.requests] == [business_id]
     assert model.requests[0].text == "hello"
     assert {tool.name for tool in model.requests[0].tools} == {
+        "change_message_customer",
         "change_send_invoice",
         "change_mark_paid",
         "change_mark_unpaid",
