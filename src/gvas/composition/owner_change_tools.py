@@ -1354,7 +1354,8 @@ def calendar_change_tools(
     return (BlockTimeTool(calendar), UnblockDayTool(calendar))
 
 
-MESSAGE_LIMITS = {"text": 480, "e-mail": 2000}
+# The read-back, and any failure notice, quote the whole message in one owner text.
+MESSAGE_LIMITS = {"text": 480, "e-mail": 900}
 
 
 def _phone_text(phone: str) -> str:

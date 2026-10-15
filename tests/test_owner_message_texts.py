@@ -134,8 +134,8 @@ async def test_refuses_unknown_ambiguous_empty_and_too_long(
         await tool.prepare(business, {"customer": "an", "message": "Hi"})
     with pytest.raises(OwnerChangeRefusedError, match="what the message should say"):
         await tool.prepare(business, {"customer": "Luis", "message": "  "})
-    with pytest.raises(OwnerChangeRefusedError, match="at most 2000"):
-        await tool.prepare(business, {"customer": "Luis", "message": "x" * 2001})
+    with pytest.raises(OwnerChangeRefusedError, match="at most 900"):
+        await tool.prepare(business, {"customer": "Luis", "message": "x" * 901})
     assert tool.sensitive
 
 
