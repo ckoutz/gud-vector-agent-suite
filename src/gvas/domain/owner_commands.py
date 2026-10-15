@@ -59,11 +59,31 @@ class OwnerCommand(BaseModel):
         return self.model_copy(update=changes)
 
 
-def is_yes(text: str) -> bool:
-    """Only ``YES`` (any case, trailing punctuation allowed) confirms a change;
-    "ok", "sure" or "yes but…" do not."""
+_YES_WORDS = frozenset({"yes", "y", "yep", "yeah", "yup", "yes please", "go ahead", "do it"})
+_NO_WORDS = frozenset({"no", "n", "nope", "nah", "cancel", "never mind", "nevermind"})
+_YES_FIRST = re.compile(r"(?:yes|y|yep|yeah|yup|go ahead|do it)\b")
 
-    return re.sub(r"[\s.!]+$", "", text.strip()).casefold() == "yes"
+
+def _plain(text: str) -> str:
+    return " ".join(re.sub(r"[\s.!]+$", "", text.strip()).casefold().split())
+
+
+def is_yes(text: str) -> bool:
+    """A plain yes on its own (``YES``, ``y``, ``go ahead``…, any case, trailing
+    "." or "!") confirms a change; "ok", "sure" or "yes but…" do not."""
+
+    return _plain(text) in _YES_WORDS
+
+
+def is_no(text: str) -> bool:
+    return _plain(text) in _NO_WORDS
+
+
+def is_yes_and_more(text: str) -> bool:
+    """``Yes and Friday too``: a yes with more on it, which confirms nothing,
+    since the rest may change what the yes meant."""
+
+    return not is_yes(text) and _YES_FIRST.match(_plain(text)) is not None
 
 
 class OwnerCommandConflictError(Exception):
