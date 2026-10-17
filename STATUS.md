@@ -1,10 +1,10 @@
 # Güd Vector — Project Status Dashboard
 
-**Last updated:** 2026-10-17 07:05 UTC (auto-refreshed by the Devin dashboard automation)
+**Last updated:** 2026-10-17 13:05 UTC (auto-refreshed by the Devin dashboard automation)
 
 ## Where we are
 
-Nothing new merged or opened since the 2026-10-17 01:05 refresh. Two PRs are still open, both clean with checks passing: GVAS #90 (4/4) and site #34 (Vercel previews success). Both are now about 3.2 days old. The Railway web service `gud-vector-agent-suite / production` is on GVAS main `6b73d70` (#92), per the GitHub deployment record (2026-10-15 02:16 UTC); the Larkspur demo is on the same commit. GVAS `/healthz` returns 200 `{"status":"ok"}` (0.36 s). `/health` and `/` return the app's own FastAPI 404 because those routes don't exist. OpenAPI lists 41 paths. Vercel production for all three site projects is on site main `89a6584`. gudvector.com resolves (216.198.79.1, Vercel) and returns 200. On both domains an unknown quote token renders "couldn't find", so both are wired to GVAS. Telnyx toll-free verification for +18775411550 is **Verified**. Stripe is in sandbox and the production webhook is `enabled` with 7 events. **Tooling note:** git fetch through the Devin git proxy returned 403 again. Data comes from the GitHub REST API (`gh api`) and public endpoints, and this file was written through the GitHub contents API.
+Nothing new merged or opened since the 2026-10-17 07:05 refresh. Two PRs are still open, both clean with checks passing: GVAS #90 (4/4) and site #34 (Vercel previews success). Both are now about 3.5 days old. The Railway web service `gud-vector-agent-suite / production` is on GVAS main `6b73d70` (#92), per the GitHub deployment record (2026-10-15 02:16 UTC); the Larkspur demo is on the same commit. GVAS `/healthz` returns 200 `{"status":"ok"}` (0.36 s). `/health` and `/` return the app's own FastAPI 404 because those routes don't exist. OpenAPI lists 41 paths. Vercel production for all three site projects is on site main `89a6584`. gudvector.com resolves (216.198.79.1, Vercel) and returns 200. On both domains an unknown quote token renders "couldn't find", so both are wired to GVAS. Telnyx toll-free verification for +18775411550 is **Verified**. Stripe is in sandbox and the production webhook is `enabled` with 7 events. **Tooling note:** git fetch through the Devin git proxy returned 403 again. Data comes from the GitHub REST API (`gh api`) and public endpoints, and this file was written through the GitHub contents API.
 
 ## Demo pipeline
 
@@ -26,8 +26,8 @@ Status comes from public endpoints and API checks only. This refresh did not run
 
 | Repo | PR | Title | Base | Mergeable | CI | Age | Merge order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| gud-vector-agent-suite | [#90](https://github.com/ckoutz/gud-vector-agent-suite/pull/90) | Owner texts: change a customer's name or phone in plain words, behind YES | main | MERGEABLE (clean) | 4/4 passing (alembic, ruff, pytest, mypy) on `016a657` | 3.2 days | **1**. Independent. Check the Railway web deploy afterwards. |
-| gudvector-site | [#34](https://github.com/ckoutz/gudvector-site/pull/34) | Owner Settings: "Changes by text", the log of every change asked for by text | main | MERGEABLE (clean) | Vercel previews 3/3 success on `92bbc52` | 3.2 days | **2**. Any time; its backend (`GET /v1/owner/commands`, #87) is live. |
+| gud-vector-agent-suite | [#90](https://github.com/ckoutz/gud-vector-agent-suite/pull/90) | Owner texts: change a customer's name or phone in plain words, behind YES | main | MERGEABLE (clean) | 4/4 passing (alembic, ruff, pytest, mypy) on `016a657` | 3.5 days | **1**. Independent. Check the Railway web deploy afterwards. |
+| gudvector-site | [#34](https://github.com/ckoutz/gudvector-site/pull/34) | Owner Settings: "Changes by text", the log of every change asked for by text | main | MERGEABLE (clean) | Vercel previews 3/3 success on `92bbc52` | 3.5 days | **2**. Any time; its backend (`GET /v1/owner/commands`, #87) is live. |
 
 No stacked PRs.
 
@@ -39,10 +39,10 @@ No stacked PRs.
 | GVAS web deployed commit | **`6b73d70`** (GitHub deployment `gud-vector-agent-suite / production` success, 2026-10-15 02:17 UTC, web-production-9d848). |
 | Larkspur demo (Railway) | `larkspur-demo / demo` on `6b73d70`, success (web-demo-5831). |
 | GVAS web `/healthz` | **200** `{"status":"ok"}` (0.36 s) |
-| GVAS web `/health`, `/` | 404 `{"detail":"Not Found"}` (0.39 s / 0.40 s): the app's own 404, because the routes don't exist. |
+| GVAS web `/health`, `/` | 404 `{"detail":"Not Found"}` (0.37 s / 0.34 s): the app's own 404, because the routes don't exist. |
 | gudvector-site main | `89a6584` 2026-10-12 20:22 UTC: Merge #33. Vercel Production success for gudvector-site, gudvector-sitev2 and larkspur-dashboard. |
-| gudvector-site.vercel.app | `/` 200 (0.29 s); `/q/nonexistent-token` 200 "couldn't find" (1.27 s). No "temporarily unavailable". |
-| gudvector.com | Resolves (216.198.79.1, Vercel); `/` 200 (0.35 s); `/q/nonexistent-token` 200 "couldn't find". www redirects 308 to the apex. **Domain is up.** |
+| gudvector-site.vercel.app | `/` 200 (0.20 s); `/q/nonexistent-token` 200 "couldn't find" (0.34 s). No "temporarily unavailable". |
+| gudvector.com | Resolves (216.198.79.1, Vercel); `/` 200 (0.15 s); `/q/nonexistent-token` 200 "couldn't find" (0.41 s). www redirects 308 to the apex. **Domain is up.** |
 
 ## Integrations
 
