@@ -389,10 +389,15 @@ def _require_complete_telnyx_channel(settings: TelnyxSettings) -> None:
         installations = parse_telnyx_installations(settings.installations)
     except TelnyxInstallationError as error:
         raise ProductionConfigurationError(f"GVAS_TELNYX_INSTALLATIONS: {error}") from error
-    if len(installations) != 1 or len(installations[0].owner_numbers) != 1:
+    # The pilot is one business and one owner. A second number (the toll-free
+    # fallback) may answer that owner; customer texts use the first number.
+    businesses = {installation.business_id for installation in installations}
+    owners = {owner for installation in installations for owner in installation.owner_numbers}
+    numbers = [installation.telnyx_number for installation in installations]
+    if len(businesses) != 1 or len(owners) != 1 or len(set(numbers)) != len(numbers):
         raise ProductionConfigurationError(
-            "GVAS_TELNYX_INSTALLATIONS must configure exactly one number "
-            "with exactly one owner number"
+            "GVAS_TELNYX_INSTALLATIONS must configure one business with exactly one "
+            "owner number, on distinct numbers"
         )
 
 

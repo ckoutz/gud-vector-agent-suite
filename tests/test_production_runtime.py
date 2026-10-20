@@ -152,6 +152,8 @@ def test_production_app_serves_the_slack_request_url_and_health_check() -> None:
     assert runtime.settings.telnyx.webhook_path not in paths
 
 
+OTHER_BUSINESS_ID = uuid4()
+
 TELNYX_ENVIRONMENT = {
     "GVAS_TELNYX_PUBLIC_KEY": "cHVibGljLWtleQ==",
     "GVAS_TELNYX_API_KEY": "KEY-not-a-real-key",
@@ -180,11 +182,29 @@ def test_telnyx_is_optional_as_a_set(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.usefixtures("production_environment")
+def test_a_second_number_answers_the_same_owner_and_customers_keep_the_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name, value in TELNYX_ENVIRONMENT.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv(
+        "GVAS_TELNYX_INSTALLATIONS",
+        f"+15550100001={BUSINESS_ID}:+15550100000,+15550100001={BUSINESS_ID}:+18005550100",
+    )
+
+    runtime = build_production_runtime(load_production_settings())
+
+    assert runtime.settings.telnyx.is_configured
+
+
+@pytest.mark.usefixtures("production_environment")
 @pytest.mark.parametrize(
     "value",
     [
         f"+15550100001|+15550100002={BUSINESS_ID}:+15550100000",
         f"+15550100001={BUSINESS_ID}:+15550100000,+15550100003={BUSINESS_ID}:+15550100009",
+        f"+15550100001={BUSINESS_ID}:+15550100000,+15550100001={OTHER_BUSINESS_ID}:+15550100009",
+        f"+15550100001={BUSINESS_ID}:+15550100000,+15550100001={BUSINESS_ID}:+15550100000",
         f"15550100001={BUSINESS_ID}:+15550100000",
     ],
 )
