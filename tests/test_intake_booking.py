@@ -1018,6 +1018,36 @@ async def test_portal_conversation_is_prefilled_and_linked(
 
 
 @pytest.mark.asyncio
+async def test_the_chat_view_shows_the_owner_decline_note_only_once_declined(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from gvas.interfaces.http.public import intake_view_payload
+
+    application, _, business_id, reference = await reach_awaiting_owner(
+        session_factory, availability=AvailabilityFake()
+    )
+
+    async def view() -> dict[str, object]:
+        async with application.unit_of_work_factory() as unit_of_work:
+            conversation = await unit_of_work.intake_conversations.find_by_reference(
+                business_id, reference
+            )
+        assert conversation is not None
+        return intake_view_payload(conversation, (), None)
+
+    assert (await view())["declineReason"] is None
+    await application.ingest_service.ingest(
+        inbound(business_id, f"decline booking {reference} booked solid", message_key="d-note")
+    )
+    for _ in range(4):
+        await immediate_worker(application).drain()
+
+    declined = await view()
+    assert declined["state"] == "declined"
+    assert declined["declineReason"] == "booked solid"
+
+
+@pytest.mark.asyncio
 async def test_declined_conversation_rejects_new_messages(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
