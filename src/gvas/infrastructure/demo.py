@@ -250,11 +250,27 @@ class DemoAvailability:
                 select(Business.site_url).where(Business.id == request.business_id)
             )
             holds = await _holds(session, request.business_id, request.slot_start, request.slot_end)
-        if any(hold.booked and hold.reference != request.reference for hold in holds):
+            name = await session.scalar(
+                select(Business.timezone).where(Business.id == request.business_id)
+            )
+            zone = _zone(name or self._settings.timezone, self._settings.timezone)
+            local_start = request.slot_start.astimezone(zone)
+            rules = await _day_rules(
+                session, request.business_id, local_start.date(), local_start.date()
+            )
+        # A day the owner blocked takes no booking, as Calendly refuses one.
+        blocked = local_start.date() in rules and not _within(
+            rules[local_start.date()],
+            local_start.hour * 60 + local_start.minute,
+            local_start.hour * 60
+            + local_start.minute
+            + int((request.slot_end - request.slot_start).total_seconds() // 60),
+        )
+        if blocked or any(hold.booked and hold.reference != request.reference for hold in holds):
             if not site_url:
                 raise AvailabilityError("the demo slot is already booked")
             logger.info(
-                "demo mode: %s already booked (business %s); sending a link to pick again",
+                "demo mode: %s taken or blocked (business %s); sending a link to pick again",
                 request.slot_start.isoformat(),
                 request.business_id,
             )

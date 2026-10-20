@@ -739,3 +739,35 @@ async def test_blocked_time_shows_on_the_dashboard_and_only_for_its_business(
     ]
     assert all(b.source is CalendarEventSource.CALENDAR for b in blocks)
     assert await DemoBookedEvents(session_factory).upcoming(other, *window) == ()
+
+
+async def test_a_slot_on_a_blocked_day_sends_a_link_to_pick_again(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await demo_business(session_factory)
+    async with session_factory() as session:
+        await session.execute(
+            update(Business)
+            .where(Business.id == business_id)
+            .values(site_url="https://larkspur.example")
+        )
+        await session.commit()
+    availability = DemoAvailability(DemoSettings(), session_factory)
+    monday = next_monday(PACIFIC)
+    await availability.set_day_hours(business_id, monday.date(), ((8 * 60, 12 * 60),))
+
+    def request(hour: int) -> BookingRequest:
+        start = monday.replace(hour=hour)
+        return BookingRequest(
+            business_id=business_id,
+            slot_start=start,
+            slot_end=start + timedelta(hours=1),
+            invitee_name="Sam Ortiz",
+            invitee_email="sam@example.test",
+            reference=f"ref{hour:04d}",
+        )
+
+    assert (await availability.book(request(9))).kind is BookingKind.BOOKED
+    blocked = await availability.book(request(13))
+    assert blocked.kind is BookingKind.LINK
+    assert blocked.link == "https://larkspur.example"
