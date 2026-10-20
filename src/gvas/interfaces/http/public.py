@@ -135,7 +135,15 @@ def intake_reply_payload(
         "bookingKind": conversation.booking_kind,
         "booking": _booking_payload(conversation),
         "smsConsent": conversation.sms_consent,
+        "declineReason": _decline_reason(conversation),
     }
+
+
+def _decline_reason(conversation: IntakeConversation) -> str | None:
+    """The owner's decline note, already sent to the customer by e-mail."""
+    if conversation.state is IntakeState.DECLINED:
+        return conversation.decision_reason
+    return None
 
 
 def intake_view_payload(
@@ -161,6 +169,7 @@ def intake_view_payload(
         "bookingKind": conversation.booking_kind,
         "booking": _booking_payload(conversation),
         "smsConsent": conversation.sms_consent,
+        "declineReason": _decline_reason(conversation),
     }
 
 
