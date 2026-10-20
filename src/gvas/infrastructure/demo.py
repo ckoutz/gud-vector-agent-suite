@@ -2,23 +2,26 @@
 
 ``GVAS_DEMO_MODE`` swaps every outbound channel (customer and owner e-mail,
 texts, owner channel messages, sign-in links, reports) for one that writes to the log, and the
-booking calendar for generated openings. A fictional business then runs the
-real workflows, owner approval included, with no one contacted. Links are
-withheld from the log: they carry bearer tokens (quote claims, sign-in and
-decision links), and the demo is driven from the dashboard instead. The
+booking calendar for generated openings (the owner's blocks are kept in GVAS). A
+fictional business then runs the real workflows, owner approval included, with
+no one contacted. Links are withheld from the log: they carry bearer tokens
+(quote claims, sign-in and decision links), and the demo is driven from the
+dashboard instead. The
 production composition decides when these are used, and refuses to start a
 demo that still holds a real provider credential.
 """
 
 import hashlib
 import logging
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.config import DemoSettings
+from gvas.domain.calendar_blocks import DayHours, Interval
 from gvas.domain.customers import PortalLoginEmailRequest
 from gvas.domain.enums import DeliveryStatus
 from gvas.domain.identifiers import BusinessId
@@ -44,6 +47,7 @@ from gvas.domain.messages import (
 from gvas.domain.owner import CalendarEvent, CalendarEventSource
 from gvas.domain.owner_email import OwnerEmailRequest
 from gvas.domain.reporting import ReportEmailRequest
+from gvas.infrastructure.calendar_block_models import DemoDayHoursRecord
 from gvas.infrastructure.hosted_links import PORTAL_LOGIN_LINK_REFERENCE
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
 from gvas.infrastructure.models import Business
@@ -60,6 +64,7 @@ CLOSED_WEEKDAYS = frozenset({6})
 # Requests waiting for the owner and approved bookings hold their slot.
 HOLDING_STATES = (IntakeState.AWAITING_OWNER.value, IntakeState.APPROVED.value)
 TITLE_MAX_CHARS = 80
+BLOCKED_TITLE = "Blocked: no bookings"
 
 Span = tuple[datetime, datetime]
 
@@ -190,6 +195,10 @@ class DemoAvailability:
     would replace holds is never offered again. ``book`` touches no calendar:
     the approved request is the booking. When another booking already took
     the slot it answers as Calendly does, with a link to pick again.
+
+    It is also the demo's ``ScheduleBlockPort``: a date rule the owner sets by
+    text (a block) replaces that day's weekly hours, as on Calendly, and no
+    opening outside it is offered.
     """
 
     def __init__(
@@ -207,15 +216,21 @@ class DemoAvailability:
         async with self._session_factory() as session:
             name = await session.scalar(select(Business.timezone).where(Business.id == business_id))
             held = [hold.span for hold in await _holds(session, business_id, start, end)]
-        zone = _zone(name or self._settings.timezone, self._settings.timezone)
+            zone = _zone(name or self._settings.timezone, self._settings.timezone)
+            rules = await _day_rules(
+                session, business_id, start.astimezone(zone).date(), end.astimezone(zone).date()
+            )
         length = timedelta(minutes=self._settings.slot_minutes)
         first = self._settings.day_start_hour * 60
         last = self._settings.day_end_hour * 60 - self._settings.slot_minutes
         openings: list[AvailableSlot] = []
         day = start.astimezone(zone).date()
         while day <= end.astimezone(zone).date():
-            if day.weekday() not in CLOSED_WEEKDAYS:
+            hours = rules.get(day, weekly_hours(self._settings, day))
+            if hours:
                 for minute in range(first, last + 1, self._settings.slot_minutes):
+                    if not _within(hours, minute, minute + self._settings.slot_minutes):
+                        continue
                     slot_start = datetime.combine(day, time(minute // 60, minute % 60), tzinfo=zone)
                     slot_end = slot_start + length
                     if not start <= slot_start < end or _busy(business_id, slot_start):
@@ -263,13 +278,54 @@ class DemoAvailability:
     async def cancel_booking(self, business_id: BusinessId, event_uri: str) -> None:
         logger.info("demo mode: canceled %s (business %s)", event_uri, business_id)
 
+    async def schedule_timezone(self, business_id: BusinessId) -> str | None:
+        async with self._session_factory() as session:
+            name = await session.scalar(select(Business.timezone).where(Business.id == business_id))
+        return str(_zone(name or self._settings.timezone, self._settings.timezone))
+
+    async def day_hours(self, business_id: BusinessId, day: date) -> DayHours:
+        async with self._session_factory() as session:
+            rules = await _day_rules(session, business_id, day, day)
+        if day in rules:
+            return DayHours(intervals=rules[day], overridden=True)
+        return DayHours(intervals=weekly_hours(self._settings, day), overridden=False)
+
+    async def set_day_hours(
+        self, business_id: BusinessId, day: date, intervals: tuple[Interval, ...] | None
+    ) -> None:
+        async with self._session_factory() as session:
+            await session.execute(
+                delete(DemoDayHoursRecord).where(
+                    DemoDayHoursRecord.business_id == business_id, DemoDayHoursRecord.day == day
+                )
+            )
+            if intervals is not None:
+                session.add(
+                    DemoDayHoursRecord(
+                        id=uuid4(),
+                        business_id=business_id,
+                        day=day,
+                        intervals=[[low, high] for low, high in intervals],
+                    )
+                )
+            await session.commit()
+        logger.info(
+            "demo mode: hours of %s set (business %s), no calendar touched", day, business_id
+        )
+
 
 class DemoBookedEvents:
     """The dashboard's bookings: approved website requests booked in GVAS,
-    and bookings still in force while their reschedule waits for the owner."""
+    and bookings still in force while their reschedule waits for the owner.
+    Time the owner blocked shows too, so a block by text is seen at once."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        settings: DemoSettings | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._settings = settings or DemoSettings()
 
     def serves(self, business_id: BusinessId) -> bool:
         return True
@@ -279,12 +335,23 @@ class DemoBookedEvents:
     ) -> tuple[CalendarEvent, ...]:
         async with self._session_factory() as session:
             rows = await _holding_rows(session, business_id, end)
+            name = await session.scalar(select(Business.timezone).where(Business.id == business_id))
+            zone = _zone(name or self._settings.timezone, self._settings.timezone)
+            rules = await _day_rules(
+                session, business_id, start.astimezone(zone).date(), end.astimezone(zone).date()
+            )
         events = [
             _booking_event(row, span)
             for row in rows
             for span in _booked_spans(row)
             if span[0] < _utc(end) and span[1] > _utc(start)
         ]
+        for day, hours in rules.items():
+            events.extend(
+                event
+                for event in _blocked_events(day, weekly_hours(self._settings, day), hours, zone)
+                if event.start < end and (event.end or event.start) > start
+            )
         return tuple(sorted(events, key=lambda event: event.start))
 
 
@@ -390,6 +457,73 @@ def _booking_event(row: IntakeRow, span: Span) -> CalendarEvent:
 def _busy(business_id: BusinessId, slot_start: datetime) -> bool:
     seed = f"{business_id}:{_utc(slot_start).isoformat()}".encode()
     return hashlib.sha256(seed).digest()[0] % BUSY_ONE_IN == 0
+
+
+def weekly_hours(settings: DemoSettings, day: date) -> tuple[Interval, ...]:
+    """The demo's weekly hours: the configured day, Sunday closed."""
+
+    if day.weekday() in CLOSED_WEEKDAYS:
+        return ()
+    return ((settings.day_start_hour * 60, settings.day_end_hour * 60),)
+
+
+async def _day_rules(
+    session: AsyncSession, business_id: BusinessId, first: date, last: date
+) -> dict[date, tuple[Interval, ...]]:
+    rows = await session.scalars(
+        select(DemoDayHoursRecord).where(
+            DemoDayHoursRecord.business_id == business_id,
+            DemoDayHoursRecord.day >= first,
+            DemoDayHoursRecord.day <= last,
+        )
+    )
+    return {
+        row.day: tuple((int(pair[0]), int(pair[1])) for pair in row.intervals)  # type: ignore[index, arg-type]
+        for row in rows
+    }
+
+
+def _within(hours: tuple[Interval, ...], low: int, high: int) -> bool:
+    return any(start <= low and high <= end for start, end in hours)
+
+
+def _blocked_events(
+    day: date, weekly: tuple[Interval, ...], hours: tuple[Interval, ...], zone: ZoneInfo
+) -> list[CalendarEvent]:
+    """Weekly hours a date rule takes away, as calendar entries."""
+
+    if weekly and not hours:
+        midnight = datetime.combine(day, time(), tzinfo=zone)
+        return [
+            CalendarEvent(
+                source=CalendarEventSource.CALENDAR,
+                title=BLOCKED_TITLE,
+                start=midnight,
+                end=midnight + timedelta(days=1),
+                all_day=True,
+            )
+        ]
+    gaps: list[Interval] = []
+    for low, high in weekly:
+        cursor = low
+        for start, end in sorted(hours):
+            if end <= cursor or start >= high:
+                continue
+            if start > cursor:
+                gaps.append((cursor, start))
+            cursor = max(cursor, end)
+        if cursor < high:
+            gaps.append((cursor, high))
+    midnight = datetime.combine(day, time(), tzinfo=zone)
+    return [
+        CalendarEvent(
+            source=CalendarEventSource.CALENDAR,
+            title=BLOCKED_TITLE,
+            start=midnight + timedelta(minutes=low),
+            end=midnight + timedelta(minutes=high),
+        )
+        for low, high in gaps
+    ]
 
 
 def _zone(name: str, fallback: str) -> ZoneInfo:

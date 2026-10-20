@@ -18,6 +18,7 @@ from gvas.composition.production import (
     load_production_settings,
 )
 from gvas.config import DemoSettings, IntakeSettings
+from gvas.domain.calendar_blocks import DayHours
 from gvas.domain.customers import PortalLoginEmailRequest
 from gvas.domain.enums import DeliveryStatus, RecipientAddressKind
 from gvas.domain.identifiers import BusinessId, IntakeConversationId
@@ -668,3 +669,73 @@ async def test_a_website_booking_waits_for_the_owner_then_books_in_the_demo(
     assert [event.reference for event in events] == [row.reference]
     reoffered = await availability.available_slots(business_id, *window)
     assert start not in {opening.start for opening in reoffered}
+
+
+# -- blocks the owner texts (the demo's ScheduleBlockPort) ---------------------
+
+
+async def test_a_blocked_day_offers_nothing_and_unblocking_brings_it_back(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await demo_business(session_factory)
+    availability = DemoAvailability(DemoSettings(), session_factory)
+    monday = next_monday(PACIFIC)
+    window = (monday, monday + timedelta(days=2))
+    before = await availability.available_slots(business_id, *window)
+    day = monday.date()
+    assert any(opening.start.astimezone(PACIFIC).date() == day for opening in before)
+    assert await availability.day_hours(business_id, day) == DayHours(
+        intervals=((8 * 60, 17 * 60),), overridden=False
+    )
+
+    await availability.set_day_hours(business_id, day, ())
+
+    assert await availability.day_hours(business_id, day) == DayHours(intervals=(), overridden=True)
+    after = await availability.available_slots(business_id, *window)
+    assert not any(opening.start.astimezone(PACIFIC).date() == day for opening in after)
+    assert [o for o in before if o.start.astimezone(PACIFIC).date() != day] == list(after)
+
+    await availability.set_day_hours(business_id, day, None)
+
+    assert await availability.available_slots(business_id, *window) == before
+    assert not (await availability.day_hours(business_id, day)).overridden
+
+
+async def test_a_part_day_block_offers_only_the_hours_left(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await demo_business(session_factory)
+    availability = DemoAvailability(DemoSettings(), session_factory)
+    monday = next_monday(PACIFIC)
+    await availability.set_day_hours(business_id, monday.date(), ((8 * 60, 12 * 60),))
+
+    day = await availability.available_slots(business_id, monday, monday + timedelta(days=1))
+
+    assert day
+    assert all(opening.start.astimezone(PACIFIC).hour < 12 for opening in day)
+    assert await availability.schedule_timezone(business_id) == "America/Los_Angeles"
+
+
+async def test_blocked_time_shows_on_the_dashboard_and_only_for_its_business(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await demo_business(session_factory)
+    other = await demo_business(session_factory)
+    availability = DemoAvailability(DemoSettings(), session_factory)
+    monday = next_monday(PACIFIC)
+    tuesday = monday + timedelta(days=1)
+    await availability.set_day_hours(business_id, monday.date(), ())
+    await availability.set_day_hours(
+        business_id, tuesday.date(), ((8 * 60, 12 * 60), (14 * 60, 17 * 60))
+    )
+    window = (monday, monday + timedelta(days=7))
+
+    events = await DemoBookedEvents(session_factory).upcoming(business_id, *window)
+
+    blocks = [event for event in events if event.title == "Blocked: no bookings"]
+    assert [(b.all_day, b.start, b.end) for b in blocks] == [
+        (True, monday, monday + timedelta(days=1)),
+        (False, tuesday.replace(hour=12), tuesday.replace(hour=14)),
+    ]
+    assert all(b.source is CalendarEventSource.CALENDAR for b in blocks)
+    assert await DemoBookedEvents(session_factory).upcoming(other, *window) == ()
