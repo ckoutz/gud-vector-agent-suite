@@ -88,11 +88,22 @@ sent through Telnyx, and the demo backend refuses real provider keys.
 - A request to *move* a booking says what happens to the original time: approving cancels the old booking (or closes the old request), declining keeps it. A note given with a declined move is kept on the request, not sent.
 - `change_settings` covers only the business name, the time zone and Gus's customer-facing wording. Notification e-mail, Calendly link, calendar feed and every security setting stay dashboard-only and aren't in the tool's schema. Values go through the dashboard's own checks (`OwnerService.settings_fields`) before the proposal, and Gus quotes the full new wording before YES, because customers will read it.
 
+## Calendar tools (block / unblock time)
+
+- `change_block_time` and `change_unblock_day` write to the business's own booking calendar only (the `ScheduleBlockPort` must serve the business). The day is checked again at YES, so a YES after midnight can't block a day that has passed.
+- The undo record (`CalendarBlock` with the hours it replaces) is committed before Calendly is written. A write that lands and then errors can still be unblocked; one that never landed is marked removed.
+- Unblocking lists every block on the day before YES, and refuses if the blocks changed since.
+
 ### Several days in one change
 
 - `change_block_time` and `change_unblock_day` take a list of dates; one read-back names every day ("all day Thu Oct 15 and all day Fri Oct 16"), and one YES does them all. Days where nothing can change (closed then, or nothing blocked) are left out and the read-back says so.
 - At YES each day is done on its own: its own recheck (passed days are skipped), its own undo record saved before Calendly is written, and its own read-back after an error. A day that fails never undoes a day that saved; the reply names each day saved and each day not saved, with why, and every saved day can be unblocked by text.
 
+## Customer details (name, phone)
+
+- `change_customer` changes only a customer's name and phone, matched among the business's own customers by name, e-mail or phone; no match or more than one is refused. The e-mail isn't in the schema: it's the customer's sign-in identity, so it stays out of texts.
+- The proposal names the customer and the new values. YES refuses if the name or phone changed since the proposal.
+- A new phone clears a yes to texts: that number never agreed, so Gus won't text it until the customer agrees again. The proposal says so. Invoices already sent keep the old details.
 
 ## Customer messages (`change_message_customer`)
 
