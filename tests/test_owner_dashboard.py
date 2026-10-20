@@ -548,6 +548,27 @@ async def test_calendar_merges_bookings_and_the_owner_calendar(
         assert too_long.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_a_block_at_the_same_time_never_hides_an_owner_appointment(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    at = WINDOW_START + timedelta(hours=17)
+    booked = BookedEventsFake((event(CalendarEventSource.CALENDAR, "Blocked: no bookings", at),))
+    feed = CalendarFeedFake((event(CalendarEventSource.CALENDAR, "Dentist", at),))
+    application, business_id = await owner_business(
+        session_factory, booked_events=booked, calendar_feed=feed
+    )
+    async with http_client(application) as http:
+        owner = await sign_in(session_factory, http, business_id)
+        await http.patch(
+            "/v1/owner/settings", json={"calendarFeedUrl": FEED_URL}, headers=bearer(owner)
+        )
+        params = {"start": WINDOW_START.isoformat(), "end": WINDOW_END.isoformat()}
+        view = (await http.get("/v1/owner/calendar", params=params, headers=bearer(owner))).json()
+
+    assert sorted(row["title"] for row in view["events"]) == ["Blocked: no bookings", "Dentist"]
+
+
 # -- calendar feed adapter ---------------------------------------------------
 
 FEED_BODY = b"""BEGIN:VCALENDAR

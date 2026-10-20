@@ -95,7 +95,8 @@ def create_sandbox_router(
     @router.post("/v1/demo/sandboxes/owner-texts", dependencies=limited)
     async def owner_text(body: _OwnerText, request: Request) -> JSONResponse:
         """The demo's in-page Texts view: the owner texts Gus about their own
-        sandbox copy. Read only, and nothing is sent anywhere."""
+        sandbox copy. Changes go through the same YES as by text and land on
+        the copy only; nothing is sent anywhere."""
 
         if owner_assistant is None:
             return JSONResponse({"detail": "texts are off on this demo"}, status_code=503)

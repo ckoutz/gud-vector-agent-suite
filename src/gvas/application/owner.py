@@ -1018,7 +1018,8 @@ def _is_owner(business: BusinessRecord, email: str) -> bool:
 
 def _mirrors_booking(event: CalendarEvent, booked: tuple[CalendarEvent, ...]) -> bool:
     return any(
-        abs(event.start - booking.start) < DUPLICATE_WINDOW
+        booking.source is CalendarEventSource.BOOKING
+        and abs(event.start - booking.start) < DUPLICATE_WINDOW
         and (
             event.end is None
             or booking.end is None

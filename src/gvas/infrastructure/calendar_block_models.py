@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from gvas.domain.identifiers import JsonValue
@@ -28,3 +28,18 @@ class CalendarBlockRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DemoDayHoursRecord(Base):
+    """A demo calendar's own rule for one date, as Calendly keeps a date rule:
+    the bookable hours that replace the weekly ones (none: closed)."""
+
+    __tablename__ = "demo_day_hours"
+    __table_args__ = (UniqueConstraint("business_id", "day", name="uq_demo_day_hours_day"),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    intervals: Mapped[list[JsonValue]] = mapped_column(json_type, nullable=False)
