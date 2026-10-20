@@ -266,6 +266,15 @@ class DemoAvailability:
             + local_start.minute
             + int((request.slot_end - request.slot_start).total_seconds() // 60),
         )
+        if blocked and not site_url:
+            # No page to send the customer back to: an error would retry the
+            # approval forever, so the demo books it and says so in the log.
+            logger.warning(
+                "demo mode: %s is blocked but business %s has no site; booking it anyway",
+                request.slot_start.isoformat(),
+                request.business_id,
+            )
+            blocked = False
         if blocked or any(hold.booked and hold.reference != request.reference for hold in holds):
             if not site_url:
                 raise AvailabilityError("the demo slot is already booked")

@@ -771,3 +771,26 @@ async def test_a_slot_on_a_blocked_day_sends_a_link_to_pick_again(
     blocked = await availability.book(request(13))
     assert blocked.kind is BookingKind.LINK
     assert blocked.link == "https://larkspur.example"
+
+
+async def test_a_blocked_slot_without_a_site_still_books_rather_than_stall(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business_id = await demo_business(session_factory)
+    availability = DemoAvailability(DemoSettings(), session_factory)
+    monday = next_monday(PACIFIC)
+    await availability.set_day_hours(business_id, monday.date(), ())
+    start = monday.replace(hour=10)
+
+    result = await availability.book(
+        BookingRequest(
+            business_id=business_id,
+            slot_start=start,
+            slot_end=start + timedelta(hours=1),
+            invitee_name="Sam Ortiz",
+            invitee_email="sam@example.test",
+            reference="nosite01",
+        )
+    )
+
+    assert result.kind is BookingKind.BOOKED
