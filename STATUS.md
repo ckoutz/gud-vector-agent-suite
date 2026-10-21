@@ -1,10 +1,10 @@
 # Güd Vector — Project Status Dashboard
 
-**Last updated:** 2026-10-21 07:05 UTC (auto-refreshed by the Devin dashboard automation)
+**Last updated:** 2026-10-21 13:05 UTC (auto-refreshed by the Devin dashboard automation)
 
 ## Where we are
 
-Nothing is broken or blocked. Since the 01:05 refresh, site #35 (SMS consent wording: names Güd Vector, frequency, HELP, Terms/Privacy links) was merged at 01:36 UTC. Vercel production for all three site projects is now on site main `97afbcd` (#35). There are **no open PRs** in either repo. GVAS main is unchanged at `af29c7a` (#95), with main CI 4/4 green, and Railway web is deployed on that commit. GVAS `/healthz` returns 200 `{"status":"ok"}` (0.32 s). gudvector.com and gudvector-site.vercel.app both return 200 and show "couldn't find" for an unknown quote token, so the site is wired to GVAS. Telnyx TFV for +18775411550 is **Verified**. Stripe is in sandbox and its production webhook is `enabled` with 7 events. Carried-forward gaps: the Larkspur demo has no deployment record for `af29c7a`, and the Calendly webhook is not mounted. **Tooling note:** git fetch through the Devin git proxy returned 403 again. Data comes from `gh api` and public endpoints, and this file was written through the GitHub contents API.
+Nothing is broken or blocked. Since the 07:05 refresh, two site PRs merged: #37 (Landscapers page, 11:50 UTC) and #38 (Owner-approved quoting page, 12:35 UTC). Vercel production for all three site projects is on site main `6067670` (#38). One PR is open and ready: site [#39](https://github.com/ckoutz/gudvector-site/pull/39) ("Don't want to learn software" page). It is mergeable (clean), and its Vercel previews and Devin Review are green. GVAS main is unchanged at `af29c7a` (#95). Main CI is 4/4 green, and Railway web and worker (production and Larkspur demo) report success on that commit. GVAS `/healthz` returns 200 `{"status":"ok"}` (0.39 s). gudvector.com and gudvector-site.vercel.app both return 200 and show "couldn't find" for an unknown quote token, so the site is wired to GVAS. Telnyx TFV for +18775411550 is **Verified**. Stripe is in sandbox and its production webhook is `enabled` with 7 events. Carried-forward gap: the Calendly webhook is not mounted. **Tooling note:** git fetch through the Devin git proxy returned 403 again, and the PR checks tool returned "Unauthorized". Data comes from `gh api` and public endpoints, and this file was written through the GitHub contents API.
 
 ## Demo pipeline
 
@@ -12,21 +12,22 @@ Status comes from public endpoints and API checks only. This refresh did not run
 
 | Step | Status | Note |
 | --- | --- | --- |
-| Contact form | LIVE | gudvector.com and gudvector-site.vercel.app 200 (Resend). The consent wording update (#35) is live on Vercel prod `97afbcd`. |
+| Contact form | LIVE | gudvector.com and gudvector-site.vercel.app 200 (Resend); Vercel prod `6067670` (#38). |
 | Calendly | LIVE | Lookup/availability/booking deployed. The `/calendly/events` webhook is not mounted (carried forward, not re-checked), so scheduling-link bookings fall back to day-only matching. |
 | Quote drafting | LIVE | Slack/Telnyx owner channels deployed; backend healthy. |
 | Owner approval | LIVE | Slack/SMS commands, signed e-mail links and dashboard approve/decline deployed. Web is on `af29c7a` (#95). |
 | Email/SMS delivery | LIVE | Resend e-mail. Telnyx TFV **Verified**; customer SMS goes out when `sms_consent = true`. |
 | /q/\<token\> portal | LIVE | `/q/nonexistent-token` 200 "couldn't find" on both domains. |
 | Stripe payment | LIVE (sandbox) | Webhook `enabled`, 7 events, livemode=false. |
-| Customer portal | LIVE | `/v1/portal/*` deployed; site portal pages live (Vercel prod `97afbcd`). |
+| Customer portal | LIVE | `/v1/portal/*` deployed; site portal pages live (Vercel prod `6067670`). |
 | AI booking agent | LIVE | `/v1/businesses/{key}/intake/*` deployed; site chat widget live. |
 
 ## Open PRs
 
 | Repo | PR | Title | Base | Mergeable | CI | Age | Merge order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| — | — | No open PRs in gud-vector-agent-suite or gudvector-site | — | — | — | — | — |
+| gudvector-site | [#39](https://github.com/ckoutz/gudvector-site/pull/39) | "Don't want to learn software" page: run the office by text, nothing changes until YES | main | Yes (clean) | Green: Vercel gudvector-site, gudvector-sitev2, larkspur-dashboard previews; Devin Review | ~27 min (opened 12:38 UTC) | 1 (independent) |
+| gud-vector-agent-suite | — | No open PRs | — | — | — | — | — |
 
 No stacked PRs.
 
@@ -36,12 +37,12 @@ No stacked PRs.
 | --- | --- |
 | GVAS main | `af29c7a` 2026-10-20 23:18 UTC: #95, Telnyx second owner number. Main CI 4/4 success (ruff, mypy, alembic, pytest). |
 | GVAS web deployed commit | **`af29c7a`** (main). GitHub deployment `gud-vector-agent-suite / production` success at 2026-10-20 23:20 UTC. No deploy gap. |
-| Larkspur demo (Railway) | Latest `larkspur-demo / demo` record: `bccabb5` (#93), marked `inactive` at 2026-10-20 23:20 UTC. **No record for `af29c7a`**, so the demo's current state is unknown. `web-demo-5831.up.railway.app` was not probed because it is not on this session's network allowlist. |
-| GVAS web `/healthz` | **200** `{"status":"ok"}` (0.32 s; 0.40 s on a re-check) |
-| GVAS web `/health`, `/` | 404 `{"detail":"Not Found"}` (0.38 s): the app's own 404, because those routes don't exist. |
-| gudvector-site main | `97afbcd` 2026-10-21 01:36 UTC: Merge #35. Vercel Production success for gudvector-site, gudvector-sitev2 and larkspur-dashboard (01:37 UTC). |
-| gudvector-site.vercel.app | `/` 200 (0.32 s); `/q/nonexistent-token` 200 "couldn't find" (1.39 s). No "temporarily unavailable". |
-| gudvector.com | Resolves (216.198.79.1, Vercel); `/` 200 (0.14 s); `/q/nonexistent-token` 200 "couldn't find" (0.59 s). www redirects 308 to the apex. **Domain is up.** |
+| Larkspur demo (Railway) | Commit statuses on `af29c7a`: `larkspur-demo - web` success (23:20 UTC, web-demo-5831.up.railway.app) and `larkspur-demo - worker` success (23:19 UTC). The demo is on main (this resolves the previous refresh's open question). The host was not probed because it is not on this session's network allowlist. |
+| GVAS web `/healthz` | **200** `{"status":"ok"}` (0.41 s; 0.39 s on a re-check) |
+| GVAS web `/health`, `/` | 404 `{"detail":"Not Found"}` (0.37 s / 0.40 s): the app's own 404, because those routes don't exist. |
+| gudvector-site main | `6067670` 2026-10-21 12:35 UTC: Merge #38. Vercel success for gudvector-site, gudvector-sitev2 and larkspur-dashboard (12:35–12:36 UTC). |
+| gudvector-site.vercel.app | `/` 200 (0.48 s); `/q/nonexistent-token` 200 "couldn't find" (1.18 s). No "temporarily unavailable". |
+| gudvector.com | Resolves (216.198.79.1, Vercel); `/` 200 (0.26 s); `/q/nonexistent-token` 200 "couldn't find" (0.41 s). www redirects 308 to the apex. **Domain is up.** |
 
 ## Integrations
 
@@ -57,10 +58,10 @@ No stacked PRs.
 
 ## Owner to-do
 
-- [x] Merge site #35 (merged 2026-10-21 01:36 UTC; live on Vercel prod `97afbcd`). Merge open PRs in dependency order: none open now.
+- [ ] Merge site #39 ("Don't want to learn software" page): mergeable, previews green, no dependencies. (#37 and #38 merged today and are live on Vercel prod `6067670`.)
 - [ ] Confirm the new Telnyx campaign text, which matches the #35 consent wording, was approved or submitted (not verifiable here).
-- [x] Railway web is on GVAS main `af29c7a` (#95), deployed 2026-10-20 23:20 UTC. Web does not auto-deploy on push; the worker does.
-- [ ] Confirm the Larkspur demo service is running and decide whether it needs `af29c7a`. Its last deployment record (`bccabb5`) went `inactive` at 2026-10-20 23:20 UTC with no newer one.
+- [x] Railway web is on GVAS main `af29c7a` (#95), deployed 2026-10-20 23:20 UTC. Web does not auto-deploy on push; the worker does. Trigger a web deploy after the next backend merge.
+- [x] Larkspur demo web and worker report success on `af29c7a` (2026-10-20 23:20 UTC).
 - [ ] Set `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` and register the Calendly webhook (`/calendly/events` not mounted).
 - [x] Namecheap: registrant WHOIS verification done. gudvector.com resolves and returns 200.
 - [x] gudvector.com DNS points at Vercel and serves the current gudvector-site build.
@@ -75,7 +76,7 @@ No stacked PRs.
 ## Roadmap (docs/roadmap.md on main, last changed `2348d85` 2026-10-12)
 
 - **Done:** field-note intake (text/voice) and append, evidence-only report, review-model benchmark, contradiction pass, DOCX publish and publish-failure notice, worker logging, unmatched-message triggers, R2 storage, checklist evidence annotator, plan custody, email report, Telnyx owner SMS (quotes), cost ceilings, Calendly lookup, free-text quotes, portal quote handoff, hosted customer quotes + Stripe Checkout, customer portal + recurring quotes, AI booking intake, per-business intake profile, owner notification e-mail, owner dashboard backend, customer SMS consent, booked-mode intake (reschedule/cancel, signed decision links), unified owner notification e-mails, channel-agnostic owner understanding step.
-- **In progress:** "Audit follow-ups (2026-09): all landed". The doc does not yet reflect the owner-texts work merged in #78–#95.
+- **In progress:** "Audit follow-ups (2026-09): all four items landed (#23, #25, #26, #28)". The doc still does not reflect the owner-texts work merged in #78–#95 (unchanged since `2348d85`).
 - **Next (ordered):** 1) Letterhead DOCX templates per business. **Needs decision:** who supplies the template and where the binding manifest lives. 2) Office manager owner assistant over Slack/SMS, with every write behind the owner's YES, owner-only, existing keyword commands matched first. Marked "Not started; design review pending". **Needs decision:** D1–D6 in `docs/office_manager.md`. Prerequisite: fix M1. Later: flag cancel/reschedule hidden in customer notes. 3) Retention and redaction of transcripts, media, reports.
 - **Open follow-ups (not built):** Stripe Connect per-business payouts (`businesses.stripe_account_id` unused); contact-form API behind business `public_key`; per-business timezone for Calendly windows/timestamps; customer-editable phone in portal.
 - **Not planned for pilot:** second workspace/owner, auto-distribution outside the thread, workspace-wide auth, field notes/voice/reports over SMS.
@@ -84,6 +85,8 @@ No stacked PRs.
 
 | Repo | PR | Merged (UTC) |
 | --- | --- | --- |
+| gudvector-site | [#38](https://github.com/ckoutz/gudvector-site/pull/38) Owner-approved quoting page: every quote waits for the owner's OK | 2026-10-21 12:35 |
+| gudvector-site | [#37](https://github.com/ckoutz/gudvector-site/pull/37) Landscapers page: Gus for landscaping crews, the Larkspur demo, the 925 texting line | 2026-10-21 11:50 |
 | gudvector-site | [#35](https://github.com/ckoutz/gudvector-site/pull/35) SMS consent: name Güd Vector, frequency, HELP, Terms/Privacy links; owners opt in by texting | 2026-10-21 01:36 |
 | gud-vector-agent-suite | [#95](https://github.com/ckoutz/gud-vector-agent-suite/pull/95) Telnyx: a second number may answer the one pilot owner; customer texts keep the first | 2026-10-20 23:18 |
 | gudvector-site | [#36](https://github.com/ckoutz/gudvector-site/pull/36) Owner decline reason: cap the input at 200, the length the customer is sent | 2026-10-20 19:08 |
@@ -93,11 +96,3 @@ No stacked PRs.
 | gud-vector-agent-suite | [#90](https://github.com/ckoutz/gud-vector-agent-suite/pull/90) Owner texts: change a customer's name or phone in plain words, behind YES | 2026-10-20 15:11 |
 | gud-vector-agent-suite | [#92](https://github.com/ckoutz/gud-vector-agent-suite/pull/92) Owner texts: message a customer, full message and recipient shown before YES | 2026-10-15 02:16 |
 | gud-vector-agent-suite | [#91](https://github.com/ckoutz/gud-vector-agent-suite/pull/91) Owner texts: block/unblock several days in one YES; plain yes variants; cancels say what was cancelled | 2026-10-15 01:46 |
-| gud-vector-agent-suite | [#89](https://github.com/ckoutz/gud-vector-agent-suite/pull/89) Owner texts: block and unblock time on the booking calendar in plain words, behind YES | 2026-10-14 01:51 |
-| gud-vector-agent-suite | [#88](https://github.com/ckoutz/gud-vector-agent-suite/pull/88) Owner texts: when the model asks for YES itself, Gus adds a note that nothing is set up | 2026-10-14 01:33 |
-| gud-vector-agent-suite | [#87](https://github.com/ckoutz/gud-vector-agent-suite/pull/87) Owner API: GET /v1/owner/commands, the text command log | 2026-10-14 01:22 |
-| gud-vector-agent-suite | [#86](https://github.com/ckoutz/gud-vector-agent-suite/pull/86) Owner texts: change Settings (business name, time zone, Gus's wording) behind YES | 2026-10-14 01:21 |
-| gud-vector-agent-suite | [#85](https://github.com/ckoutz/gud-vector-agent-suite/pull/85) Owner texts: approve or decline visit requests and quotes in plain words, behind YES | 2026-10-14 01:08 |
-| gud-vector-agent-suite | [#84](https://github.com/ckoutz/gud-vector-agent-suite/pull/84) Owner texts: money change tools (send invoice, mark paid/unpaid, record/undo plan payment) behind YES | 2026-10-14 00:58 |
-| gud-vector-agent-suite | [#83](https://github.com/ckoutz/gud-vector-agent-suite/pull/83) Owner texts: confirm-then-act framework (one pending change, YES only, 10 min) and command log | 2026-10-14 00:57 |
-| gud-vector-agent-suite | [#82](https://github.com/ckoutz/gud-vector-agent-suite/pull/82) Owner texts: e-mail info@gudvector.com on a setup failure, at most once an hour | 2026-10-14 00:26 |
