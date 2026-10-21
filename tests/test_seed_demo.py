@@ -276,6 +276,7 @@ async def test_with_invoices_on_the_seed_has_eight_and_an_accepted_quote_can_be_
     ]
     assert len(paid_now) == 2
     for invoice in invoices:
+        assert invoice.sent_at is not None
         assert (invoice.due_on - invoice.sent_at.astimezone(ZONE).date()).days == 14
         assert invoice.sent_at <= NOW
         assert sum(x.quantity * x.unit_price_minor for x in invoice.line_items) == (
