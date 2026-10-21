@@ -480,7 +480,8 @@ class SendDraftInvoiceTool:
                     "Ask me again."
                 )
             planned_due = date.fromisoformat(_str(arguments, "due_on"))
-            if due_on(self._invoices.now(), business_zone(business)) != planned_due:
+            sent_at = self._invoices.now()
+            if due_on(sent_at, business_zone(business)) != planned_due:
                 # The message read back names the due date; a new day means a new read-back.
                 raise OwnerChangeRefusedError(
                     f"The due date I read back for invoice {number} is out of date now. "
@@ -489,7 +490,7 @@ class SendDraftInvoiceTool:
             sent = await unit_of_work.invoices.send_draft(
                 business.business_id,
                 UUID(_str(arguments, "invoice_id")),
-                sent_at=self._invoices.now(),
+                sent_at=sent_at,
                 due_on=planned_due,
                 by=TEXTS_RECORDED_BY,
             )
