@@ -102,6 +102,10 @@ async def test_asks_for_what_is_missing_instead_of_refusing_the_invoice(
         await create.prepare(
             business, {"customer": "luis", "lines": [{"description": "Mow", "amount": "-5"}]}
         )
+    with pytest.raises(OwnerChangeRefusedError, match="too large"):
+        await create.prepare(
+            business, {"customer": "luis", "lines": [{"description": "Mow", "amount": "1e30"}]}
+        )
 
 
 @pytest.mark.asyncio

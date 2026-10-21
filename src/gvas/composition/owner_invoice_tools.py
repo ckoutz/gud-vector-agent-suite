@@ -21,7 +21,12 @@ from gvas.composition.owner_change_tools import (
     _str,
 )
 from gvas.domain.customers import CustomerRecord
-from gvas.domain.enums import CustomerQuoteStatus, QuoteStatus, RecipientAddressKind
+from gvas.domain.enums import (
+    CustomerQuoteStatus,
+    QuotePaymentStatus,
+    QuoteStatus,
+    RecipientAddressKind,
+)
 from gvas.domain.identifiers import (
     BusinessId,
     ConversationId,
@@ -44,7 +49,7 @@ from gvas.domain.owner_assistant import (
     OwnerChangeRefusedError,
     OwnerChangeTool,
 )
-from gvas.domain.payments import PaymentSource
+from gvas.domain.payments import PaymentSource, checkout_expire_command
 from gvas.domain.quotes import (
     Quote,
     QuoteConcurrencyError,
@@ -87,12 +92,13 @@ def _minor(value: object) -> int:
         raise OwnerChangeRefusedError(
             f'"{value}" isn\'t an amount. Give it like 120 or 85.50.'
         ) from error
-    if not amount.is_finite() or amount <= 0 or amount != amount.quantize(Decimal("0.01")):
+    if not amount.is_finite() or amount <= 0:
         raise OwnerChangeRefusedError(f'"{value}" isn\'t an amount. Give it like 120 or 85.50.')
-    minor = int(amount * 100)
-    if minor > _MAX_MINOR:
+    if amount * 100 > _MAX_MINOR:
         raise OwnerChangeRefusedError("That amount is too large for an invoice by text.")
-    return minor
+    if amount != amount.quantize(Decimal("0.01")):
+        raise OwnerChangeRefusedError(f'"{value}" isn\'t an amount. Give it like 120 or 85.50.')
+    return int(amount * 100)
 
 
 def _lines(raw: object) -> list[dict[str, JsonValue]]:
@@ -131,9 +137,9 @@ def _line_items(arguments: Mapping[str, JsonValue]) -> tuple[QuoteLineItem, ...]
     )
 
 
-def _read_back(lines: Sequence[Mapping[str, JsonValue]]) -> str:
+def _read_back(lines: Sequence[Mapping[str, JsonValue]], currency: str = _CURRENCY) -> str:
     return "\n".join(
-        f"- {line['description']}: {money_text(int(str(line['amount_minor'])), _CURRENCY)}"
+        f"- {line['description']}: {money_text(int(str(line['amount_minor'])), currency)}"
         for line in lines
     )
 
@@ -258,7 +264,7 @@ class _Invoices:
                 display_name=customer.display_name,
                 phone=customer.phone,
             ),
-            currency=_CURRENCY,
+            currency=str(arguments.get("currency") or _CURRENCY),
             line_items=items,
         )
         token = new_claim_token()
@@ -477,7 +483,11 @@ class SendDraftInvoiceTool:
                 business.business_id,
                 UUID(_str(arguments, "invoice_id")),
                 sent_at=self._invoices.now(),
-                due_on=date.fromisoformat(_str(arguments, "due_on")),
+                # Never fewer days than read back, if YES comes after midnight.
+                due_on=max(
+                    date.fromisoformat(_str(arguments, "due_on")),
+                    due_on(self._invoices.now(), business_zone(business)),
+                ),
                 by=TEXTS_RECORDED_BY,
             )
             if sent is None:
@@ -569,18 +579,20 @@ class ReissueInvoiceTool:
             {"description": description, "amount_minor": new_minor}
         ]
         old = money_text(invoice.total_minor, invoice.currency)
-        new = money_text(new_minor, _CURRENCY)
+        new = money_text(new_minor, invoice.currency)
         name = invoice.customer_name or invoice.customer_email or "the customer"
         return OwnerChangePlan(
             summary=(
                 f"I will void invoice {invoice.number} for {name} (old amount {old}) and "
-                f"make a new draft invoice for {new} to replace it:\n{_read_back(lines)}\n"
+                f"make a new draft invoice for {new} to replace it:\n"
+                f"{_read_back(lines, invoice.currency)}\n"
                 "Nothing is sent to them yet."
             ),
             arguments={
                 "old_invoice_id": str(invoice.invoice_id),
                 "old_number": invoice.number,
                 "old_quote_id": str(invoice.quote_id),
+                "currency": invoice.currency,
                 "customer_id": str(quote.customer_id),
                 "name": name,
                 "lines": cast(list[JsonValue], lines),
@@ -609,6 +621,20 @@ class ReissueInvoiceTool:
             )
             if quote is None or customer is None:
                 raise OwnerChangeRefusedError(f"Invoice {old_number} or its customer is gone.")
+            checkout = await unit_of_work.quote_payments.find_open(business_id, quote.quote_id)
+            if checkout is not None:
+                if checkout.status is not QuotePaymentStatus.OPEN:
+                    raise OwnerChangeRefusedError(
+                        f"A card payment for invoice {old_number} is going through. "
+                        "Wait for it before changing the amount."
+                    )
+                await unit_of_work.quote_payments.save(
+                    checkout.mark_expired(self._invoices.now()), expected_from=checkout.status
+                )
+                if checkout.checkout_session_id:
+                    await unit_of_work.outbox.enqueue(
+                        checkout_expire_command(business_id, checkout.checkout_session_id)
+                    )
             if not await unit_of_work.invoices.void(
                 business_id, old_invoice_id, by=TEXTS_RECORDED_BY, at=self._invoices.now()
             ):

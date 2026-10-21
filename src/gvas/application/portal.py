@@ -228,8 +228,26 @@ class PortalService:
             quotes = await unit_of_work.quotes.list_for_customer(
                 context.business.business_id, context.customer.customer_id
             )
+            # An unsent draft invoice (or a voided one) isn't the customer's to see or pay.
+            hidden = (
+                {
+                    invoice.quote_id
+                    for invoice in await unit_of_work.invoices.list_for_business(
+                        context.business.business_id
+                    )
+                    if invoice.sent_at is None or not invoice.is_open
+                }
+                if context.business.invoice_prefix
+                else set()
+            )
             await unit_of_work.commit()
-        return tuple(sorted(quotes, key=lambda quote: quote.created_at, reverse=True))
+        return tuple(
+            sorted(
+                (quote for quote in quotes if quote.quote_id not in hidden),
+                key=lambda quote: quote.created_at,
+                reverse=True,
+            )
+        )
 
     async def subscriptions(self, context: PortalContext) -> tuple[QuoteSubscriptionRecord, ...]:
         async with self._unit_of_work_factory() as unit_of_work:
