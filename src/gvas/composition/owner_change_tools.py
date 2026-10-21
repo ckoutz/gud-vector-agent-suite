@@ -934,10 +934,11 @@ _EMAIL = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 class EditCustomerTool:
     spec = OwnerAssistantTool(
         "change_customer",
-        "Propose changing a customer's name or phone number in the business's records. "
-        "`customer` is who, as the owner named them: current name, e-mail or phone. Give "
-        "the new value only for what the owner asked to change and null for the rest. "
-        "E-mail addresses can't be changed by text, since customers sign in with them.",
+        "Propose changing a customer's name or phone number in the business's records, or "
+        "adding an e-mail for a customer who has none. `customer` is who, as the owner "
+        "named them: current name, e-mail or phone. Give the new value only for what the "
+        "owner asked to change and null for the rest. An e-mail a customer already has "
+        "can't be changed by text, since customers sign in with it.",
         {
             "customer": {
                 "type": "string",
@@ -945,6 +946,7 @@ class EditCustomerTool:
             },
             "name": _setting("The customer's new full name."),
             "phone": _setting("The customer's new phone number."),
+            "email": _setting("An e-mail for a customer who has none yet."),
         },
     )
     sensitive = False
@@ -965,7 +967,7 @@ class EditCustomerTool:
             c
             for c in customers
             if needle in (c.display_name or "").casefold()
-            or needle in c.email
+            or needle in (c.email or "")
             or (len(digits) >= 4 and digits in (c.phone or ""))
         ]
         if not found:
@@ -978,10 +980,11 @@ class EditCustomerTool:
     async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
         name = " ".join(str(args.get("name") or "").split())
         phone = str(args.get("phone") or "").strip()
-        if not name and not phone:
+        email = normalize_customer_email(str(args.get("email") or ""))
+        if not name and not phone and not email:
             raise OwnerChangeRefusedError(
-                "Tell me what to change: the customer's name or phone. "
-                "E-mail addresses can't be changed by text."
+                "Tell me what to change: the customer's name or phone, or an e-mail for a "
+                "customer who has none. E-mail addresses can't be changed by text."
             )
         customer = await self._customer(business, args.get("customer"))
         changes: dict[str, JsonValue] = {}
@@ -1001,6 +1004,22 @@ class EditCustomerTool:
             if normalized != customer.phone:
                 changes["phone"] = normalized
                 said.append(f"phone to {_phone_label(normalized)}")
+        if email:
+            if customer.email:
+                raise OwnerChangeRefusedError(
+                    f"{customer.name} already has the e-mail {customer.email}. E-mail "
+                    "addresses can't be changed by text, since customers sign in with them."
+                )
+            if len(email) > _EMAIL_MAX or not _EMAIL.match(email):
+                raise OwnerChangeRefusedError(f'"{email}" doesn\'t look like an e-mail address.')
+            async with self._unit_of_work_factory() as unit_of_work:
+                taken = await unit_of_work.customers.find_by_email(business.business_id, email)
+            if taken is not None:
+                raise OwnerChangeRefusedError(
+                    f"{taken.name} already has the e-mail {email} in your customers."
+                )
+            changes["email"] = email
+            said.append(f"e-mail to {email}, so they can sign in to the customer portal")
         if not changes:
             raise OwnerChangeRefusedError(f"That's already what you have for {customer.name}.")
         summary = f"I will change {customer.name}'s {' and '.join(said)}."
@@ -1043,6 +1062,10 @@ class EditCustomerTool:
                 ),
                 now=self._now(),
             )
+            if updated is not None and "email" in changes:
+                updated = await unit_of_work.customers.add_email(
+                    business.business_id, customer_id, str(changes["email"])
+                )
             if updated is None:
                 raise OwnerChangeRefusedError(
                     f"{customer.name}'s details changed since I asked, so nothing changed. "
@@ -1063,10 +1086,11 @@ class CreateCustomerTool:
     spec = OwnerAssistantTool(
         "change_create_customer",
         "Propose adding a new customer to this business's customer list (a customer of "
-        "the owner's business, never a new business). Needs the customer's name and "
-        "e-mail, since customers sign in with it; a phone is optional. Call it with what "
-        "the owner gave and null for the rest: it says what is still missing, and you ask "
-        "the owner for exactly that.",
+        "the owner's business, never a new business). Needs the customer's name and an "
+        "e-mail or a phone number; either is enough, both is best. Call it with what the "
+        "owner gave and null for the rest: it says what is still missing, and you ask "
+        "the owner for exactly that. If the owner then sends the missing e-mail or phone "
+        "instead of YES, call it again with everything.",
         {
             "name": _given("The customer's full name."),
             "email": _given("The customer's e-mail address."),
@@ -1083,18 +1107,18 @@ class CreateCustomerTool:
 
     async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
         name = " ".join(str(args.get("name") or "").split())
-        email = normalize_customer_email(str(args.get("email") or ""))
+        email = normalize_customer_email(str(args.get("email") or "")) or None
         raw_phone = str(args.get("phone") or "").strip()
         if not name:
             raise OwnerChangeRefusedError("Ask the owner for the new customer's name.")
         if len(name) > _NAME_MAX:
             raise OwnerChangeRefusedError("That name is too long.")
-        if not email:
+        if not email and not raw_phone:
             raise OwnerChangeRefusedError(
-                f"Ask the owner for {name}'s e-mail (customers sign in with it), and their "
-                "phone number if they have one."
+                f"Ask the owner for {name}'s e-mail or phone number. Either one is enough; "
+                "both is best."
             )
-        if len(email) > _EMAIL_MAX or not _EMAIL.match(email):
+        if email and (len(email) > _EMAIL_MAX or not _EMAIL.match(email)):
             raise OwnerChangeRefusedError(f'"{email}" doesn\'t look like an e-mail address.')
         phone = None
         if raw_phone:
@@ -1105,21 +1129,32 @@ class CreateCustomerTool:
                 )
         async with self._unit_of_work_factory() as unit_of_work:
             customers = await unit_of_work.customers.list_for_business(business.business_id)
-        taken = next((c for c in customers if c.email == email), None)
+        taken = next((c for c in customers if email and c.email == email), None)
         if taken is not None:
             raise OwnerChangeRefusedError(
                 f"{taken.name} already has the e-mail {email} in your customers."
             )
         summary = (
             "I will add this new customer to your customers:\n"
-            f"Name: {name}\nE-mail: {email}\nPhone: {_phone_label(phone)}\n"
+            f"Name: {name}\nE-mail: {email or 'none'}\nPhone: {_phone_label(phone)}\n"
             "Nothing is sent to them."
         )
         namesakes = [c for c in customers if (c.display_name or "").casefold() == name.casefold()]
         if namesakes:
             summary += (
-                f" You already have a {name} ({namesakes[0].email}); this adds a separate one."
+                f" You already have a {name} ({_contact(namesakes[0])}); this adds a separate one."
             )
+        sharing = next((c for c in customers if phone and c.phone == phone), None)
+        if sharing is not None and sharing not in namesakes:
+            summary += f" {sharing.name} already has that phone number."
+        if email is None:
+            summary += (
+                "\nWith no e-mail they can't sign in to the customer portal, and I can only "
+                "send them invoices or messages by text once they agree to texts. To add one, "
+                "text me their e-mail instead of YES."
+            )
+        elif phone is None:
+            summary += "\nTo add a phone too, text me their number instead of YES."
         return OwnerChangePlan(
             summary=summary, arguments={"name": name, "email": email, "phone": phone}
         )
@@ -1127,9 +1162,10 @@ class CreateCustomerTool:
     async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
         name, phone = _str(arguments, "name"), arguments.get("phone")
         async with self._unit_of_work_factory() as unit_of_work:
+            email = arguments.get("email")
             created = await unit_of_work.customers.create(
                 business.business_id,
-                _str(arguments, "email"),
+                None if email is None else str(email),
                 display_name=name,
                 phone=None if phone is None else str(phone),
                 now=self._now(),
@@ -1606,13 +1642,30 @@ def _phone_text(phone: str) -> str:
     return phone
 
 
+def _contact(customer: CustomerRecord) -> str:
+    return customer.email or _phone_text(customer.phone or "")
+
+
 def _route(customer: CustomerRecord, can_text: bool) -> tuple[str, str]:
     """By text only to a customer who said yes to texts, when texting is set up;
-    otherwise e-mail."""
+    otherwise e-mail. With neither, the owner is told plainly and offered to add
+    an e-mail."""
 
     if can_text and customer.sms_consent is True and customer.phone:
         return "text", customer.phone
-    return "e-mail", customer.email
+    if customer.email:
+        return "e-mail", customer.email
+    why = (
+        "texting customers isn't set up for your business yet"
+        if customer.sms_consent is True
+        else "they haven't agreed to get texts, so I can't text "
+        f"{_phone_text(customer.phone or '')}"
+    )
+    raise OwnerChangeRefusedError(
+        f"I can't send anything to {customer.name}: there's no e-mail on file, and {why}. "
+        f'Want to add their e-mail? Text me something like "Add the e-mail '
+        f'name@example.com for {customer.name}".'
+    )
 
 
 class MessageCustomerTool:

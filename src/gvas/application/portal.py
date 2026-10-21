@@ -288,7 +288,8 @@ class PortalService:
             created_at=now,
         )
         customer = context.customer
-        text = f"New service request from {customer.name} ({customer.email}): {request.message}"
+        contact = f" ({customer.email})" if customer.email else ""
+        text = f"New service request from {customer.name}{contact}: {request.message}"
         if request.preferred_dates:
             text += f"\nPreferred dates: {request.preferred_dates}"
         async with self._unit_of_work_factory() as unit_of_work:

@@ -16,6 +16,7 @@ from gvas.application.owner_assistant import business_zone, money_text
 from gvas.composition.owner_change_tools import (
     MESSAGE_LIMITS,
     TEXTS_RECORDED_BY,
+    _contact,
     _phone_text,
     _route,
     _str,
@@ -183,16 +184,17 @@ class _Invoices:
             c
             for c in customers
             if needle in (c.display_name or "").casefold()
-            or needle in c.email
+            or needle in (c.email or "")
             or (len(digits) >= 4 and digits in (c.phone or ""))
         ]
         if not found:
             raise OwnerChangeRefusedError(
                 f'No customer in your customers matches "{target}". Ask the owner whether to '
-                "add them as a new customer first (name and e-mail), or who they meant."
+                "add them as a new customer first (name, and an e-mail or phone), or who "
+                "they meant."
             )
         if len(found) > 1:
-            names = ", ".join(f"{c.name} ({c.email})" for c in found[:5])
+            names = ", ".join(f"{c.name} ({_contact(c)})" for c in found[:5])
             raise OwnerChangeRefusedError(f"More than one matches: {names}. Ask which one.")
         return found[0]
 
@@ -258,11 +260,19 @@ class _Invoices:
         draft = QuoteDraftProposal(
             quote_id=quote_id,
             business_id=business_id,
-            recipient=CustomerRecipient(
-                address=customer.email,
-                address_kind=RecipientAddressKind.EMAIL,
-                display_name=customer.display_name,
-                phone=customer.phone,
+            recipient=(
+                CustomerRecipient(
+                    address=customer.email,
+                    address_kind=RecipientAddressKind.EMAIL,
+                    display_name=customer.display_name,
+                    phone=customer.phone,
+                )
+                if customer.email
+                else CustomerRecipient(
+                    address=customer.phone or "",
+                    address_kind=RecipientAddressKind.PHONE,
+                    display_name=customer.display_name,
+                )
             ),
             currency=str(arguments.get("currency") or _CURRENCY),
             line_items=items,
@@ -408,7 +418,7 @@ class CreateInvoiceTool:
         total = money_text(_total(lines), _CURRENCY)
         return OwnerChangePlan(
             summary=(
-                f"I will make a draft invoice for {customer.name} ({customer.email}), "
+                f"I will make a draft invoice for {customer.name} ({_contact(customer)}), "
                 f"total {total}:\n{_read_back(lines)}\nNothing is sent to them yet."
             ),
             arguments={

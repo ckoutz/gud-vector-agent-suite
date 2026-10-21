@@ -429,7 +429,7 @@ class OwnerReadTools:
             )
         matches = [c for c in customers if hit(c.display_name, c.email, c.phone)]
         matched_ids = {customer.customer_id for customer in matches}
-        matched_emails = {customer.email.casefold() for customer in matches}
+        matched_emails = {customer.email.casefold() for customer in matches if customer.email}
 
         def booking_matches(item: IntakeConversation) -> bool:
             collected = item.collected
@@ -756,6 +756,9 @@ class OwnerAssistant:
             return done
         try:
             offered = await follow_up(business, command.arguments)
+        except OwnerChangeRefusedError as refusal:
+            # E.g. the invoice is made, but the customer can't be reached yet.
+            return f"{done}\n\n{refusal}"
         except Exception:
             logger.exception(
                 "owner command follow-up failed",

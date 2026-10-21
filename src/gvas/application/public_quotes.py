@@ -648,7 +648,7 @@ class PublicQuoteService:
                 subscription.business_id, subscription.customer_id
             )
         )
-        who = (customer.display_name or customer.email) if customer is not None else "customer"
+        who = customer.name if customer is not None else "customer"
         amount = format_money(updated.amount_minor, updated.currency)
         if event.outcome is PaymentEventOutcome.SUBSCRIPTION_RENEWED:
             paid = data.paid_minor if data.paid_minor is not None else updated.amount_minor

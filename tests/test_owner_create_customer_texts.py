@@ -56,7 +56,7 @@ async def test_asks_for_the_email_and_phone_when_only_a_name_is_given(
 ) -> None:
     business, tool = await _larkspur(session_factory)
 
-    with pytest.raises(OwnerChangeRefusedError, match="Jim's e-mail.*phone number"):
+    with pytest.raises(OwnerChangeRefusedError, match="Jim's e-mail or phone number"):
         await tool.prepare(business, {"name": "Jim", "email": None, "phone": None})
     with pytest.raises(OwnerChangeRefusedError, match="name"):
         await tool.prepare(business, {"name": None, "email": "jim@example.com", "phone": None})
@@ -104,4 +104,37 @@ async def test_a_namesake_is_named_in_the_read_back(
     )
 
     assert "You already have a luis romero (" in plan.summary
-    assert plan.summary.endswith("this adds a separate one.")
+    assert "this adds a separate one." in plan.summary
+
+
+@pytest.mark.asyncio
+async def test_a_phone_is_enough_and_an_email_can_be_added_later_by_text(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business, tool = await _larkspur(session_factory)
+    change, _ = customer_change_tools(SqlUnitOfWorkFactory(session_factory), now=lambda: NOW)
+
+    plan = await tool.prepare(business, {"name": "Jim Park", "email": None, "phone": "5105550142"})
+
+    assert plan.summary.startswith(
+        "I will add this new customer to your customers:\n"
+        "Name: Jim Park\nE-mail: none\nPhone: (510) 555-0142\nNothing is sent to them."
+    )
+    assert "can't sign in to the customer portal" in plan.summary
+    assert "text me their e-mail instead of YES" in plan.summary
+    await tool.apply(business, plan.arguments)
+    again = await tool.prepare(business, {"name": "Jim Park", "email": None, "phone": "5105550142"})
+    assert "You already have a Jim Park ((510) 555-0142)" in again.summary
+
+    email_plan = await change.prepare(
+        business, {"customer": "(510) 555-0142", "name": None, "phone": None, "email": "Jim@x.com"}
+    )
+    assert "e-mail to jim@x.com" in email_plan.summary
+    await change.apply(business, email_plan.arguments)
+    async with SqlUnitOfWorkFactory(session_factory)() as unit_of_work:
+        saved = await unit_of_work.customers.find_by_email(business.business_id, "jim@x.com")
+    assert saved is not None and saved.phone == "+15105550142"
+    with pytest.raises(OwnerChangeRefusedError, match="already has the e-mail jim@x.com"):
+        await change.prepare(
+            business, {"customer": "jim@x.com", "name": None, "phone": None, "email": "j@y.com"}
+        )
