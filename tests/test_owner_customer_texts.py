@@ -21,7 +21,7 @@ async def _larkspur(
     business_id = await _business(session_factory)
     await seed_demo.seed_demo(session_factory, business_id, reset=False, now=NOW)
     business = await _reload(session_factory, business_id)
-    (tool,) = customer_change_tools(SqlUnitOfWorkFactory(session_factory), now=lambda: NOW)
+    tool, _ = customer_change_tools(SqlUnitOfWorkFactory(session_factory), now=lambda: NOW)
     return business, tool
 
 

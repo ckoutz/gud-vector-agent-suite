@@ -55,7 +55,7 @@ from gvas.domain.owner_assistant import (
 )
 from gvas.domain.payments import LedgerPayment, PaymentKind, PaymentMethod, PaymentSource
 from gvas.domain.ports import ScheduleBlockPort
-from gvas.domain.quotes import Quote, public_quote_id
+from gvas.domain.quotes import Quote, normalize_customer_email, public_quote_id
 from gvas.domain.repositories import BusinessRecord, UnitOfWork
 from gvas.domain.time_zones import zone_label
 
@@ -114,7 +114,11 @@ class _Money:
                 if business.invoice_prefix
                 else ()
             )
-        return [quote for quote in quotes if quote.draft is not None], list(invoices)
+        # A voided invoice's quote is done with: it takes no payment and no new invoice.
+        voided = {invoice.quote_id for invoice in invoices if not invoice.is_open}
+        return [
+            quote for quote in quotes if quote.draft is not None and quote.quote_id not in voided
+        ], [invoice for invoice in invoices if invoice.is_open]
 
     async def ledger(self, business_id: BusinessId, quote: Quote) -> tuple[LedgerPayment, ...]:
         async with self._unit_of_work_factory() as unit_of_work:
@@ -923,6 +927,8 @@ def _phone_label(phone: str | None) -> str:
 
 
 _NAME_MAX = 200  # IntakeCollected.name: a longer one would break their next chat.
+_EMAIL_MAX = 320
+_EMAIL = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 
 
 class EditCustomerTool:
@@ -1049,12 +1055,102 @@ class EditCustomerTool:
         )
 
 
+def _given(description: str) -> dict[str, Any]:
+    return {"type": ["string", "null"], "description": f"{description} Null if not given."}
+
+
+class CreateCustomerTool:
+    spec = OwnerAssistantTool(
+        "change_create_customer",
+        "Propose adding a new customer to this business's customer list (a customer of "
+        "the owner's business, never a new business). Needs the customer's name and "
+        "e-mail, since customers sign in with it; a phone is optional. Call it with what "
+        "the owner gave and null for the rest: it says what is still missing, and you ask "
+        "the owner for exactly that.",
+        {
+            "name": _given("The customer's full name."),
+            "email": _given("The customer's e-mail address."),
+            "phone": _given("The customer's phone number."),
+        },
+    )
+    sensitive = False
+
+    def __init__(
+        self, unit_of_work_factory: Callable[[], UnitOfWork], now: Callable[[], datetime]
+    ) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._now = now
+
+    async def prepare(self, business: BusinessRecord, args: Mapping[str, Any]) -> OwnerChangePlan:
+        name = " ".join(str(args.get("name") or "").split())
+        email = normalize_customer_email(str(args.get("email") or ""))
+        raw_phone = str(args.get("phone") or "").strip()
+        if not name:
+            raise OwnerChangeRefusedError("Ask the owner for the new customer's name.")
+        if len(name) > _NAME_MAX:
+            raise OwnerChangeRefusedError("That name is too long.")
+        if not email:
+            raise OwnerChangeRefusedError(
+                f"Ask the owner for {name}'s e-mail (customers sign in with it), and their "
+                "phone number if they have one."
+            )
+        if len(email) > _EMAIL_MAX or not _EMAIL.match(email):
+            raise OwnerChangeRefusedError(f'"{email}" doesn\'t look like an e-mail address.')
+        phone = None
+        if raw_phone:
+            phone = customer_phone(raw_phone)
+            if phone is None:
+                raise OwnerChangeRefusedError(
+                    "That doesn't look like a phone number. Give it like (510) 555-0123."
+                )
+        async with self._unit_of_work_factory() as unit_of_work:
+            customers = await unit_of_work.customers.list_for_business(business.business_id)
+        taken = next((c for c in customers if c.email == email), None)
+        if taken is not None:
+            raise OwnerChangeRefusedError(
+                f"{taken.name} already has the e-mail {email} in your customers."
+            )
+        summary = (
+            "I will add this new customer to your customers:\n"
+            f"Name: {name}\nE-mail: {email}\nPhone: {_phone_label(phone)}\n"
+            "Nothing is sent to them."
+        )
+        namesakes = [c for c in customers if (c.display_name or "").casefold() == name.casefold()]
+        if namesakes:
+            summary += (
+                f" You already have a {name} ({namesakes[0].email}); this adds a separate one."
+            )
+        return OwnerChangePlan(
+            summary=summary, arguments={"name": name, "email": email, "phone": phone}
+        )
+
+    async def apply(self, business: BusinessRecord, arguments: Mapping[str, JsonValue]) -> str:
+        name, phone = _str(arguments, "name"), arguments.get("phone")
+        async with self._unit_of_work_factory() as unit_of_work:
+            created = await unit_of_work.customers.create(
+                business.business_id,
+                _str(arguments, "email"),
+                display_name=name,
+                phone=None if phone is None else str(phone),
+                now=self._now(),
+            )
+            if created is None:
+                raise OwnerChangeRefusedError(
+                    f"A customer with the e-mail {arguments['email']} was added meanwhile."
+                )
+            await unit_of_work.commit()
+        return f"Done: {name} is in your customers, and the dashboard shows them."
+
+
 def customer_change_tools(
     unit_of_work_factory: Callable[[], UnitOfWork],
     *,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> tuple[OwnerChangeTool, ...]:
-    return (EditCustomerTool(unit_of_work_factory, now),)
+    return (
+        EditCustomerTool(unit_of_work_factory, now),
+        CreateCustomerTool(unit_of_work_factory, now),
+    )
 
 
 _DAY_ARG = {"type": "string", "description": "The date, YYYY-MM-DD, in the business's time zone."}

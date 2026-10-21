@@ -369,10 +369,13 @@ class OwnerReadTools:
             open_invoices = []
             for invoice in invoices:
                 status = invoice_status(invoice, counted.get(invoice.quote_id), today=today)
-                if status is not InvoiceStatus.PAID:
+                if status not in (InvoiceStatus.PAID, InvoiceStatus.VOID):
                     open_invoices.append((invoice, status))
+            # A draft isn't owed until it is sent.
             result["outstanding"] = totals_text(
-                (i.total_minor, i.currency) for i, _ in open_invoices
+                (i.total_minor, i.currency)
+                for i, status in open_invoices
+                if status is not InvoiceStatus.DRAFT
             )
             result["open_invoices"] = [
                 {
@@ -663,6 +666,8 @@ class OwnerAssistant:
         plan: OwnerChangePlan,
         text: str,
         conversation_ref: str,
+        *,
+        keyed: bool = False,
     ) -> str:
         """Stores the one pending change (closing any other proposal, a calendar
         block's included) and asks for YES in words written by code."""
@@ -671,7 +676,7 @@ class OwnerAssistant:
         command = OwnerCommand(
             command_id=uuid4(),
             business_id=business.business_id,
-            conversation_ref=conversation_key(conversation_ref),
+            conversation_ref=conversation_ref if keyed else conversation_key(conversation_ref),
             tool=change.spec.name,
             arguments=dict(plan.arguments),
             summary=plan.summary,
@@ -736,4 +741,30 @@ class OwnerAssistant:
                 "state": state.value,
             },
         )
+        if state is OwnerCommandState.DONE and change is not None:
+            outcome = await self._follow_up(business, change, command, outcome)
         return outcome
+
+    async def _follow_up(
+        self, business: BusinessRecord, change: OwnerChangeTool, command: OwnerCommand, done: str
+    ) -> str:
+        """A change that offers a next one (send the invoice just made) proposes
+        it at once; it waits for its own YES like any other."""
+
+        follow_up = getattr(change, "follow_up", None)
+        if follow_up is None:
+            return done
+        try:
+            offered = await follow_up(business, command.arguments)
+        except Exception:
+            logger.exception(
+                "owner command follow-up failed",
+                extra={"business_id": str(command.business_id), "tool": command.tool},
+            )
+            return done
+        if offered is None or (next_change := self._changes.get(offered[0])) is None:
+            return done
+        proposal = await self._propose(
+            business, next_change, offered[1], "", command.conversation_ref, keyed=True
+        )
+        return f"{done}\n\n{proposal}"

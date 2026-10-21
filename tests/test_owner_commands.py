@@ -89,6 +89,16 @@ class NoteTool:
         self.applied.append((business.business_id, arguments))
         return f'Done: added the note "{arguments["text"]}".'
 
+    async def follow_up(
+        self, business: BusinessRecord, arguments: Mapping[str, JsonValue]
+    ) -> tuple[str, OwnerChangePlan] | None:
+        """``chain`` offers a next note, as a new invoice offers to send it."""
+        if arguments["text"] != "chain":
+            return None
+        return "change_note", OwnerChangePlan(
+            summary='I will add the note "next".', arguments={"text": "next"}
+        )
+
 
 class ModelFake:
     """``note X`` proposes note X (``notes X Y`` tries two); anything else is chat.
@@ -203,6 +213,25 @@ async def test_yes_applies_the_stored_change_once_without_the_model(setup: Setup
     assert setup.tool.applied == [(setup.business_id, {"text": "gate"})]
     assert len(setup.model.requests) == 1
     assert await setup.commands() == [(OwnerCommandState.DONE, 'Done: added the note "gate".')]
+
+
+@pytest.mark.asyncio
+async def test_a_done_change_can_offer_the_next_one_which_waits_for_its_own_yes(
+    setup: Setup,
+) -> None:
+    await setup.text("note chain")
+
+    assert await setup.text("YES") == (
+        'Done: added the note "chain".\n\nI will add the note "next".\n\n' + CONFIRM_PROMPT
+    )
+    assert [arguments for _, arguments in setup.tool.applied] == [{"text": "chain"}]
+    assert await setup.text("YES") == 'Done: added the note "next".'
+    assert [arguments for _, arguments in setup.tool.applied] == [
+        {"text": "chain"},
+        {"text": "next"},
+    ]
+    assert await setup.text("YES") == NOTHING_PENDING_REPLY
+    assert len(setup.model.requests) == 1
 
 
 @pytest.mark.asyncio
