@@ -106,7 +106,7 @@ class EngineAvailability:
             if not site_url:
                 raise AvailabilityError("that time is already booked") from None
             return BookingResult(kind=BookingKind.LINK, link=site_url, event_type_uri=uri)
-        return BookingResult(kind=BookingKind.BOOKED, event_type_uri=uri)
+        return BookingResult(kind=BookingKind.BOOKED, event_type_uri=uri, sends_own_messages=True)
 
     async def find_booking(self, request: BookingRequest) -> BookingResult | None:
         if request.reference is None:

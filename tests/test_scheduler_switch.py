@@ -151,6 +151,7 @@ async def test_an_engine_business_books_through_the_engine_once(
 
     booked = await router.book(request(business_id, "R-1"))
     assert booked.kind is BookingKind.BOOKED
+    assert booked.sends_own_messages
     assert await router.find_booking(request(business_id, "R-1")) is not None
     assert await router.find_booking(request(business_id, "R-2")) is None
     slots = await router.available_slots(business_id, START, START + timedelta(days=2))

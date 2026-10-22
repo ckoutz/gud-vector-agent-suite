@@ -1240,32 +1240,33 @@ class ArrangeIntakeBookingService:
             # again) from deduping against the first request's e-mail/text.
             stamp = conversation.decision_at or conversation.booking_attempted_at or now
             key_base = f"intake_booking:{conversation.conversation_id}:{int(stamp.timestamp())}"
-            await unit_of_work.outbox.enqueue(
-                intake_customer_email_command(
-                    IntakeCustomerEmail(
-                        business_id=business_id,
-                        to=collected.email,
-                        subject=subject,
-                        body=body,
-                        idempotency_key=f"{key_base}:email",
-                    )
-                )
-            )
-            customer = (
-                None
-                if conversation.customer_id is None
-                else await unit_of_work.customers.get(business_id, conversation.customer_id)
-            )
-            if collected.phone and customer is not None and customer.sms_consent is True:
+            if not (result.kind is BookingKind.BOOKED and result.sends_own_messages):
                 await unit_of_work.outbox.enqueue(
-                    intake_customer_text_command(
-                        business_id,
-                        customer_id=customer.customer_id,
-                        phone=collected.phone,
-                        text=body,
-                        idempotency_key=f"{key_base}:text",
+                    intake_customer_email_command(
+                        IntakeCustomerEmail(
+                            business_id=business_id,
+                            to=collected.email,
+                            subject=subject,
+                            body=body,
+                            idempotency_key=f"{key_base}:email",
+                        )
                     )
                 )
+                customer = (
+                    None
+                    if conversation.customer_id is None
+                    else await unit_of_work.customers.get(business_id, conversation.customer_id)
+                )
+                if collected.phone and customer is not None and customer.sms_consent is True:
+                    await unit_of_work.outbox.enqueue(
+                        intake_customer_text_command(
+                            business_id,
+                            customer_id=customer.customer_id,
+                            phone=collected.phone,
+                            text=body,
+                            idempotency_key=f"{key_base}:text",
+                        )
+                    )
             updated = conversation.with_updates(
                 now,
                 booking_kind=result.kind.value,

@@ -1285,6 +1285,9 @@ class BookingResult(IntakeModel):
     # The provider event type used for the booking, when the adapter knows
     # it — lets webhooks confirm they belong to this request.
     event_type_uri: str | None = None
+    # The calendar sends the customer's confirmation itself (with its invite),
+    # so the booking flow must not send a second one.
+    sends_own_messages: bool = False
 
 
 class BookingEventKind(StrEnum):

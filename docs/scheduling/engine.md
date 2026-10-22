@@ -99,9 +99,9 @@ The worker runs `sweep()` every minute.
 - Picking the new time on the page itself (today the customer asks and the
   owner moves the visit), and per-service message templates (FS-20, SHOULD).
 - There is no e-mail opt-out flag on customers yet, so e-mail is always allowed.
-- Intake's own "booked" e-mail and text still go out for engine businesses, so
-  those customers get two confirmations. The duplicate should be dropped before
-  any business switches.
+- (Fixed) Intake no longer sends its own "booked" e-mail and text when the engine
+  sends the confirmation (`BookingResult.sends_own_messages`), so customers get
+  one confirmation.
 - A date's hours set by text can only narrow the weekly hours on the engine, not
   widen them as Calendly date overrides can. `ScheduleBlockPort.serves` is
   synchronous, so it follows the fallback calendar's answer.
