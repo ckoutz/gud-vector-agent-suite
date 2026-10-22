@@ -128,3 +128,21 @@ The worker runs `sweep()` every minute.
   worker job (5-minute polling plus push after each change), and Google watch
   channels with renewal. All of it needs a Google Cloud OAuth client before it
   can run against a real account.
+
+## Owner calendar (V1d, in progress)
+
+- `SchedulingEngine.move` moves a confirmed visit. The visit keeps its buffers
+  and the database still refuses overlaps (`SlotTakenError`). The version goes
+  up, unsent reminders for the old time are skipped, and the customer gets the
+  RESCHEDULED message with the updated invite.
+- `VisitEditorPort` (`add_visit`, `move_visit`, `cancel_visit`) is implemented by
+  `EngineAvailability` and routed by `SchedulerRouter`. A Calendly business is
+  refused ("Visits booked through Calendly are changed in Calendly."). A
+  phone-in visit goes through `book_approved`, so it gets the same overlap
+  guarantee as a website booking.
+- HTTP, owner session only: `POST /v1/owner/visits`,
+  `POST /v1/owner/visits/{event_id}/move`, `POST /v1/owner/visits/{event_id}/cancel`.
+  A refusal is a 409 with an owner-safe `detail`. Calendar entries carry
+  `eventId` and `status` for engine visits.
+- Not yet: click-and-drag blocked time from the dashboard (blocks still come
+  from text), and a status for completed or no-show visits on the calendar.
