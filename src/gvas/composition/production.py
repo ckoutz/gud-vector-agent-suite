@@ -39,6 +39,7 @@ from gvas.config import (
     CostCeilingSettings,
     DatabaseUrlError,
     DemoSettings,
+    GoogleCalendarSettings,
     IntakeSettings,
     ObjectStorageSettings,
     OpenAISettings,
@@ -186,6 +187,7 @@ class ProductionSettings:
     cost_ceilings: CostCeilingSettings = field(default_factory=CostCeilingSettings)
     intake: IntakeSettings = field(default_factory=IntakeSettings)
     demo: DemoSettings = field(default_factory=DemoSettings)
+    google: GoogleCalendarSettings = field(default_factory=GoogleCalendarSettings)
 
     def usage_ceilings(self) -> UsageCeilings:
         return UsageCeilings(
@@ -210,6 +212,7 @@ def load_production_settings() -> ProductionSettings:
         cost_ceilings=CostCeilingSettings(),
         intake=IntakeSettings(),
         demo=DemoSettings(),
+        google=GoogleCalendarSettings(),
     )
     if settings.demo.mode:
         _require_demo_isolation(settings)

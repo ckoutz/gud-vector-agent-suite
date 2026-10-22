@@ -320,6 +320,8 @@ class SchedulingExternalLinkRecord(Base):
     #: The dedicated outside calendar confirmed events are written to.
     write_calendar_id: Mapped[str | None] = mapped_column(String(255))
     sync_cursor: Mapped[str | None] = mapped_column(Text)
+    #: The provider refresh token, sealed by the infrastructure (never plain).
+    refresh_token_sealed: Mapped[str | None] = mapped_column(Text)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

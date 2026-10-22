@@ -124,10 +124,20 @@ The worker runs `sweep()` every minute.
 - Refresh tokens are sealed with AES-GCM (`CalendarTokenCipher`, key in
   `GVAS_CALENDAR_TOKEN_KEY`), bound to the link id. `GoogleAccessTokens` exchanges
   a refresh token for an access token, and `invalid_grant` means reconnect.
-- Still to build: the OAuth connect/reconnect screen (V1d owner tools), the
-  worker job (5-minute polling plus push after each change), and Google watch
-  channels with renewal. All of it needs a Google Cloud OAuth client before it
-  can run against a real account.
+- The sealed refresh token lives on the link (`refresh_token_sealed`,
+  migration `0038_scheduling_link_token`); `StoredRefreshTokens` stores it and
+  resolves a link's `credentials_ref` (its own id). A missing or unopenable
+  token means reconnect.
+- Every minute the worker runs `run_sync_round`: it re-reads busy times for
+  links not synced in 5 minutes (the polling fallback) and pushes changed
+  visits to every write link. One link's failure never stops the others, and a
+  revoked token marks that link `reconnect`. It runs only when
+  `GVAS_GOOGLE_OAUTH_CLIENT_ID`, `GVAS_GOOGLE_OAUTH_CLIENT_SECRET` and
+  `GVAS_CALENDAR_TOKEN_KEY` are all set; a malformed key stops the worker at
+  startup.
+- Still to build: the OAuth connect/reconnect screen and Google watch channels
+  with renewal (until then, polling every 5 minutes keeps reads inside the
+  15-minute stale limit). Both need a Google Cloud OAuth client.
 
 ## Owner calendar (V1d, in progress)
 

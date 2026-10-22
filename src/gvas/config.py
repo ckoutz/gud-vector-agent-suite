@@ -189,6 +189,21 @@ class ResendSettings(BaseSettings):
         return bool(self.api_key and self.from_address)
 
 
+class GoogleCalendarSettings(BaseSettings):
+    """The Google OAuth client and the key that seals stored refresh tokens.
+    Outside-calendar sync runs only when all three are set."""
+
+    model_config = SettingsConfigDict(env_prefix="GVAS_GOOGLE_", env_file=".env", extra="ignore")
+
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
+    token_key: str = Field(default="", validation_alias="GVAS_CALENDAR_TOKEN_KEY")
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.oauth_client_id and self.oauth_client_secret and self.token_key)
+
+
 class WorkerSettings(BaseSettings):
     """Runtime knobs for the continuously running outbox worker service."""
 

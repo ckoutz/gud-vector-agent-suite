@@ -16,16 +16,25 @@ import time
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from gvas.composition.dispatcher import OutboxWorker, WorkerBatchReport
 from gvas.composition.production import (
     ProductionRuntime,
     build_production_runtime,
     worker_identity,
 )
+from gvas.infrastructure.calendar_credentials import CalendarTokenCipher, StoredRefreshTokens
 from gvas.infrastructure.db import create_session_factory
+from gvas.infrastructure.google_calendar import (
+    GoogleAccessTokens,
+    GoogleBusyCalendar,
+    GoogleVisitWriter,
+)
 from gvas.infrastructure.visit_messages import VisitMessenger
 from gvas.interfaces.logging_setup import configure_logging
 from gvas.scheduling.core.engine import SchedulingEngine
+from gvas.scheduling.core.sync_job import run_sync_round
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +88,43 @@ async def _sweep_schedules(scheduling: SchedulingEngine, messenger: VisitMesseng
         )
 
 
+CalendarSync = tuple[GoogleBusyCalendar, GoogleVisitWriter]
+
+
+def build_calendar_sync(
+    runtime: ProductionRuntime, sessions: async_sessionmaker[AsyncSession]
+) -> CalendarSync | None:
+    """Google read and write, or None until the OAuth client and token key
+    are set. A malformed token key fails here, at startup."""
+
+    google = runtime.settings.google
+    if not google.is_configured:
+        return None
+    tokens = GoogleAccessTokens(
+        runtime.http_client,
+        client_id=google.oauth_client_id,
+        client_secret=google.oauth_client_secret,
+        refresh_token=StoredRefreshTokens(sessions, CalendarTokenCipher(google.token_key)),
+    )
+    return GoogleBusyCalendar(runtime.http_client, tokens), GoogleVisitWriter(
+        runtime.http_client, tokens
+    )
+
+
+async def _sync_calendars(
+    sessions: async_sessionmaker[AsyncSession], calendar_sync: CalendarSync
+) -> None:
+    try:
+        result = await run_sync_round(sessions, *calendar_sync)
+    except Exception:
+        logger.exception("outside calendar sync failed; retrying next round")
+        return
+    if result.reconnect or result.failed:
+        logger.warning(
+            "outside calendar sync: %d need reconnect, %d failed", result.reconnect, result.failed
+        )
+
+
 async def run_worker(runtime: ProductionRuntime, stopping: asyncio.Event) -> int:
     worker = build_worker(runtime)
     schedule_sessions = create_session_factory(runtime.engine)
@@ -89,6 +135,7 @@ async def run_worker(runtime: ProductionRuntime, stopping: asyncio.Event) -> int
         or runtime.settings.resend.from_address,
         link_base_url=runtime.settings.intake.decision_link_base_url,
     )
+    calendar_sync = build_calendar_sync(runtime, schedule_sessions)
     poll_seconds = runtime.settings.worker.poll_seconds
     sweep_every = runtime.settings.demo.sandbox_sweep_minutes * 60
     next_sweep = time.monotonic()
@@ -100,6 +147,8 @@ async def run_worker(runtime: ProductionRuntime, stopping: asyncio.Event) -> int
             next_sweep = time.monotonic() + sweep_every
         if time.monotonic() >= next_schedule_sweep:
             await _sweep_schedules(scheduling, messenger)
+            if calendar_sync is not None:
+                await _sync_calendars(schedule_sessions, calendar_sync)
             next_schedule_sweep = time.monotonic() + SCHEDULE_SWEEP_SECONDS
         report: WorkerBatchReport = await worker.run_once()
         batches += 1
