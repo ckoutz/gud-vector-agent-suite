@@ -340,6 +340,35 @@ class SchedulingEngine:
             await session.delete(block)
             self._audit(session, business_id, Actor.OWNER, "block", block_id, "removed", None, None)
 
+    async def resource_time_zone(self, business_id: UUID, resource_id: UUID) -> str:
+        async with self._session_factory() as session:
+            return (await self._resource(session, business_id, resource_id)).time_zone
+
+    async def weekly_hours(self, business_id: UUID, resource_id: UUID) -> tuple[WeeklyWindow, ...]:
+        async with self._session_factory() as session:
+            await self._resource(session, business_id, resource_id)
+            return tuple(await self._windows(session, resource_id))
+
+    async def blocks_between(
+        self, business_id: UUID, resource_id: UUID, start: datetime, end: datetime
+    ) -> tuple[tuple[UUID, Block, BlockSource, str | None], ...]:
+        """One-time blocks overlapping ``start``-``end``, with their source and note."""
+
+        async with self._session_factory() as session:
+            await self._resource(session, business_id, resource_id)
+            rows = await session.scalars(
+                select(SchedulingAvailabilityExceptionRecord).where(
+                    SchedulingAvailabilityExceptionRecord.resource_id == resource_id,
+                    SchedulingAvailabilityExceptionRecord.rrule.is_(None),
+                    SchedulingAvailabilityExceptionRecord.starts_at < end,
+                    SchedulingAvailabilityExceptionRecord.ends_at > start,
+                )
+            )
+            return tuple(
+                (row.id, Block(row.starts_at, row.ends_at), BlockSource(row.source), row.note)
+                for row in rows
+            )
+
     # --- finding and booking time -----------------------------------------
 
     async def open_slots(
@@ -909,6 +938,23 @@ class SchedulingEngine:
         )
         return slots
 
+    async def _windows(self, session: AsyncSession, resource_id: UUID) -> list[WeeklyWindow]:
+        rules = await session.scalars(
+            select(SchedulingAvailabilityRuleRecord).where(
+                SchedulingAvailabilityRuleRecord.resource_id == resource_id
+            )
+        )
+        return [
+            WeeklyWindow(
+                rule.weekday,
+                _time(rule.start_minute),
+                _time(rule.end_minute),
+                rule.effective_from,
+                rule.effective_to,
+            )
+            for rule in rules
+        ]
+
     async def _compute(
         self,
         session: AsyncSession,
@@ -923,21 +969,7 @@ class SchedulingEngine:
         horizon: timedelta | None,
     ) -> tuple[tuple[Slot, ...], dict[str, JsonValue]]:
         zone = ZoneInfo(resource.time_zone)
-        rules = await session.scalars(
-            select(SchedulingAvailabilityRuleRecord).where(
-                SchedulingAvailabilityRuleRecord.resource_id == resource.id
-            )
-        )
-        windows = [
-            WeeklyWindow(
-                rule.weekday,
-                _time(rule.start_minute),
-                _time(rule.end_minute),
-                rule.effective_from,
-                rule.effective_to,
-            )
-            for rule in rules
-        ]
+        windows = await self._windows(session, resource.id)
         exceptions = await session.scalars(
             select(SchedulingAvailabilityExceptionRecord).where(
                 SchedulingAvailabilityExceptionRecord.resource_id == resource.id

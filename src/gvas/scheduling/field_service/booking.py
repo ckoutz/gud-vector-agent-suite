@@ -10,8 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.domain.identifiers import JsonValue
-from gvas.scheduling.core.engine import HeldTime, SchedulingEngine
+from gvas.scheduling.core.engine import HeldTime, SchedulingEngine, owner_principal
 from gvas.scheduling.core.model import (
+    OCCUPYING,
     Actor,
     EventStatus,
     NotFoundError,
@@ -225,6 +226,102 @@ class FieldServiceScheduling:
             needs_approval=service.needs_owner_approval,
             then=fill,
         )
+
+    async def default_service(self, business_id: UUID) -> Service | None:
+        """The business's first active service: what website bookings use."""
+
+        async with self._session_factory() as session:
+            record = await session.scalar(
+                select(FieldServiceRecord)
+                .where(FieldServiceRecord.business_id == business_id, FieldServiceRecord.active)
+                .order_by(FieldServiceRecord.created_at, FieldServiceRecord.id)
+                .limit(1)
+            )
+        return None if record is None else _service(record)
+
+    async def book_approved(
+        self,
+        business_id: UUID,
+        service_id: UUID,
+        *,
+        start: datetime,
+        end: datetime,
+        title: str,
+        details: VisitDetails,
+        reference: str | None,
+    ) -> UUID:
+        """A visit the owner already approved: booked straight away, with the
+        service's buffers, under the same no-overlap guarantee."""
+
+        service = await self.service(business_id, service_id)
+
+        async def attach(session: AsyncSession, event: SchedulingEventRecord) -> None:
+            session.add(
+                FieldServiceBookingRecord(
+                    event_id=event.id,
+                    business_id=business_id,
+                    service_id=service.service_id,
+                    reference=reference,
+                    customer_id=details.customer_id,
+                    address=details.address,
+                    job_description=details.job_description,
+                    gus_notes=details.gus_notes,
+                    answers=dict(details.answers),
+                )
+            )
+
+        return await self._engine.add_event(
+            business_id,
+            service.resource_id,
+            start=start,
+            end=end,
+            title=title,
+            by=owner_principal(business_id),
+            buffer_before=service.buffer_before,
+            buffer_after=service.buffer_after,
+            then=attach,
+        )
+
+    async def booking_by_reference(self, business_id: UUID, reference: str) -> UUID | None:
+        async with self._session_factory() as session:
+            found: UUID | None = await session.scalar(
+                select(SchedulingEventRecord.id)
+                .join(
+                    FieldServiceBookingRecord,
+                    FieldServiceBookingRecord.event_id == SchedulingEventRecord.id,
+                )
+                .where(
+                    FieldServiceBookingRecord.business_id == business_id,
+                    FieldServiceBookingRecord.reference == reference,
+                    SchedulingEventRecord.status.in_([status.value for status in OCCUPYING]),
+                )
+                .limit(1)
+            )
+        return found
+
+    async def visits_between(
+        self, business_id: UUID, start: datetime, end: datetime
+    ) -> list[tuple[SchedulingEventRecord, FieldServiceBookingRecord]]:
+        """Occupying booked visits overlapping ``start``-``end``, oldest first."""
+
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(SchedulingEventRecord, FieldServiceBookingRecord)
+                .join(
+                    FieldServiceBookingRecord,
+                    FieldServiceBookingRecord.event_id == SchedulingEventRecord.id,
+                )
+                .where(
+                    SchedulingEventRecord.business_id == business_id,
+                    SchedulingEventRecord.starts_at < end,
+                    SchedulingEventRecord.ends_at > start,
+                    SchedulingEventRecord.status.in_(
+                        [EventStatus.PENDING_APPROVAL.value, EventStatus.CONFIRMED.value]
+                    ),
+                )
+                .order_by(SchedulingEventRecord.starts_at)
+            )
+            return [(event, booking) for event, booking in rows.tuples()]
 
     async def _record(
         self, session: AsyncSession, business_id: UUID, service_id: UUID

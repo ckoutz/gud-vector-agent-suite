@@ -52,6 +52,10 @@ class Business(Base):
     timezone: Mapped[str | None] = mapped_column(String(64))
     # Set (e.g. "LL") only where invoices are on: numbers read LL-1042.
     invoice_prefix: Mapped[str | None] = mapped_column(String(10))
+    # Which calendar books this business: "calendly" or "engine" (ours).
+    scheduler: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="calendly", server_default="calendly"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

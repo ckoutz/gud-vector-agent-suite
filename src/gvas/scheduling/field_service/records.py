@@ -53,6 +53,8 @@ class FieldServiceBookingRecord(Base):
         ForeignKey("scheduling_fs_services.id", ondelete="RESTRICT"), nullable=False
     )
     customer_id: Mapped[UUID | None] = mapped_column()
+    #: The caller's request reference, so a retried booking finds this one.
+    reference: Mapped[str | None] = mapped_column(String(64), index=True)
     address: Mapped[str | None] = mapped_column(Text)
     job_description: Mapped[str | None] = mapped_column(Text)
     gus_notes: Mapped[str | None] = mapped_column(Text)

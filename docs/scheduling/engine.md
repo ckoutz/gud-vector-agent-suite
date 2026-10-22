@@ -59,9 +59,29 @@ business stays on Calendly.
    business. A shared "per visitor across businesses" limit would need a
    global table.
 
-## Not yet (later V1a PR / V1b)
+## The switch
 
-The per-business `scheduler = calendly | engine` switch, an `AvailabilityPort`
-adapter so website Gus and the booking page read from the engine, Larkspur
-setup, and running `sweep()` from the worker. Customer and owner messages for
-approvals and expiries are V1b; `sweep()` already returns who is due.
+`businesses.scheduler` is `calendly` (the default) or `engine`. `SchedulerRouter`
+stands where the Calendly (production) or demo adapter stood, so website Gus,
+owner approval and blocks by text keep one interface. `SchedulerBookedEvents`
+does the same for the dashboard calendar. An engine business books through its
+first active service. A date's hours set by text become text-sourced blocks.
+
+    gvas-scheduling-setup --business-id <uuid> --hours "mon-fri=08:00-12:00,13:00-17:00" \
+        --service "Estimate walk-through" --minutes 30     # sets up; stays on calendly
+    gvas-scheduling-setup --business-id <uuid> --switch engine   # or back: calendly
+
+The worker runs `sweep()` every minute.
+
+## Not yet (V1b and later)
+
+- Customer confirmations, reminders and calendar invites. Until V1b, an engine
+  booking's confirmation e-mail still says an invite follows, so no business
+  should switch before V1b (the doc says the same for Larkspur).
+- Sending the halfway-approval reminder and the expiry notice that `sweep()`
+  reports.
+- A plain public booking page that holds and confirms (website Gus uses the
+  existing request-then-approve flow, which books the approved time directly).
+- A date's hours set by text can only narrow the weekly hours on the engine, not
+  widen them as Calendly date overrides can. `ScheduleBlockPort.serves` is
+  synchronous, so it follows the fallback calendar's answer.

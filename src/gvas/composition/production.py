@@ -100,6 +100,11 @@ from gvas.infrastructure.resend import (
     ResendQuoteDeliveryAdapter,
     ResendReportEmailAdapter,
 )
+from gvas.infrastructure.scheduler_switch import (
+    SchedulerBookedEvents,
+    SchedulerRouter,
+    build_engine_availability,
+)
 from gvas.infrastructure.slack.api import (
     SlackFileAttachmentAccess,
     SlackWebApiChatPoster,
@@ -505,7 +510,9 @@ def build_demo_ports(
     attachments = NoAttachments()
     customer_email = LoggedCustomerEmail(settings.resend.portal_url)
     owner_channel = LoggedOwnerReply()
-    availability = DemoAvailability(settings.demo, session_factory)
+    engine_calendar = build_engine_availability(session_factory)
+    demo_calendar = DemoAvailability(settings.demo, session_factory)
+    availability = SchedulerRouter(session_factory, engine_calendar, demo_calendar, demo_calendar)
     payment_checkout = (
         StripeCheckout(settings.stripe, client) if settings.stripe.is_configured else None
     )
@@ -516,7 +523,9 @@ def build_demo_ports(
         ),
         quote_drafting=_quote_drafting(settings, client, usage_ledger),
         availability=availability,
-        booked_events=DemoBookedEvents(session_factory, settings.demo),
+        booked_events=SchedulerBookedEvents(
+            session_factory, engine_calendar, DemoBookedEvents(session_factory, settings.demo)
+        ),
         schedule_blocks=availability,
         intake_agent=OpenAIIntakeAgent(settings.openai, client, usage_ledger=usage_ledger),
         owner_assistant=OpenAIOwnerAssistant(settings.openai, client, usage_ledger=usage_ledger),
@@ -611,12 +620,16 @@ def build_production_ports(
         if settings.calendly.is_configured
         else None
     )
-    availability = (
-        CalendlyAvailability(settings.calendly, client) if settings.calendly.is_configured else None
-    )
-    booked_events = (
-        CalendlyBookedEvents(settings.calendly, client) if settings.calendly.is_configured else None
-    )
+    # Every business is on Calendly unless its ``scheduler`` says engine.
+    availability: SchedulerRouter | None = None
+    booked_events: SchedulerBookedEvents | None = None
+    if settings.calendly.is_configured:
+        engine_calendar = build_engine_availability(session_factory)
+        calendly = CalendlyAvailability(settings.calendly, client)
+        availability = SchedulerRouter(session_factory, engine_calendar, calendly, calendly)
+        booked_events = SchedulerBookedEvents(
+            session_factory, engine_calendar, CalendlyBookedEvents(settings.calendly, client)
+        )
     intake_agent = (
         OpenAIIntakeAgent(settings.openai, client, usage_ledger=usage_ledger)
         if settings.openai.is_configured

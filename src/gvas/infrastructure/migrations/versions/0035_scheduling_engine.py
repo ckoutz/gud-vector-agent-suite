@@ -1,4 +1,5 @@
-"""scheduling engine (V1a): calendars, resources, hours, time off, events
+"""scheduling engine (V1a), and a per-business scheduler switch (calendly by
+default): calendars, resources, hours, time off, events
 with a database-level no-overlap guarantee, audit and slot-offer logs, and
 the field-service services and booking details
 
@@ -247,6 +248,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("customer_id", sa.Uuid()),
+        sa.Column("reference", sa.String(64)),
         sa.Column("address", sa.Text()),
         sa.Column("job_description", sa.Text()),
         sa.Column("gus_notes", sa.Text()),
@@ -259,9 +261,16 @@ def upgrade() -> None:
     op.create_index(
         "ix_scheduling_fs_bookings_business_id", "scheduling_fs_bookings", ["business_id"]
     )
+    op.create_index("ix_scheduling_fs_bookings_reference", "scheduling_fs_bookings", ["reference"])
+    with op.batch_alter_table("businesses") as batch:
+        batch.add_column(
+            sa.Column("scheduler", sa.String(16), nullable=False, server_default="calendly")
+        )
 
 
 def downgrade() -> None:
+    with op.batch_alter_table("businesses") as batch:
+        batch.drop_column("scheduler")
     for table in (
         "scheduling_fs_bookings",
         "scheduling_fs_services",

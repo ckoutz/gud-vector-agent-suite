@@ -9,7 +9,6 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from gvas.infrastructure.models import Business
 from gvas.scheduling.core.engine import (
     CalendarSetup,
     SchedulingEngine,
@@ -36,27 +35,14 @@ from gvas.scheduling.core.records import (
 )
 from gvas.scheduling.field_service.booking import FieldServiceScheduling, VisitDetails
 from gvas.scheduling.field_service.records import FieldServiceBookingRecord
+from scheduling_fixtures import START, TUESDAY_10, Clock, seed_business
 
 pytestmark = pytest.mark.postgres
 
 LA = ZoneInfo("America/Los_Angeles")
 NY = ZoneInfo("America/New_York")
-#: Monday 26 October 2026, 8:00 in Los Angeles.
-START = datetime(2026, 10, 26, 8, tzinfo=LA)
-TUESDAY_10 = datetime(2026, 10, 27, 10, tzinfo=LA)
 HOUR = timedelta(hours=1)
 POLICY = BookingPolicy(min_notice=HOUR, horizon=timedelta(days=30), step=timedelta(minutes=30))
-
-
-@dataclass
-class Clock:
-    now: datetime = START
-
-    def __call__(self) -> datetime:
-        return self.now
-
-    def advance(self, delta: timedelta) -> None:
-        self.now += delta
 
 
 @dataclass
@@ -86,21 +72,6 @@ class World:
 
     def engine_for(self) -> SchedulingEngine:
         return SchedulingEngine(self.factory, clock=self.clock)
-
-
-async def seed_business(factory: async_sessionmaker[AsyncSession], slug: str) -> UUID:
-    business_id = uuid4()
-    async with factory() as session, session.begin():
-        session.add(
-            Business(
-                id=business_id,
-                slug=f"{slug}-{business_id}",
-                name=slug,
-                created_at=START,
-                updated_at=START,
-            )
-        )
-    return business_id
 
 
 async def make_world(
