@@ -107,8 +107,8 @@ retried. MMS media is not surfaced to the workflows.
   `GVAS_TELNYX_REQUEST_MAX_AGE_SECONDS` are rejected with 401 like Slack's.
 - **Authorization**: `GVAS_TELNYX_INSTALLATIONS` maps
   `owner_e164=business_uuid:telnyx_e164`; the business UUID must match the
-  Slack mapping. Startup rejects a second number or a second owner
-  (`+1..|+1..`). Texts from any other handset are ignored with 200 and never
+  Slack mapping, and startup fails if it names a different business. Startup
+  rejects a second owner (`+1..|+1..`). Texts from any other handset are ignored with 200 and never
   answered.
 - **Optional as a set**: leave all three `GVAS_TELNYX_*` required variables
   unset to run without SMS. Setting some but not all fails startup, naming the

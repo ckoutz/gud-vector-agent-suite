@@ -222,6 +222,25 @@ def test_startup_rejects_telnyx_mappings_outside_the_pilot_boundary(
 
 
 @pytest.mark.usefixtures("production_environment")
+def test_startup_rejects_texts_for_a_different_business_than_slack(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name, value in TELNYX_ENVIRONMENT.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv(
+        "GVAS_TELNYX_INSTALLATIONS", f"+15550100001={OTHER_BUSINESS_ID}:+15550100000"
+    )
+
+    with pytest.raises(ProductionConfigurationError) as error:
+        load_production_settings()
+
+    message = str(error.value)
+    assert "GVAS_TELNYX_INSTALLATIONS" in message
+    assert "GVAS_SLACK_INSTALLATIONS" in message
+    assert str(OTHER_BUSINESS_ID) not in message
+
+
+@pytest.mark.usefixtures("production_environment")
 def test_without_r2_settings_reports_are_delivered_to_slack_only() -> None:
     runtime = build_production_runtime(load_production_settings())
 

@@ -228,6 +228,7 @@ def load_production_settings() -> ProductionSettings:
     _require_single_owner(settings.slack.installations)
     _require_complete_object_storage(settings.storage)
     _require_complete_telnyx_channel(settings.telnyx)
+    _require_same_business(settings.slack.installations, settings.telnyx)
     _require_complete_calendly_lookup(settings.calendly)
     _require_complete_portal_handoff(settings.portal)
     _require_complete_stripe_checkout(settings.stripe)
@@ -398,6 +399,28 @@ def _require_complete_telnyx_channel(settings: TelnyxSettings) -> None:
         raise ProductionConfigurationError(
             "GVAS_TELNYX_INSTALLATIONS must configure one business with exactly one "
             "owner number, on distinct numbers"
+        )
+
+
+def _require_same_business(slack_installations: str, telnyx: TelnyxSettings) -> None:
+    """Texts and Slack must reach the same business.
+
+    Otherwise an owner texting the Telnyx number would read and change a
+    different business than the one their Slack workspace runs.
+    """
+
+    if not telnyx.is_configured:
+        return
+    slack_businesses = {
+        installation.business_id for installation in parse_slack_installations(slack_installations)
+    }
+    telnyx_businesses = {
+        installation.business_id
+        for installation in parse_telnyx_installations(telnyx.installations)
+    }
+    if slack_businesses != telnyx_businesses:
+        raise ProductionConfigurationError(
+            "GVAS_TELNYX_INSTALLATIONS must name the same business as GVAS_SLACK_INSTALLATIONS"
         )
 
 
