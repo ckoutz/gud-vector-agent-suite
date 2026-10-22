@@ -79,3 +79,76 @@ class GoogleBusyCalendar:
             BusyBlock(f"{item.start.isoformat()}/{item.end.isoformat()}", item.start, item.end)
             for item in calendar.busy
         ]
+
+
+EVENTS_URL = "https://www.googleapis.com/calendar/v3/calendars/{calendar}/events"
+
+
+class GoogleVisitWriter:
+    """Writes confirmed visits to the business's dedicated Google calendar
+    (FS-22). The event id is derived from our event id, so a retry updates
+    rather than duplicates, and cancelling deletes that one entry."""
+
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        access_token: Callable[[str], Awaitable[str]],
+        *,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        self._client = client
+        self._access_token = access_token
+        self._timeout = timeout_seconds
+
+    @staticmethod
+    def google_event_id(event_id: str) -> str:
+        # Google ids allow lowercase a-v and digits; a UUID's hex fits.
+        return "gv" + event_id.replace("-", "").lower()
+
+    async def _call(
+        self, method: str, url: str, credentials_ref: str, body: dict[str, object] | None = None
+    ) -> httpx.Response:
+        token = await self._access_token(credentials_ref)
+        try:
+            response = await self._client.request(
+                method,
+                url,
+                json=body,
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=self._timeout,
+            )
+        except httpx.HTTPError as error:
+            raise GoogleCalendarError("google calendar was unreachable") from error
+        if response.status_code in (401, 403):
+            raise ExternalAccessRevokedError()
+        return response
+
+    async def upsert(
+        self,
+        credentials_ref: str,
+        calendar_id: str,
+        *,
+        event_id: str,
+        start: datetime,
+        end: datetime,
+        summary: str,
+    ) -> None:
+        google_id = self.google_event_id(event_id)
+        base = EVENTS_URL.format(calendar=calendar_id)
+        body: dict[str, object] = {
+            "id": google_id,
+            "summary": summary,
+            "start": {"dateTime": start.isoformat()},
+            "end": {"dateTime": end.isoformat()},
+        }
+        response = await self._call("PUT", f"{base}/{google_id}", credentials_ref, body)
+        if response.status_code == 404:
+            response = await self._call("POST", base, credentials_ref, body)
+        if response.status_code >= 400:
+            raise GoogleCalendarError(f"google calendar returned http {response.status_code}")
+
+    async def delete(self, credentials_ref: str, calendar_id: str, *, event_id: str) -> None:
+        url = f"{EVENTS_URL.format(calendar=calendar_id)}/{self.google_event_id(event_id)}"
+        response = await self._call("DELETE", url, credentials_ref)
+        if response.status_code >= 400 and response.status_code not in (404, 410):
+            raise GoogleCalendarError(f"google calendar returned http {response.status_code}")

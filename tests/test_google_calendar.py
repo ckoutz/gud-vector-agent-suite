@@ -56,3 +56,34 @@ async def test_a_google_outage_is_retried_not_treated_as_revoked() -> None:
 
     with pytest.raises(GoogleCalendarError):
         await google.busy("secret:google:larkspur", START, END)
+
+
+async def test_a_visit_is_written_once_under_our_id_and_cancelling_deletes_it() -> None:
+    from gvas.infrastructure.google_calendar import GoogleVisitWriter
+
+    calls: list[tuple[str, str]] = []
+    stored: set[str] = set()
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path.rsplit("/", 1)[1]))
+        if request.method == "PUT":
+            return httpx.Response(200 if request.url.path in stored else 404)
+        if request.method == "POST":
+            stored.add(f"{request.url.path}/gv{'1' * 32}")
+            return httpx.Response(200)
+        return httpx.Response(204 if request.method == "DELETE" else 400)
+
+    writer = GoogleVisitWriter(httpx.AsyncClient(transport=httpx.MockTransport(answer)), token)
+    visit = {"event_id": "1" * 32, "start": START, "end": END, "summary": "Estimate"}
+
+    await writer.upsert("secret:google:larkspur", "visits", **visit)  # type: ignore[arg-type]
+    await writer.upsert("secret:google:larkspur", "visits", **visit)  # type: ignore[arg-type]
+    await writer.delete("secret:google:larkspur", "visits", event_id="1" * 32)
+
+    google_id = "gv" + "1" * 32
+    assert calls == [
+        ("PUT", google_id),
+        ("POST", "events"),
+        ("PUT", google_id),
+        ("DELETE", google_id),
+    ]
