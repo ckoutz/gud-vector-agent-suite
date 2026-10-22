@@ -172,14 +172,15 @@ def is_yes_and_more(text: str) -> bool:
 
 def is_unclear(text: str) -> bool:
     """A short reply that is neither a yes, a no nor a new request ("hmm",
-    "yes?", "wait", "is it done?"): the change keeps waiting and code asks
-    again, rather than cancelling something the owner may have meant."""
+    "yes?", "wait", "k"): the change keeps waiting and code asks again, rather
+    than cancelling something the owner may have meant. A question of two
+    words or more is a new request."""
 
     words = _words(text)
-    if len(words) > UNCLEAR_MAX_WORDS or is_yes(text) or is_yes_and_more(text):
+    if len(words) > UNCLEAR_MAX_WORDS or is_yes(text) or is_yes_and_more(text) or is_no(text):
         return False
-    first = words[0].rstrip("?") if words else ""
-    if first in _NO_FIRST:
+    first = words[0].rstrip("?:") if words else ""
+    if first in _NO_FIRST or (len(words) > 1 and "?" in text):
         return False
     return not (first in _REQUEST_FIRST and (len(words) > 1 or "?" in text))
 

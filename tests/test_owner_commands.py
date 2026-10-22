@@ -397,7 +397,6 @@ UNCLEAR = [
     "hmm",
     "wait",
     "yes?",
-    "Is it done?",
     "Friday 2pm",
     "k",
     "send",
@@ -430,20 +429,40 @@ async def test_a_short_unclear_reply_keeps_the_change_waiting(setup: Setup, uncl
 
 
 @pytest.mark.parametrize(
-    "text", ["note dog", "who owes me", "schedule?", "what about next week", "no thanks"]
+    "text",
+    [
+        "note dog",
+        "who owes me",
+        "schedule?",
+        "what about next week",
+        "no thanks",
+        "do not",
+        "is Sam booked?",
+        "quote: Sam",
+    ],
 )
 def test_a_short_request_or_no_is_not_unclear(text: str) -> None:
     assert not is_unclear(text)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("request_text", ["who owes me", "what about next week then"])
+@pytest.mark.parametrize(
+    "request_text", ["who owes me", "what about next week then", "is Sam booked?"]
+)
 async def test_a_different_request_cancels_and_is_answered(setup: Setup, request_text: str) -> None:
     await setup.text("note gate")
 
     reply = await setup.text(request_text)
 
     assert reply == cancelled_note('I will add the note "gate".') + "\n\nHi there."
+    assert await setup.commands() == [(OwnerCommandState.CANCELLED, None)]
+
+
+@pytest.mark.asyncio
+async def test_do_not_cancels(setup: Setup) -> None:
+    await setup.text("note gate")
+
+    assert await setup.text("do not") == cancelled_note('I will add the note "gate".')
     assert await setup.commands() == [(OwnerCommandState.CANCELLED, None)]
 
 
