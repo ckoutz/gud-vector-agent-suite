@@ -6,6 +6,9 @@
 
     gvas-scheduling-setup --business-id <uuid> --switch engine   # or calendly
 
+    gvas-scheduling-setup --business-id <uuid> --add-employee "Ana Ruiz" \
+        --hours "tue-sat=08:00-16:00" [--color "#2563eb"] [--offers-times]
+
 Setting up creates the business's calendar, hours and first service; it does
 not switch the business over. Switching back to calendly is always safe:
 nothing is deleted.
@@ -19,13 +22,14 @@ from datetime import time, timedelta
 from uuid import UUID
 
 from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.config import Settings
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.models import Business
 from gvas.infrastructure.scheduler_switch import SCHEDULERS
 from gvas.scheduling.core.engine import SchedulingEngine, owner_principal
-from gvas.scheduling.core.model import BookingPolicy, WeeklyWindow
+from gvas.scheduling.core.model import EMPLOYEE, BookingPolicy, WeeklyWindow
 from gvas.scheduling.field_service.booking import FieldServiceScheduling
 
 DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -60,6 +64,44 @@ def parse_hours(specs: Sequence[str]) -> list[WeeklyWindow]:
     return windows
 
 
+async def _add_employee(
+    session_factory: async_sessionmaker[AsyncSession],
+    business_id: UUID,
+    arguments: argparse.Namespace,
+) -> None:
+    """An employee's own calendar under the business, with their hours.
+    Their times are offered only with --offers-times (the owner's choice)."""
+
+    windows = parse_hours(arguments.hours or [])
+    if not windows:
+        raise SystemExit("an employee needs --hours")
+    engine = SchedulingEngine(session_factory)
+    scheduling = FieldServiceScheduling(engine, session_factory)
+    service = await scheduling.default_service(business_id)
+    if service is None:
+        raise SystemExit("set the business up on the engine first")
+    owner = owner_principal(business_id)
+    setup = await engine.create_calendar(
+        business_id,
+        name=arguments.add_employee,
+        time_zone=arguments.time_zone,
+        owner=owner,
+        policy=BookingPolicy(
+            min_notice=timedelta(hours=arguments.notice_hours),
+            horizon=timedelta(days=arguments.horizon_days),
+            daily_limit=arguments.daily_limit,
+        ),
+        kind="team",
+        resource_kind=EMPLOYEE,
+        color=arguments.color,
+    )
+    await engine.set_weekly_hours(business_id, setup.resource_id, windows, by=owner)
+    if arguments.offers_times:
+        offered = await scheduling.offering(business_id, service)
+        await scheduling.set_offering(business_id, [*offered, setup.resource_id])
+    print(f"employee calendar {setup.calendar_id}, resource {setup.resource_id}")
+
+
 async def _run(arguments: argparse.Namespace) -> None:
     engine = create_engine(Settings().database_url)
     try:
@@ -75,6 +117,9 @@ async def _run(arguments: argparse.Namespace) -> None:
             if result.rowcount != 1:  # type: ignore[attr-defined]
                 raise SystemExit("no such business")
             print(f"scheduler: {arguments.switch}")
+            return
+        if arguments.add_employee:
+            await _add_employee(session_factory, business_id, arguments)
             return
         windows = parse_hours(arguments.hours or [])
         if not windows or not arguments.service or not arguments.minutes:
@@ -119,6 +164,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--notice-hours", type=int, default=12)
     parser.add_argument("--horizon-days", type=int, default=30)
     parser.add_argument("--daily-limit", type=int)
+    parser.add_argument("--add-employee", metavar="NAME")
+    parser.add_argument("--color")
+    parser.add_argument("--offers-times", action="store_true")
     asyncio.run(_run(parser.parse_args(argv)))
     return 0
 

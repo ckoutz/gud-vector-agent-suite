@@ -196,3 +196,7 @@ class Change:
     status: EventStatus
     actor: Actor
     at: datetime
+
+
+#: The resource kind of a team member's own calendar under a business.
+EMPLOYEE = "employee"

@@ -5,6 +5,7 @@
 Gus, owner approval and blocks by text keep one interface whichever
 calendar a business is on."""
 
+from collections.abc import Sequence
 from datetime import date, datetime, time, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -21,7 +22,7 @@ from gvas.domain.intake import (
     BookingRequest,
     BookingResult,
 )
-from gvas.domain.owner import CalendarEvent, CalendarEventSource, VisitEditError
+from gvas.domain.owner import CalendarEvent, CalendarEventSource, TeamMember, VisitEditError
 from gvas.domain.ports import AvailabilityPort, BookedEventsPort, ScheduleBlockPort
 from gvas.infrastructure.models import Business
 from gvas.scheduling.core.engine import SchedulingEngine, owner_principal
@@ -33,6 +34,7 @@ from gvas.scheduling.core.model import (
     NotFoundError,
     PermissionDeniedError,
     SlotTakenError,
+    SlotUnavailableError,
 )
 from gvas.scheduling.field_service.booking import FieldServiceScheduling, Service, VisitDetails
 
@@ -136,6 +138,7 @@ class EngineAvailability:
         self, business_id: BusinessId, start: datetime, end: datetime
     ) -> tuple[CalendarEvent, ...]:
         visits = await self._scheduling.visits_between(business_id, start, end)
+        names = {item.resource_id: item.name for item in await self._engine.resources(business_id)}
         return tuple(
             CalendarEvent(
                 source=CalendarEventSource.BOOKING,
@@ -147,6 +150,9 @@ class EngineAvailability:
                 reference=booking.reference,
                 event_id=str(event.id),
                 status=event.status,
+                employee_id=str(event.resource_id),
+                employee_name=names.get(event.resource_id),
+                assigned=booking.assigned_at is not None,
             )
             for event, booking in visits
         )
@@ -160,15 +166,63 @@ class EngineAvailability:
         except ValueError:
             raise VisitEditError("That visit wasn't found.") from None
 
-    async def move_visit(
-        self, business_id: BusinessId, event_id: str, start: datetime, end: datetime
+    @staticmethod
+    def _employee_id(employee_id: str) -> UUID:
+        try:
+            return UUID(employee_id)
+        except ValueError:
+            raise VisitEditError("That person wasn't found.") from None
+
+    async def team(self, business_id: BusinessId) -> tuple[TeamMember, ...]:
+        service = await self._service(business_id)
+        offered = set(await self._scheduling.offering(business_id, service))
+        return tuple(
+            TeamMember(
+                employee_id=str(item.resource_id), name=item.name, color=item.color,
+                active=item.active, offers_times=item.resource_id in offered,
+            )
+            for item in await self._engine.resources(business_id)
+        )  # fmt: skip
+
+    async def set_offering(self, business_id: BusinessId, employee_ids: Sequence[str]) -> None:
+        if not employee_ids:
+            raise VisitEditError("Pick at least one person whose times Gus offers.")
+        try:
+            await self._scheduling.set_offering(
+                business_id, [self._employee_id(item) for item in employee_ids]
+            )
+        except NotFoundError:
+            raise VisitEditError("That person wasn't found.") from None
+
+    async def assign_on_approval(
+        self, business_id: BusinessId, reference: str, employee_id: str
     ) -> None:
+        try:
+            await self._scheduling.remember_assignment(
+                business_id, reference.strip().lower(), self._employee_id(employee_id),
+                by=owner_principal(business_id),
+            )  # fmt: skip
+        except NotFoundError:
+            raise VisitEditError("That person wasn't found.") from None
+
+    async def move_visit(
+        self,
+        business_id: BusinessId,
+        event_id: str,
+        start: datetime,
+        end: datetime,
+        employee_id: str | None = None,
+    ) -> None:
+        resource_id = None if employee_id is None else self._employee_id(employee_id)
+        owner = owner_principal(business_id)
         try:
             await self._engine.move(
                 business_id, self._event_id(event_id), start=start, end=end,
-                by=owner_principal(business_id),
+                by=owner, resource_id=resource_id,
             )  # fmt: skip
-        except SlotTakenError as error:
+            if resource_id is not None:
+                await self._scheduling.mark_assigned(business_id, self._event_id(event_id), owner)
+        except (SlotTakenError, SlotUnavailableError) as error:
             raise VisitEditError(str(error)) from None
         except IllegalTransitionError:
             raise VisitEditError("Only a confirmed visit can be moved.") from None
@@ -199,6 +253,7 @@ class EngineAvailability:
         phone: str | None,
         address: str | None,
         notes: str | None,
+        employee_id: str | None = None,
     ) -> str:
         service = await self._service(business_id)
         try:
@@ -209,9 +264,12 @@ class EngineAvailability:
                     job_description=notes,
                 ),
                 reference=None,
+                resource_id=None if employee_id is None else self._employee_id(employee_id),
             )  # fmt: skip
-        except SlotTakenError as error:
+        except (SlotTakenError, SlotUnavailableError) as error:
             raise VisitEditError(str(error)) from None
+        except NotFoundError:
+            raise VisitEditError("That person wasn't found.") from None
         except ValueError:
             raise VisitEditError("A visit needs to end after it starts.") from None
         return str(booked)
@@ -350,9 +408,31 @@ class SchedulerRouter:
         return self._engine
 
     async def move_visit(
-        self, business_id: BusinessId, event_id: str, start: datetime, end: datetime
+        self,
+        business_id: BusinessId,
+        event_id: str,
+        start: datetime,
+        end: datetime,
+        employee_id: str | None = None,
     ) -> None:
-        await (await self._editor(business_id)).move_visit(business_id, event_id, start, end)
+        await (await self._editor(business_id)).move_visit(
+            business_id, event_id, start, end, employee_id
+        )
+
+    async def team(self, business_id: BusinessId) -> tuple[TeamMember, ...]:
+        if not await self._on_engine(business_id):
+            return ()
+        return await self._engine.team(business_id)
+
+    async def set_offering(self, business_id: BusinessId, employee_ids: Sequence[str]) -> None:
+        await (await self._editor(business_id)).set_offering(business_id, employee_ids)
+
+    async def assign_on_approval(
+        self, business_id: BusinessId, reference: str, employee_id: str
+    ) -> None:
+        await (await self._editor(business_id)).assign_on_approval(
+            business_id, reference, employee_id
+        )
 
     async def cancel_visit(self, business_id: BusinessId, event_id: str) -> None:
         await (await self._editor(business_id)).cancel_visit(business_id, event_id)
@@ -368,10 +448,11 @@ class SchedulerRouter:
         phone: str | None,
         address: str | None,
         notes: str | None,
+        employee_id: str | None = None,
     ) -> str:
         return await (await self._editor(business_id)).add_visit(
             business_id, start=start, end=end, name=name, email=email, phone=phone,
-            address=address, notes=notes,
+            address=address, notes=notes, employee_id=employee_id,
         )  # fmt: skip
 
     async def booking_event_type_uri(self, business_id: BusinessId) -> str | None:

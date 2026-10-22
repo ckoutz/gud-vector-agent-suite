@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.domain.identifiers import JsonValue
@@ -17,11 +17,17 @@ from gvas.scheduling.core.model import (
     EventStatus,
     NotFoundError,
     Slot,
+    SlotTakenError,
     SlotUnavailableError,
 )
 from gvas.scheduling.core.notify import add_participant
 from gvas.scheduling.core.records import SchedulingEventRecord
-from gvas.scheduling.field_service.records import FieldServiceBookingRecord, FieldServiceRecord
+from gvas.scheduling.field_service.records import (
+    FieldServiceAssignmentRecord,
+    FieldServiceBookingRecord,
+    FieldServiceOfferingRecord,
+    FieldServiceRecord,
+)
 
 DEFAULT_BUFFER_AFTER = timedelta(minutes=15)
 
@@ -155,22 +161,113 @@ class FieldServiceScheduling:
         end: datetime,
         requester: Actor,
     ) -> tuple[Slot, ...]:
+        """Open starts on any calendar whose times Gus offers, merged: a
+        start shows once however many people are free then."""
+
         service = await self.service(business_id, service_id)
         if not service.active:
             return ()
-        return await self._engine.open_slots(
-            business_id,
-            service.resource_id,
-            duration=service.duration,
-            buffer_before=service.buffer_before,
-            buffer_after=service.buffer_after,
-            min_notice=service.min_notice,
-            horizon=service.horizon,
-            start=start,
-            end=end,
-            requester=requester,
-            purpose=f"service:{service.service_id}",
-        )
+        merged: dict[datetime, Slot] = {}
+        for resource_id in await self.offering(business_id, service):
+            slots = await self._engine.open_slots(
+                business_id,
+                resource_id,
+                duration=service.duration,
+                buffer_before=service.buffer_before,
+                buffer_after=service.buffer_after,
+                min_notice=service.min_notice,
+                horizon=service.horizon,
+                start=start,
+                end=end,
+                requester=requester,
+                purpose=f"service:{service.service_id}",
+            )
+            for slot in slots:
+                merged.setdefault(slot.start, slot)
+        return tuple(merged[key] for key in sorted(merged))
+
+    async def offering(self, business_id: UUID, service: Service) -> tuple[UUID, ...]:
+        """Whose times Gus offers, in order: the owner's choice of active
+        calendars, or the service's own calendar when none is chosen."""
+
+        active = {
+            resource.resource_id for resource in await self._engine.resources(business_id)
+            if resource.active
+        }  # fmt: skip
+        async with self._session_factory() as session:
+            chosen = [
+                row.resource_id
+                for row in await session.scalars(
+                    select(FieldServiceOfferingRecord)
+                    .where(FieldServiceOfferingRecord.business_id == business_id)
+                    .order_by(FieldServiceOfferingRecord.position)
+                )
+                if row.resource_id in active
+            ]
+        return tuple(chosen) or (service.resource_id,)
+
+    async def set_offering(self, business_id: UUID, resource_ids: Sequence[UUID]) -> None:
+        """Replace whose times Gus offers. Each must be this business's."""
+
+        own = {resource.resource_id for resource in await self._engine.resources(business_id)}
+        unique = list(dict.fromkeys(resource_ids))
+        if not unique or any(resource_id not in own for resource_id in unique):
+            raise NotFoundError("no such calendar")
+        async with self._session_factory() as session, session.begin():
+            await session.execute(
+                delete(FieldServiceOfferingRecord).where(
+                    FieldServiceOfferingRecord.business_id == business_id
+                )
+            )
+            session.add_all(
+                FieldServiceOfferingRecord(
+                    business_id=business_id, resource_id=resource_id, position=position
+                )
+                for position, resource_id in enumerate(unique)
+            )
+
+    async def remember_assignment(
+        self, business_id: UUID, reference: str, resource_id: UUID, *, by: str
+    ) -> None:
+        """The owner picked who does a request while approving it; the
+        booking made from that approval goes on their calendar."""
+
+        if resource_id not in {
+            resource.resource_id for resource in await self._engine.resources(business_id)
+        }:
+            raise NotFoundError("no such calendar")
+        async with self._session_factory() as session, session.begin():
+            await session.merge(
+                FieldServiceAssignmentRecord(
+                    business_id=business_id, reference=reference,
+                    resource_id=resource_id, assigned_by=by,
+                )
+            )  # fmt: skip
+
+    async def assign(
+        self, business_id: UUID, event_id: UUID, resource_id: UUID, *, by: str
+    ) -> None:
+        """Give a booked visit to someone, at the same time. The overlap
+        guarantee holds on their calendar."""
+
+        view = await self._engine.event(business_id, event_id, by=by)
+        await self._engine.move(
+            business_id, event_id, start=view.start, end=view.end, by=by,
+            resource_id=resource_id,
+        )  # fmt: skip
+        await self.mark_assigned(business_id, event_id, by)
+
+    async def mark_assigned(self, business_id: UUID, event_id: UUID, by: str) -> None:
+        async with self._session_factory() as session, session.begin():
+            booking = await session.scalar(
+                select(FieldServiceBookingRecord).where(
+                    FieldServiceBookingRecord.business_id == business_id,
+                    FieldServiceBookingRecord.event_id == event_id,
+                )
+            )
+            if booking is not None:
+                booking.assigned_at = datetime.now(UTC)
+                booking.assigned_by = by
 
     async def hold(
         self,
@@ -269,11 +366,48 @@ class FieldServiceScheduling:
         title: str,
         details: VisitDetails,
         reference: str | None,
+        resource_id: UUID | None = None,
     ) -> UUID:
         """A visit the owner already approved: booked straight away, with the
-        service's buffers, under the same no-overlap guarantee."""
+        service's buffers, under the same no-overlap guarantee.
+
+        It goes on ``resource_id`` when given (the owner chose), else on the
+        person the owner picked while approving, else on the first offered
+        calendar free at that time, left unassigned for the owner to give
+        to someone. Nobody is assigned automatically."""
 
         service = await self.service(business_id, service_id)
+        by = owner_principal(business_id)
+        assigned_by: str | None = by if resource_id is not None else None
+        candidates: list[UUID] = []
+        if resource_id is not None:
+            candidates.append(resource_id)
+        else:
+            picked = None
+            if reference is not None:
+                async with self._session_factory() as session:
+                    picked = await session.get(
+                        FieldServiceAssignmentRecord, (business_id, reference)
+                    )
+            if picked is not None:
+                candidates.append(picked.resource_id)
+                assigned_by = picked.assigned_by
+            else:
+                offered = await self.offering(business_id, service)
+                if len(offered) == 1:
+                    candidates.extend(offered)
+                else:
+                    free = [
+                        candidate
+                        for candidate in offered
+                        if await self._engine.fits(
+                            business_id, candidate, start=start, duration=end - start,
+                            buffer_before=service.buffer_before,
+                            buffer_after=service.buffer_after,
+                        )
+                    ]  # fmt: skip
+                    candidates.extend(free + [item for item in offered if item not in free])
+        stamp = datetime.now(UTC) if assigned_by is not None else None
 
         async def attach(session: AsyncSession, event: SchedulingEventRecord) -> None:
             session.add(
@@ -287,21 +421,39 @@ class FieldServiceScheduling:
                     job_description=details.job_description,
                     gus_notes=details.gus_notes,
                     answers=dict(details.answers),
+                    assigned_at=stamp,
+                    assigned_by=assigned_by,
                 )
             )
             await _attach_customer(session, event, details)
 
-        return await self._engine.add_event(
-            business_id,
-            service.resource_id,
-            start=start,
-            end=end,
-            title=title,
-            by=owner_principal(business_id),
-            buffer_before=service.buffer_before,
-            buffer_after=service.buffer_after,
-            then=attach,
-        )
+        taken: SlotTakenError | None = None
+        for candidate in candidates:
+            try:
+                booked = await self._engine.add_event(
+                    business_id,
+                    candidate,
+                    start=start,
+                    end=end,
+                    title=title,
+                    by=by,
+                    buffer_before=service.buffer_before,
+                    buffer_after=service.buffer_after,
+                    then=attach,
+                )
+            except SlotTakenError as error:
+                taken = error
+                continue
+            if reference is not None:
+                async with self._session_factory() as session, session.begin():
+                    await session.execute(
+                        delete(FieldServiceAssignmentRecord).where(
+                            FieldServiceAssignmentRecord.business_id == business_id,
+                            FieldServiceAssignmentRecord.reference == reference,
+                        )
+                    )
+            return booked
+        raise taken or SlotTakenError("That time overlaps another visit.")
 
     async def booking_by_reference(self, business_id: UUID, reference: str) -> UUID | None:
         async with self._session_factory() as session:

@@ -65,6 +65,19 @@ class MoveVisitBody(BaseModel):
 
     start: datetime
     end: datetime
+    employeeId: str | None = Field(default=None, max_length=64)  # noqa: N815
+
+
+class ApproveBookingBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    employeeId: str | None = Field(default=None, max_length=64)  # noqa: N815
+
+
+class OfferingBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    employeeIds: list[str] = Field(min_length=1, max_length=50)  # noqa: N815
 
 
 class FinishCalendarConnectBody(BaseModel):
@@ -342,6 +355,9 @@ def calendar_event_payload(event: CalendarEvent) -> dict[str, object]:
         "reference": event.reference,
         "eventId": event.event_id,
         "status": event.status,
+        "employeeId": event.employee_id,
+        "employeeName": event.employee_name,
+        "assigned": event.assigned,
     }
 
 
@@ -572,8 +588,18 @@ def create_owner_router(
         return JSONResponse({"bookings": [owner_booking_payload(item) for item in records]})
 
     @router.post("/v1/owner/bookings/{reference}/approve", dependencies=limited)
-    async def approve_booking(reference: str, context: OwnerContext = owner) -> JSONResponse:
-        outcome = await service.decide_booking(context, reference, approve=True)
+    async def approve_booking(
+        reference: str,
+        body: ApproveBookingBody | None = None,
+        context: OwnerContext = owner,
+    ) -> JSONResponse:
+        try:
+            outcome = await service.decide_booking(
+                context, reference, approve=True,
+                employee_id=None if body is None else body.employeeId,
+            )  # fmt: skip
+        except VisitEditError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
         return JSONResponse({"applied": outcome.applied, "message": outcome.text})
 
     @router.post("/v1/owner/bookings/{reference}/decline", dependencies=limited)
@@ -591,6 +617,7 @@ def create_owner_router(
             event_id = await service.add_visit(
                 context, start=body.start, end=body.end, name=body.name, email=body.email,
                 phone=body.phone, address=body.address, notes=body.notes,
+                employee_id=body.employeeId,
             )  # fmt: skip
         except VisitEditError as error:
             return JSONResponse({"detail": str(error)}, status_code=409)
@@ -601,10 +628,36 @@ def create_owner_router(
         event_id: str, body: MoveVisitBody, context: OwnerContext = owner
     ) -> JSONResponse:
         try:
-            await service.move_visit(context, event_id, body.start, body.end)
+            await service.move_visit(context, event_id, body.start, body.end, body.employeeId)
         except VisitEditError as error:
             return JSONResponse({"detail": str(error)}, status_code=409)
         return JSONResponse({"moved": True})
+
+    @router.get("/v1/owner/team", dependencies=limited)
+    async def team(context: OwnerContext = owner) -> JSONResponse:
+        members = await service.team(context)
+        return JSONResponse(
+            {
+                "team": [
+                    {
+                        "employeeId": member.employee_id,
+                        "name": member.name,
+                        "color": member.color,
+                        "active": member.active,
+                        "offersTimes": member.offers_times,
+                    }
+                    for member in members
+                ]
+            }
+        )
+
+    @router.put("/v1/owner/team/offering", dependencies=limited)
+    async def set_offering(body: OfferingBody, context: OwnerContext = owner) -> JSONResponse:
+        try:
+            await service.set_offering(context, body.employeeIds)
+        except VisitEditError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        return JSONResponse({"saved": True})
 
     @router.post("/v1/owner/visits/{event_id}/cancel", dependencies=limited)
     async def cancel_visit(event_id: str, context: OwnerContext = owner) -> JSONResponse:

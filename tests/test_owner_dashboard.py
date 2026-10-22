@@ -1,6 +1,7 @@
 """Owner dashboard: owner sign-in through the portal login, role separation,
 tenant isolation, approvals, settings and the merged calendar."""
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
@@ -26,6 +27,7 @@ from gvas.domain.owner import (
     CalendarEvent,
     CalendarEventSource,
     OwnerCalendarError,
+    TeamMember,
     VisitEditError,
     calendar_feed_host,
     normalize_calendar_feed_url,
@@ -737,7 +739,12 @@ class VisitEditorFake:
         self.calls: list[tuple[object, ...]] = []
 
     async def move_visit(
-        self, business_id: BusinessId, event_id: str, start: datetime, end: datetime
+        self,
+        business_id: BusinessId,
+        event_id: str,
+        start: datetime,
+        end: datetime,
+        employee_id: str | None = None,
     ) -> None:
         if event_id == "taken":
             raise VisitEditError("That time overlaps another visit.")
@@ -749,6 +756,17 @@ class VisitEditorFake:
     async def add_visit(self, business_id: BusinessId, **visit: object) -> str:
         self.calls.append(("add", business_id, visit["name"], visit["start"]))
         return "new-visit"
+
+    async def team(self, business_id: BusinessId) -> tuple[TeamMember, ...]:
+        return (TeamMember(employee_id="e1", name="Owner", offers_times=True),)
+
+    async def set_offering(self, business_id: BusinessId, employee_ids: Sequence[str]) -> None:
+        self.calls.append(("offering", business_id, tuple(employee_ids)))
+
+    async def assign_on_approval(
+        self, business_id: BusinessId, reference: str, employee_id: str
+    ) -> None:
+        self.calls.append(("assign", business_id, reference, employee_id))
 
 
 async def test_the_owner_adds_moves_and_cancels_visits_for_their_own_business_only(
@@ -789,11 +807,25 @@ async def test_the_owner_adds_moves_and_cancels_visits_for_their_own_business_on
         assert naive.status_code == 409
         cancelled = await http.post("/v1/owner/visits/v1/cancel", headers=bearer(owner))
         assert cancelled.json() == {"cancelled": True}
+        team = await http.get("/v1/owner/team", headers=bearer(owner))
+        assert team.json()["team"] == [
+            {"employeeId": "e1", "name": "Owner", "color": None, "active": True,
+             "offersTimes": True},
+        ]  # fmt: skip
+        offering = await http.put(
+            "/v1/owner/team/offering", json={"employeeIds": ["e1"]}, headers=bearer(owner)
+        )
+        assert offering.json() == {"saved": True}
+        empty = await http.put(
+            "/v1/owner/team/offering", json={"employeeIds": []}, headers=bearer(owner)
+        )
+        assert empty.status_code == 422
 
     assert editor.calls == [
         ("add", business_id, "Walt Sims", WINDOW_START),
         ("move", business_id, "v1", WINDOW_START),
         ("cancel", business_id, "v1"),
+        ("offering", business_id, ("e1",)),
     ]
 
 

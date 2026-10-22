@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Protocol
 
@@ -26,7 +27,7 @@ from gvas.domain.messages import (
     TranscriptResult,
 )
 from gvas.domain.object_storage import ObjectCustodyRequest, StoredObject
-from gvas.domain.owner import CalendarConnection, CalendarEvent
+from gvas.domain.owner import CalendarConnection, CalendarEvent, TeamMember
 from gvas.domain.owner_email import OwnerEmailRequest
 from gvas.domain.owner_understanding import (
     OwnerIntentInterpretation,
@@ -227,10 +228,23 @@ class VisitEditorPort(Protocol):
     raises ``VisitEditError`` with an owner-safe message when refused."""
 
     async def move_visit(
-        self, business_id: BusinessId, event_id: str, start: datetime, end: datetime
+        self,
+        business_id: BusinessId,
+        event_id: str,
+        start: datetime,
+        end: datetime,
+        employee_id: str | None = None,
     ) -> None: ...
 
     async def cancel_visit(self, business_id: BusinessId, event_id: str) -> None: ...
+
+    async def team(self, business_id: BusinessId) -> tuple[TeamMember, ...]: ...
+
+    async def set_offering(self, business_id: BusinessId, employee_ids: Sequence[str]) -> None: ...
+
+    async def assign_on_approval(
+        self, business_id: BusinessId, reference: str, employee_id: str
+    ) -> None: ...
 
     async def add_visit(
         self,
@@ -243,6 +257,7 @@ class VisitEditorPort(Protocol):
         phone: str | None,
         address: str | None,
         notes: str | None,
+        employee_id: str | None = None,
     ) -> str: ...
 
 

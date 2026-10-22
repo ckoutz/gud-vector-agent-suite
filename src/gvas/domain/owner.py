@@ -107,8 +107,22 @@ class CalendarEvent(OwnerModel):
     #: Our scheduling engine's event id, when the owner can change it here.
     event_id: str | None = None
     status: str | None = None
+    #: Whose calendar the visit is on, and whether the owner chose them.
+    employee_id: str | None = None
+    employee_name: str | None = None
+    assigned: bool | None = None
 
     _aware_start = field_validator("start")(_aware)
+
+
+class TeamMember(OwnerModel):
+    """A calendar under the business: the owner's own or an employee's."""
+
+    employee_id: str
+    name: str
+    color: str | None = None
+    active: bool = True
+    offers_times: bool = False
 
 
 class OwnerCalendarError(RuntimeError):

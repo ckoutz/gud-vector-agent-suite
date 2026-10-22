@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.scheduling.core.model import EventStatus
@@ -85,19 +85,25 @@ async def push_events(
                 )
             )
         }
+        # A visit moved to another resource leaves this calendar, so it is
+        # removed from the outside calendar like a cancellation.
         events = list(
             await session.scalars(
                 select(SchedulingEventRecord).where(
-                    SchedulingEventRecord.resource_id == link.resource_id
+                    or_(
+                        SchedulingEventRecord.resource_id == link.resource_id,
+                        SchedulingEventRecord.id.in_(list(pushed)),
+                    )
                 )
             )
         )
+        resource_id = link.resource_id
     sent = 0
     for event in events:
         before = pushed.get(event.id)
         if before is not None and before.pushed_version == event.version:
             continue
-        confirmed = event.status == EventStatus.CONFIRMED.value
+        confirmed = event.status == EventStatus.CONFIRMED.value and event.resource_id == resource_id
         if confirmed:
             await writer.upsert(
                 credentials, calendar_id, event_id=str(event.id),

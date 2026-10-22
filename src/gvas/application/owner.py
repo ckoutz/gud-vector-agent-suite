@@ -8,7 +8,7 @@ or the owner channel (``gvas.domain.owner_actions``).
 """
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Literal
@@ -53,6 +53,7 @@ from gvas.domain.owner import (
     CalendarEventSource,
     OwnerCalendarError,
     OwnerSession,
+    TeamMember,
     VisitEditError,
     normalize_booking_link,
     normalize_calendar_feed_url,
@@ -397,11 +398,26 @@ class OwnerService:
         return self._visit_editor
 
     async def move_visit(
-        self, context: OwnerContext, event_id: str, start: datetime, end: datetime
+        self,
+        context: OwnerContext,
+        event_id: str,
+        start: datetime,
+        end: datetime,
+        employee_id: str | None = None,
     ) -> None:
         if start.tzinfo is None or end.tzinfo is None:
             raise VisitEditError("Times must carry a timezone.")
-        await self._visits().move_visit(context.business.business_id, event_id, start, end)
+        await self._visits().move_visit(
+            context.business.business_id, event_id, start, end, employee_id
+        )
+
+    async def team(self, context: OwnerContext) -> tuple[TeamMember, ...]:
+        if self._visit_editor is None:
+            return ()
+        return await self._visit_editor.team(context.business.business_id)
+
+    async def set_offering(self, context: OwnerContext, employee_ids: Sequence[str]) -> None:
+        await self._visits().set_offering(context.business.business_id, employee_ids)
 
     async def cancel_visit(self, context: OwnerContext, event_id: str) -> None:
         await self._visits().cancel_visit(context.business.business_id, event_id)
@@ -417,6 +433,7 @@ class OwnerService:
         phone: str | None = None,
         address: str | None = None,
         notes: str | None = None,
+        employee_id: str | None = None,
     ) -> str:
         if start.tzinfo is None or end.tzinfo is None:
             raise VisitEditError("Times must carry a timezone.")
@@ -424,12 +441,22 @@ class OwnerService:
             raise VisitEditError("A visit needs the customer's name.")
         return await self._visits().add_visit(
             context.business.business_id, start=start, end=end, name=name.strip(),
-            email=email, phone=phone, address=address, notes=notes,
+            email=email, phone=phone, address=address, notes=notes, employee_id=employee_id,
         )  # fmt: skip
 
     async def decide_booking(
-        self, context: OwnerContext, reference: str, *, approve: bool, reason: str | None = None
+        self,
+        context: OwnerContext,
+        reference: str,
+        *,
+        approve: bool,
+        reason: str | None = None,
+        employee_id: str | None = None,
     ) -> BookingDecisionOutcome:
+        if approve and employee_id is not None:
+            await self._visits().assign_on_approval(
+                context.business.business_id, reference, employee_id
+            )
         decision = BookingDecision(
             action=BookingDecisionAction.APPROVE if approve else BookingDecisionAction.DECLINE,
             reference=reference.strip().lower(),

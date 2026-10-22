@@ -83,6 +83,17 @@ class CalendarSetup:
 
 
 @dataclass(frozen=True)
+class ResourceView:
+    resource_id: UUID
+    calendar_id: UUID
+    name: str
+    kind: str
+    color: str | None
+    active: bool
+    time_zone: str
+
+
+@dataclass(frozen=True)
 class HeldTime:
     event_id: UUID
     start: datetime
@@ -127,6 +138,7 @@ def _event_state(record: SchedulingEventRecord) -> dict[str, JsonValue]:
         "status": record.status,
         "start": record.starts_at.isoformat(),
         "end": record.ends_at.isoformat(),
+        "resource": str(record.resource_id),
     }
 
 
@@ -154,6 +166,7 @@ class SchedulingEngine:
         policy: BookingPolicy = DEFAULT_POLICY,
         kind: str = "business",
         resource_kind: str = "person",
+        color: str | None = None,
     ) -> CalendarSetup:
         now = self._clock()
         zone = normalize_time_zone(time_zone)
@@ -184,6 +197,8 @@ class SchedulingEngine:
                     min_notice_minutes=int(policy.min_notice / timedelta(minutes=1)),
                     horizon_days=policy.horizon.days,
                     daily_limit=policy.daily_limit,
+                    color=color,
+                    active=True,
                     step_minutes=int(policy.step / timedelta(minutes=1)),
                     created_at=now,
                     updated_at=now,
@@ -346,6 +361,76 @@ class SchedulingEngine:
             )
             await session.delete(block)
             self._audit(session, business_id, Actor.OWNER, "block", block_id, "removed", None, None)
+
+    async def resources(self, business_id: UUID) -> tuple[ResourceView, ...]:
+        """Everything whose time this business books, oldest first."""
+
+        async with self._session_factory() as session:
+            records = await session.scalars(
+                select(SchedulingResourceRecord)
+                .where(SchedulingResourceRecord.business_id == business_id)
+                .order_by(SchedulingResourceRecord.created_at, SchedulingResourceRecord.id)
+            )
+            return tuple(
+                ResourceView(
+                    resource_id=record.id,
+                    calendar_id=record.calendar_id,
+                    name=record.name,
+                    kind=record.kind,
+                    color=record.color,
+                    active=record.active,
+                    time_zone=record.time_zone,
+                )
+                for record in records
+            )
+
+    async def set_resource(
+        self,
+        business_id: UUID,
+        resource_id: UUID,
+        *,
+        by: str,
+        name: str | None = None,
+        color: str | None = None,
+        active: bool | None = None,
+    ) -> None:
+        now = self._clock()
+        async with self._session_factory() as session, session.begin():
+            resource = await self._resource(session, business_id, resource_id, lock=True)
+            await self._require(
+                session, business_id, resource.calendar_id, by, CalendarAction.CHANGE
+            )
+            if name is not None and name.strip():
+                resource.name = name.strip()
+            if color is not None:
+                resource.color = color or None
+            if active is not None:
+                resource.active = active
+            resource.updated_at = now
+
+    async def fits(
+        self,
+        business_id: UUID,
+        resource_id: UUID,
+        *,
+        start: datetime,
+        duration: timedelta,
+        buffer_before: timedelta = timedelta(0),
+        buffer_after: timedelta = timedelta(0),
+    ) -> bool:
+        """Whether ``start`` is open on the resource right now. Read-only and
+        not logged as an offer; notice and horizon don't apply."""
+
+        now = self._clock()
+        async with self._session_factory() as session:
+            resource = await self._resource(session, business_id, resource_id)
+            if not resource.active:
+                return False
+            slots, _ = await self._compute(
+                session, resource, now, start, start + duration + timedelta(minutes=1),
+                duration, buffer_before, buffer_after, timedelta(0), timedelta(days=3660),
+            )  # fmt: skip
+        return any(slot.start == start for slot in slots)
 
     async def resource_time_zone(self, business_id: UUID, resource_id: UUID) -> str:
         async with self._session_factory() as session:
@@ -628,6 +713,8 @@ class SchedulingEngine:
                 await self._require(
                     session, business_id, resource.calendar_id, by, CalendarAction.CHANGE
                 )
+                if not resource.active:
+                    raise SlotUnavailableError("That calendar isn't taking visits.")
                 await self._expire_lapsed_holds(session, resource_id, now)
                 record = SchedulingEventRecord(
                     id=event_id,
@@ -723,10 +810,12 @@ class SchedulingEngine:
         start: datetime,
         end: datetime,
         by: str,
+        resource_id: UUID | None = None,
     ) -> None:
-        """The owner moves a confirmed event (FS-30). Its buffers move with
-        it, the overlap guarantee still holds, and the people on it are told
-        and get reminders for the new time."""
+        """The owner moves a confirmed event (FS-30), to a new time and/or to
+        another resource of the same business. Its buffers move with it, the
+        overlap guarantee holds on the resource it lands on, and the people
+        on it are told and get reminders when the time changes."""
 
         if start >= end:
             raise ValueError("an event needs a start before its end")
@@ -734,31 +823,44 @@ class SchedulingEngine:
         try:
             async with self._session_factory() as session, session.begin():
                 record = await self._event(session, business_id, event_id)
-                await self._resource(session, business_id, record.resource_id, lock=True)
+                target_id = resource_id or record.resource_id
+                for locked in sorted({record.resource_id, target_id}):
+                    await self._resource(session, business_id, locked, lock=True)
                 await session.refresh(record)
                 await self._require(
                     session, business_id, record.calendar_id, by, CalendarAction.CHANGE
                 )
                 if record.status != EventStatus.CONFIRMED.value:
                     raise IllegalTransitionError("only a confirmed event can be moved")
-                await self._expire_lapsed_holds(session, record.resource_id, now)
+                target = await self._resource(session, business_id, target_id)
+                if target_id != record.resource_id:
+                    await self._require(
+                        session, business_id, target.calendar_id, by, CalendarAction.CHANGE
+                    )
+                    if not target.active:
+                        raise SlotUnavailableError("That calendar isn't taking visits.")
+                await self._expire_lapsed_holds(session, target_id, now)
                 before = _event_state(record)
+                retimed = (record.starts_at, record.ends_at) != (start, end)
                 buffer_before = record.starts_at - record.blocked_start
                 buffer_after = record.blocked_end - record.ends_at
                 record.starts_at, record.ends_at = start, end
                 record.blocked_start = start - buffer_before
                 record.blocked_end = end + buffer_after
+                record.resource_id = target_id
+                record.calendar_id = target.calendar_id
                 record.version += 1
                 record.updated_at = now
                 await session.flush()
-                await queue_confirmed(session, record, now, MessageKind.RESCHEDULED)
+                if retimed:
+                    await queue_confirmed(session, record, now, MessageKind.RESCHEDULED)
                 self._audit(
                     session,
                     business_id,
                     Actor.OWNER,
                     "event",
                     event_id,
-                    "moved",
+                    "moved" if retimed else "reassigned",
                     before,
                     _event_state(record),
                 )

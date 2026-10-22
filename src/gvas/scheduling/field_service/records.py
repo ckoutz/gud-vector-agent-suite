@@ -59,3 +59,36 @@ class FieldServiceBookingRecord(Base):
     job_description: Mapped[str | None] = mapped_column(Text)
     gus_notes: Mapped[str | None] = mapped_column(Text)
     answers: Mapped[dict[str, JsonValue]] = mapped_column(json_type, nullable=False)
+    #: When the owner chose who does the visit; ``None`` means unassigned.
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    assigned_by: Mapped[str | None] = mapped_column(String(255))
+
+
+class FieldServiceOfferingRecord(Base):
+    """Whose open time Gus offers, in order. No rows: the default service's
+    own calendar only."""
+
+    __tablename__ = "scheduling_fs_offering"
+
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), primary_key=True
+    )
+    resource_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_resources.id", ondelete="CASCADE"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class FieldServiceAssignmentRecord(Base):
+    """Who the owner picked while approving a request, until it is booked."""
+
+    __tablename__ = "scheduling_fs_assignments"
+
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), primary_key=True
+    )
+    reference: Mapped[str] = mapped_column(String(64), primary_key=True)
+    resource_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_resources.id", ondelete="CASCADE"), nullable=False
+    )
+    assigned_by: Mapped[str] = mapped_column(String(255), nullable=False)

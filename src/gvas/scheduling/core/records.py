@@ -85,6 +85,9 @@ class SchedulingResourceRecord(Base):
     min_notice_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     horizon_days: Mapped[int] = mapped_column(Integer, nullable=False)
     daily_limit: Mapped[int | None] = mapped_column(Integer)
+    color: Mapped[str | None] = mapped_column(String(16))
+    #: An inactive resource keeps its history but takes no new bookings.
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     step_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -174,3 +174,39 @@ The worker runs `sweep()` every minute.
   `eventId` and `status` for engine visits.
 - Not yet: click-and-drag blocked time from the dashboard (blocks still come
   from text), and a status for completed or no-show visits on the calendar.
+
+## Team calendars (V1e, branch only)
+
+Each employee is another calendar and resource under the same business
+(resource kind `employee`), with its own hours, days off, blocks, notice,
+horizon and daily visit limit. Nothing about the core is business-specific:
+the field-service layer only decides whose time it offers and books.
+
+- **Double-booking guard per person.** Every event sits on exactly one
+  resource and the database exclusion constraint is per resource, so one
+  person can't be booked twice and two people may overlap. Daily limits
+  count each resource alone.
+- **Whose times Gus offers** (`scheduling_fs_offering`): an ordered list per
+  business. No rows means the default service's own calendar only, so a
+  business that sets nothing behaves exactly as before. Offered starts are
+  merged, and a start shows once however many people are free.
+- **Unassigned until the owner chooses.** The time must be held on someone
+  for the guard to protect it, so a customer booking lands on the first
+  offered person free then and shows as unassigned (`assigned_at` is null).
+  Customers never see or pick a name. The owner chooses at approval
+  (`scheduling_fs_assignments`, keyed by reference, used once by the
+  booking) or later by moving the visit to another person; both are checked
+  for overlaps on the person it lands on and recorded with who chose.
+- **Moving to another person** keeps the time, so the customer isn't sent a
+  reschedule. The invite names the person only once it's an employee.
+- **Google sync stays on the owner's calendar.** A visit moved to an
+  employee is removed from the owner's Google visits calendar.
+- **Permissions.** The calendar permission roles already scope an employee
+  to their own calendar (tested with a granted editor). There is no
+  employee sign-in yet: today only the owner signs in.
+- Setup: `gvas-scheduling-setup --business-id <uuid> --add-employee "Ana"
+  --hours "mon-fri=08:00-16:00" [--color "#2563eb"] [--offers-times]`.
+- Owner API: `GET /v1/owner/team`, `PUT /v1/owner/team/offering`
+  (`employeeIds`), optional `employeeId` on add visit, move visit and
+  approve booking. Calendar events carry `employeeId`, `employeeName` and
+  `assigned`.

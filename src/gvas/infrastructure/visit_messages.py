@@ -18,12 +18,13 @@ from gvas.infrastructure.models import Business
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
 from gvas.infrastructure.visit_links import mint_link
 from gvas.scheduling.core.messages import Channel, MessageKind, text_send_time, visit_invite
-from gvas.scheduling.core.model import EventStatus
+from gvas.scheduling.core.model import EMPLOYEE, EventStatus
 from gvas.scheduling.core.notify import PENDING, SKIPPED
 from gvas.scheduling.core.records import (
     SchedulingEventRecord,
     SchedulingParticipantRecord,
     SchedulingReminderRecord,
+    SchedulingResourceRecord,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,11 @@ class VisitMessenger:
         event = await session.get(SchedulingEventRecord, reminder.event_id)
         person = await session.get(SchedulingParticipantRecord, reminder.participant_id)
         business = await session.get(Business, reminder.business_id)
+        resource = (
+            None
+            if event is None
+            else await session.get(SchedulingResourceRecord, event.resource_id)
+        )
         kind = MessageKind(reminder.kind)
         if event is None or person is None or business is None:
             return self._skip(reminder, "gone")
@@ -147,6 +153,9 @@ class VisitMessenger:
                     stamp=now,
                     organizer_email=self._organizer,
                     attendee_email=person.email,
+                    description=f"With {resource.name}"
+                    if resource is not None and resource.kind == EMPLOYEE
+                    else None,
                     cancelled=kind is MessageKind.CANCELLED,
                 ).decode()
             async with self._unit_of_work_factory() as unit_of_work:
