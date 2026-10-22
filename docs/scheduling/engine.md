@@ -105,3 +105,20 @@ The worker runs `sweep()` every minute.
 - A date's hours set by text can only narrow the weekly hours on the engine, not
   widen them as Calendly date overrides can. `ScheduleBlockPort.serves` is
   synchronous, so it follows the fallback calendar's answer.
+
+## Outside calendars (V1c, in progress)
+
+- `scheduling_external_links` connects a resource to an outside calendar.
+  `scheduling_external_busy` is a times-only mirror of that calendar's busy blocks
+  (never titles). Busy blocks hide slots like time off.
+- A read link whose last good sync is older than 15 minutes (`STALE_AFTER`)
+  stops every offer for that resource (FS-25). A revoked grant marks the link
+  `reconnect` (FS-26 prompt), and offers stay stopped until the owner reconnects.
+- `sync_busy` replaces the mirror from an `ExternalCalendarPort`.
+  `GoogleBusyCalendar` implements it with Google's freeBusy API. A 401 or 403
+  means reconnect; other errors retry.
+- Still to build: storing the encrypted refresh token (FS-26), writing confirmed
+  visits to a dedicated Google calendar (FS-22/27), watch channels and their
+  renewal with a 5-minute polling fallback (FS-24), the worker job, and the
+  owner's connect/reconnect screen. A Google Cloud OAuth client is needed
+  before any of it can run against a real account.
