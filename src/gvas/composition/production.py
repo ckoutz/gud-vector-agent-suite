@@ -141,11 +141,14 @@ from gvas.infrastructure.telnyx.installations import (
     parse_telnyx_installations,
 )
 from gvas.infrastructure.usage_ledger import SqlUsageLedger
+from gvas.infrastructure.visit_links import VisitLinkService
 from gvas.interfaces.http.app import create_app
 from gvas.interfaces.http.owner import create_owner_router
 from gvas.interfaces.http.portal import create_portal_router
 from gvas.interfaces.http.public import PerIpRateLimiter, create_public_router
+from gvas.interfaces.http.visits import create_visit_router
 from gvas.interfaces.logging_setup import configure_logging
+from gvas.scheduling.core.engine import SchedulingEngine
 
 if TYPE_CHECKING:
     from gvas.interfaces.demo_sandboxes import DemoSandboxes
@@ -730,6 +733,9 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
             site_urls = await SqlBusinessRepository(session).list_site_urls()
         return frozenset(site_urls) | resolved.public_api.extra_origins()
 
+    routers.append(
+        create_visit_router(VisitLinkService(session_factory, SchedulingEngine(session_factory)))
+    )
     routers.append(
         create_public_router(
             application.public_quotes,

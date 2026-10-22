@@ -131,3 +131,58 @@ async def test_a_text_due_in_quiet_hours_waits_for_eight_in_the_morning(
     assert text is not None
     assert text.status == "pending"
     assert text.fire_at == datetime(2026, 10, 27, 8, tzinfo=LA)
+
+
+async def test_the_visit_link_cancels_once_and_asking_for_another_time_keeps_the_visit(
+    postgres_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from gvas.infrastructure.visit_links import VisitLinkService
+
+    clock = Clock()
+    business_id, event_id, engine = await book(postgres_session_factory, clock)
+    await VisitMessenger(
+        postgres_session_factory,
+        organizer_email="info@gudvector.com",
+        clock=clock,
+        link_base_url="https://api.example/",
+    ).run_due()
+    body = str((await emails(postgres_session_factory))[0]["body"])
+    assert "https://api.example/v1/visits/" in body
+    token = body.rsplit("/v1/visits/", 1)[1].strip()
+    links = VisitLinkService(postgres_session_factory, engine, clock=clock)
+
+    assert (await links.preview(token)).actions == ("cancel", "reschedule")
+    asked = await links.act(token, "reschedule")
+    assert "stays booked" in asked.body
+    view = await engine.event(business_id, event_id, by=owner_principal(business_id))
+    assert view.status is EventStatus.CONFIRMED
+
+    cancelled = await links.act(token, "cancel")
+    assert cancelled.title == "Your visit is cancelled"
+    view = await engine.event(business_id, event_id, by=owner_principal(business_id))
+    assert view.status is EventStatus.CANCELLED
+    assert (await links.preview(token)).title == "This link no longer works"
+    assert (await links.act(token, "cancel")).title == "This link no longer works"
+    assert (await links.preview("not-a-token")).title == "This link no longer works"
+
+
+async def test_the_visit_link_expires_when_the_visit_ends(
+    postgres_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from gvas.infrastructure.visit_links import VisitLinkService
+
+    clock = Clock()
+    _, _, engine = await book(postgres_session_factory, clock)
+    await VisitMessenger(
+        postgres_session_factory,
+        organizer_email="info@gudvector.com",
+        clock=clock,
+        link_base_url="https://api.example",
+    ).run_due()
+    body = str((await emails(postgres_session_factory))[0]["body"])
+    token = body.rsplit("/v1/visits/", 1)[1].strip()
+    clock.now = TUESDAY_10 + 2 * HOUR
+
+    page = await VisitLinkService(postgres_session_factory, engine, clock=clock).preview(token)
+
+    assert page.title == "This link no longer works"

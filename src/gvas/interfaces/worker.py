@@ -87,6 +87,7 @@ async def run_worker(runtime: ProductionRuntime, stopping: asyncio.Event) -> int
         schedule_sessions,
         organizer_email=runtime.settings.resend.reply_to_address
         or runtime.settings.resend.from_address,
+        link_base_url=runtime.settings.intake.decision_link_base_url,
     )
     poll_seconds = runtime.settings.worker.poll_seconds
     sweep_every = runtime.settings.demo.sandbox_sweep_minutes * 60

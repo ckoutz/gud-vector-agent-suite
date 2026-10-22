@@ -16,6 +16,7 @@ from gvas.domain.intake import format_slot_label, intake_customer_text_command
 from gvas.domain.visit_email import VisitEmail, visit_email_command
 from gvas.infrastructure.models import Business
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
+from gvas.infrastructure.visit_links import mint_link
 from gvas.scheduling.core.messages import Channel, MessageKind, text_send_time, visit_invite
 from gvas.scheduling.core.model import EventStatus
 from gvas.scheduling.core.notify import PENDING, SKIPPED
@@ -54,7 +55,9 @@ class VisitMessenger:
         *,
         organizer_email: str,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        link_base_url: str = "",
     ) -> None:
+        self._link_base_url = link_base_url
         self._session_factory = session_factory
         self._unit_of_work_factory = SqlUnitOfWorkFactory(session_factory)
         self._organizer = parseaddr(organizer_email)[1] or "info@gudvector.com"
@@ -101,6 +104,9 @@ class VisitMessenger:
         zone = ZoneInfo(person.time_zone or event.time_zone)
         name = business.display_name or business.name
         text = _body(kind, name, format_slot_label(event.starts_at, ZoneInfo(event.time_zone)))
+        if self._link_base_url and kind in (MessageKind.CONFIRMATION, MessageKind.RESCHEDULED):
+            link = await mint_link(session, event, self._link_base_url, now)
+            text = f"{text} To cancel or change it: {link}"
         key = f"visit:{reminder.id}"
         business_id = BusinessId(reminder.business_id)
         if Channel(reminder.channel) is Channel.SMS:
