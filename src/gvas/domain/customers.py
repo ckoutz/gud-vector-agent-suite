@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import Protocol
 from uuid import UUID, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from gvas.domain.identifiers import (
     BusinessId,
@@ -62,7 +62,9 @@ def _aware(value: datetime) -> datetime:
 class CustomerRecord(CustomerModel):
     customer_id: CustomerId
     business_id: BusinessId
-    email: str = Field(min_length=3)
+    # ``None`` for a customer the owner added with only a phone: no portal
+    # sign-in until an e-mail is added.
+    email: str | None = Field(default=None, min_length=3)
     display_name: str | None = None
     phone: str | None = None
     # The billing provider's customer handle, once a subscription was opened.
@@ -75,8 +77,8 @@ class CustomerRecord(CustomerModel):
 
     @field_validator("email")
     @classmethod
-    def email_is_normalized(cls, value: str) -> str:
-        if value != value.strip().lower():
+    def email_is_normalized(cls, value: str | None) -> str | None:
+        if value is not None and value != value.strip().lower():
             raise ValueError("customer e-mail must be lowercased")
         return value
 
@@ -85,9 +87,15 @@ class CustomerRecord(CustomerModel):
     def timestamps_are_aware(cls, value: datetime) -> datetime:
         return _aware(value)
 
+    @model_validator(mode="after")
+    def reachable(self) -> "CustomerRecord":
+        if not self.email and not self.phone:
+            raise ValueError("a customer needs an e-mail or a phone")
+        return self
+
     @property
     def name(self) -> str:
-        return self.display_name or self.email
+        return self.display_name or self.email or self.phone or "customer"
 
 
 class PortalLoginToken(CustomerModel):
@@ -243,14 +251,22 @@ class CustomerRepository(Protocol):
     async def create(
         self,
         business_id: BusinessId,
-        email: str,
+        email: str | None,
         *,
         display_name: str | None,
         phone: str | None,
         now: datetime,
     ) -> CustomerRecord | None:
         """A new customer for ``(business_id, email)``, or ``None`` when one
-        already exists — that record is left untouched."""
+        already exists — that record is left untouched. With no e-mail, always
+        a new customer (the phone must be given then)."""
+        ...
+
+    async def add_email(
+        self, business_id: BusinessId, customer_id: CustomerId, email: str
+    ) -> CustomerRecord | None:
+        """Gives a customer who has no e-mail this one; ``None`` when they
+        already have one, or another customer of the business has it."""
         ...
 
     async def set_stripe_customer_id(

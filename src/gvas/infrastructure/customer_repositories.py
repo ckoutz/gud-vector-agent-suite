@@ -121,14 +121,14 @@ class SqlCustomerRepository:
     async def create(
         self,
         business_id: BusinessId,
-        email: str,
+        email: str | None,
         *,
         display_name: str | None,
         phone: str | None,
         now: datetime,
     ) -> CustomerRecord | None:
-        normalized = normalize_customer_email(email)
-        if await self._row_by_email(business_id, normalized) is not None:
+        normalized = None if email is None else normalize_customer_email(email)
+        if normalized is not None and await self._row_by_email(business_id, normalized):
             return None
         row = Customer(
             business_id=business_id,
@@ -145,6 +145,35 @@ class SqlCustomerRepository:
             # A concurrent writer created it first; theirs stays untouched.
             return None
         return self._record(row)
+
+    async def add_email(
+        self, business_id: BusinessId, customer_id: CustomerId, email: str
+    ) -> CustomerRecord | None:
+        normalized = normalize_customer_email(email)
+        if await self._row_by_email(business_id, normalized) is not None:
+            return None
+        try:
+            async with self.session.begin_nested():
+                result = await self.session.execute(
+                    update(Customer)
+                    .where(
+                        Customer.business_id == business_id,
+                        Customer.id == customer_id,
+                        Customer.email.is_(None),
+                    )
+                    .values(email=normalized)
+                )
+        except IntegrityError:
+            # Another customer of the business got that e-mail meanwhile.
+            return None
+        if _rowcount(result) == 0:
+            return None
+        row = await self.session.scalar(
+            select(Customer)
+            .where(Customer.business_id == business_id, Customer.id == customer_id)
+            .execution_options(populate_existing=True)
+        )
+        return None if row is None else self._record(row)
 
     async def set_stripe_customer_id(
         self, business_id: BusinessId, customer_id: CustomerId, stripe_customer_id: str

@@ -86,7 +86,7 @@ class BillingCustomerRequest(PaymentModel):
 
     business_id: BusinessId
     customer_id: CustomerId
-    email: str = Field(min_length=3)
+    email: str | None = Field(default=None, min_length=3)
     name: str | None = None
     phone: str | None = None
     idempotency_key: str = Field(min_length=1)

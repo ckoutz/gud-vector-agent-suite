@@ -452,6 +452,11 @@ class OwnerService:
                 quote.customer_status is None and quote.status is QuoteStatus.APPROVED
             ):
                 raise OwnerConflictError("Only quotes sent to the customer can be marked paid.")
+            invoice = await unit_of_work.invoices.for_quote(business_id, quote.quote_id)
+            if invoice is not None and invoice.sent_at is None:
+                raise OwnerConflictError(
+                    f"Invoice {invoice.number} is a draft. Send it to the customer first."
+                )
             payment_id = uuid4()
             recorded = await unit_of_work.payments.record(
                 LedgerPayment(

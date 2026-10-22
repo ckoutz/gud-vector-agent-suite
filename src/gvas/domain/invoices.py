@@ -3,8 +3,12 @@ quote (the estimate). The small version: an invoice is an exact copy of an
 accepted one-off quote's lines and total, numbered per business (LL-1042)
 and due 14 days after it is sent. It is paid when its quote has a counted
 payment in the ledger, so "Paid this month" stays the one source of truth.
-Only businesses with an invoice prefix have invoices; sending one only
-records it (no e-mail yet)."""
+Only businesses with an invoice prefix have invoices; sending one from the
+dashboard only records it (no e-mail yet).
+
+An owner can also make one by text: a draft (not sent yet) backed by a quote
+the owner made, sent later with its own YES. An amount is never edited in
+place: the invoice is voided and a new one replaces it."""
 
 from datetime import date, datetime, timedelta, tzinfo
 from enum import StrEnum
@@ -22,9 +26,11 @@ FIRST_INVOICE_SEQUENCE = 1001
 
 
 class InvoiceStatus(StrEnum):
+    DRAFT = "draft"
     SENT = "sent"
     PAID = "paid"
     OVERDUE = "overdue"
+    VOID = "void"
 
 
 class InvoiceLine(BaseModel):
@@ -50,10 +56,19 @@ class Invoice(BaseModel):
     line_items: tuple[InvoiceLine, ...]
     total_minor: int = Field(ge=0)
     currency: str
-    sent_at: datetime
+    # None while the invoice is a draft the customer hasn't been sent.
+    sent_at: datetime | None
     due_on: date
     sent_by: str | None = None
     created_at: datetime
+    voided_at: datetime | None = None
+    voided_by: str | None = None
+    # The number of the voided invoice this one replaces.
+    replaces: str | None = None
+
+    @property
+    def is_open(self) -> bool:
+        return self.voided_at is None
 
 
 class InvoiceConflictError(RuntimeError):
@@ -71,11 +86,15 @@ def due_on(sent_at: datetime, zone: tzinfo) -> date:
 def invoice_status(
     invoice: Invoice, payment: LedgerPayment | None, *, today: date
 ) -> InvoiceStatus:
-    """Paid once its quote has a counted payment; overdue the day after it
-    was due; sent until then."""
+    """Void once voided; paid once its quote has a counted payment; a draft
+    until sent; overdue the day after it was due; sent until then."""
 
+    if invoice.voided_at is not None:
+        return InvoiceStatus.VOID
     if payment is not None and payment.counts:
         return InvoiceStatus.PAID
+    if invoice.sent_at is None:
+        return InvoiceStatus.DRAFT
     return InvoiceStatus.OVERDUE if today > invoice.due_on else InvoiceStatus.SENT
 
 
@@ -90,4 +109,22 @@ class InvoiceRepository(Protocol):
 
     async def create(self, invoice: Invoice) -> None:
         """Raises ``InvoiceConflictError`` when the quote or number is taken."""
+        ...
+
+    async def send_draft(
+        self,
+        business_id: BusinessId,
+        invoice_id: UUID,
+        *,
+        sent_at: datetime,
+        due_on: date,
+        by: str,
+    ) -> Invoice | None:
+        """Marks a draft sent; None when it isn't an open draft any more."""
+        ...
+
+    async def void(
+        self, business_id: BusinessId, invoice_id: UUID, *, by: str, at: datetime
+    ) -> bool:
+        """False when it was voided already (or isn't this business's)."""
         ...

@@ -306,7 +306,7 @@ class Customer(Base):
     business_id: Mapped[UUID] = mapped_column(
         ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
     )
-    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(320))
     display_name: Mapped[str | None] = mapped_column(String(255))
     phone: Mapped[str | None] = mapped_column(String(64))
     stripe_customer_id: Mapped[str | None] = mapped_column(String(255))

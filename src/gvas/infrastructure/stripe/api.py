@@ -105,7 +105,9 @@ def checkout_form(request: PaymentCheckoutRequest) -> dict[str, str]:
 
 
 def customer_form(request: BillingCustomerRequest) -> dict[str, str]:
-    form: dict[str, str] = {"email": request.email}
+    form: dict[str, str] = {}
+    if request.email:
+        form["email"] = request.email
     if request.name:
         form["name"] = request.name
     if request.phone:

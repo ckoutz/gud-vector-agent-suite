@@ -71,6 +71,7 @@ from gvas.composition.owner_change_tools import (
     money_change_tools,
     settings_change_tools,
 )
+from gvas.composition.owner_invoice_tools import invoice_change_tools
 from gvas.composition.report_delivery import DeliverFieldNotesReportService
 from gvas.composition.report_email import EmailFieldNotesReportService
 from gvas.composition.report_publication import (
@@ -356,7 +357,10 @@ def build_application(
             + settings_change_tools(unit_of_work_factory, owner, now=now)
             + customer_change_tools(unit_of_work_factory, now=now)
             + calendar_change_tools(unit_of_work_factory, ports.schedule_blocks, now=now)
-            + message_change_tools(unit_of_work_factory, can_text=ports.customer_text is not None),
+            + message_change_tools(unit_of_work_factory, can_text=ports.customer_text is not None)
+            + invoice_change_tools(
+                unit_of_work_factory, can_text=ports.customer_text is not None, now=now
+            ),
             now=now,
         )
         if ports.owner_assistant is not None

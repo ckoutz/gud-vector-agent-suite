@@ -174,6 +174,8 @@ def owner_invoice_payload(
         "currency": invoice.currency,
         "sentAt": _iso(invoice.sent_at),
         "dueOn": invoice.due_on.isoformat(),
+        "voidedAt": _iso(invoice.voided_at),
+        "replaces": invoice.replaces,
         "paidOn": _iso(payment.paid_at if payment is not None and payment.counts else None),
         "paidBy": (
             None

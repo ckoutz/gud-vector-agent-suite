@@ -102,7 +102,7 @@ class ManualPaymentEffectsService:
             )
             who: str | None
             if customer is not None:
-                who = customer.display_name or customer.email
+                who = customer.name
             else:
                 who = quote.draft.recipient.display_name if quote.draft is not None else None
             through = plan.paid_through

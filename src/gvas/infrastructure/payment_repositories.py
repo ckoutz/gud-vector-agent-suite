@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -480,10 +480,13 @@ class SqlInvoiceRepository:
             line_items=tuple(InvoiceLine.model_validate(item) for item in row.line_items),
             total_minor=row.total_cents,
             currency=row.currency,
-            sent_at=_aware(row.sent_at),
+            sent_at=None if row.sent_at is None else _aware(row.sent_at),
             due_on=row.due_on,
             sent_by=row.sent_by,
             created_at=_aware(row.created_at),
+            voided_at=None if row.voided_at is None else _aware(row.voided_at),
+            voided_by=row.voided_by,
+            replaces=row.replaces,
         )
 
     async def list_for_business(self, business_id: BusinessId) -> tuple[Invoice, ...]:
@@ -531,6 +534,9 @@ class SqlInvoiceRepository:
                 due_on=invoice.due_on,
                 sent_by=invoice.sent_by,
                 created_at=invoice.created_at,
+                voided_at=invoice.voided_at,
+                voided_by=invoice.voided_by,
+                replaces=invoice.replaces,
             )
         )
         try:
@@ -538,3 +544,37 @@ class SqlInvoiceRepository:
                 await self.session.flush()
         except IntegrityError as error:
             raise InvoiceConflictError("the quote or number already has an invoice") from error
+
+    async def send_draft(
+        self,
+        business_id: BusinessId,
+        invoice_id: UUID,
+        *,
+        sent_at: datetime,
+        due_on: date,
+        by: str,
+    ) -> Invoice | None:
+        row = await self.session.scalar(
+            select(InvoiceRow)
+            .where(InvoiceRow.business_id == business_id, InvoiceRow.id == invoice_id)
+            .with_for_update()
+        )
+        if row is None or row.sent_at is not None or row.voided_at is not None:
+            return None
+        row.sent_at, row.due_on, row.sent_by = sent_at, due_on, by
+        await self.session.flush()
+        return self._invoice(row)
+
+    async def void(
+        self, business_id: BusinessId, invoice_id: UUID, *, by: str, at: datetime
+    ) -> bool:
+        result = await self.session.execute(
+            update(InvoiceRow)
+            .where(
+                InvoiceRow.business_id == business_id,
+                InvoiceRow.id == invoice_id,
+                InvoiceRow.voided_at.is_(None),
+            )
+            .values(voided_at=at, voided_by=by)
+        )
+        return bool(getattr(result, "rowcount", 0))
