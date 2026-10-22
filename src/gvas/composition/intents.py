@@ -24,7 +24,7 @@ from gvas.domain.intents import (
     IntentUnresolvedError,
 )
 from gvas.domain.messages import NormalizedOwnerMessage
-from gvas.domain.owner_commands import is_no, is_yes, is_yes_and_more
+from gvas.domain.owner_commands import is_no, is_unclear, is_yes, is_yes_and_more, reaction
 from gvas.domain.quotes import Quote, quote_trigger_request_text
 from gvas.domain.repositories import UnitOfWork
 
@@ -63,14 +63,24 @@ class DeterministicIntentResolver:
 
     async def resolve(self, message: NormalizedOwnerMessage) -> IntentResolution:
         # While a change Gus proposed is waiting, every message goes to Gus: a
-        # plain YES applies it, a yes with more on it keeps it waiting, and
-        # anything else cancels it and says so before the rest of the answer.
+        # plain yes applies it, a yes with more on it or a short unclear reply
+        # keeps it waiting, and a no or a new request cancels it and says so
+        # before the rest of the answer.
         # Gus has tools for booking decisions and calendar blocks, so those go
         # to him too; quote and field-note commands keep their own workflows
         # and leave the change waiting, untouched.
         text = normalized_text(message)
         pending = await self._owner_command_pending(message)
         if pending and (is_yes(text) or is_yes_and_more(text) or is_no(text)):
+            return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
+        # An unclear reply or a tapback goes to Gus even in a thread with an
+        # active quote or field-note case, unless it is one of their commands.
+        if (
+            pending
+            and (is_unclear(text) or reaction(text) is not None)
+            and not _explicit_workflow_command(message)
+            and not await self._is_customer_choice(message, text)
+        ):
             return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
         # Booking decisions are checked before everything else: the quote
         # selector claims every message in a conversation with an active
@@ -115,6 +125,17 @@ class DeterministicIntentResolver:
             command = await unit_of_work.owner_commands.latest_proposed(message.business_id)
             return command is not None and command.is_live(now)
 
+    async def _is_customer_choice(self, message: NormalizedOwnerMessage, text: str) -> bool:
+        """A bare number answers a quote's "which customer?" list."""
+
+        if not text.strip().rstrip(".").isdigit():
+            return False
+        _, active_quote = await self._resolve_quote(message)
+        return (
+            active_quote is not None
+            and active_quote.status is QuoteStatus.AWAITING_CUSTOMER_SELECTION
+        )
+
     async def _is_calendar_block(self, message: NormalizedOwnerMessage) -> bool:
         """``unavailable 8-12`` / ``unblock tue`` always; ``yes``/``no`` only while
         a block is waiting on the owner, so other workflows keep their replies."""
@@ -148,6 +169,15 @@ class DeterministicIntentResolver:
             )
             await unit_of_work.commit()
         return self._quotes.select(message, location.conversation_id, active_quote), active_quote
+
+
+def _explicit_workflow_command(message: NormalizedOwnerMessage) -> bool:
+    return (
+        has_field_note_trigger(message)
+        or has_field_note_command_trigger(message)
+        or owner_command(message) is not None
+        or quote_trigger_request_text(normalized_text(message)) is not None
+    )
 
 
 def _plain_words_while_awaiting_ok(
