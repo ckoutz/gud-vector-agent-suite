@@ -5,14 +5,16 @@ from datetime import datetime, time, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.domain.identifiers import BusinessId
 from gvas.domain.intake import AvailabilityError, BookingKind, BookingRequest
 from gvas.domain.owner import CalendarEvent, VisitEditError
-from gvas.infrastructure.models import Business
+from gvas.domain.visit_email import VISIT_EMAIL_COMMAND_TYPE
+from gvas.infrastructure.models import Business, OutboxMessage
 from gvas.infrastructure.scheduler_switch import ENGINE, EngineAvailability
+from gvas.infrastructure.visit_messages import VisitMessenger
 from gvas.scheduling.core.engine import SchedulingEngine, owner_principal
 from gvas.scheduling.core.model import (
     EMPLOYEE,
@@ -260,3 +262,33 @@ async def test_a_visit_given_to_an_employee_leaves_the_owners_google_calendar(
     )
     assert await push_events(postgres_session_factory, link_id, writer) == 1
     assert writer.calls == [("upsert", visit), ("delete", visit)]
+
+
+async def test_the_invite_names_the_employee_only_once_the_owner_chose_them(
+    postgres_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    crew = await team(postgres_session_factory)
+    await crew.calendar.set_offering(crew.business_id, [str(crew.ana), str(crew.ben)])
+    await crew.calendar.assign_on_approval(crew.business_id, "r1", str(crew.ben))
+    await crew.calendar.book(crew.request(TUESDAY_14, "r1"))
+    await crew.calendar.book(crew.request(TUESDAY_14 + HOUR, "r2"))
+    visits = await crew.by_reference()
+    messenger = VisitMessenger(
+        postgres_session_factory, organizer_email="Gud <info@gudvector.com>", clock=Clock()
+    )
+    await messenger.run_due()
+
+    async with postgres_session_factory() as session:
+        payloads = await session.scalars(
+            select(OutboxMessage.payload).where(
+                OutboxMessage.command_type == VISIT_EMAIL_COMMAND_TYPE
+            )
+        )
+        invites = {
+            reference: str(payload["invite"])
+            for payload in payloads
+            for reference, visit in visits.items()
+            if f"UID:{visit.event_id}@gudvector.com" in str(payload["invite"])
+        }
+    assert "With Ben" in invites["r1"]
+    assert "Ana" not in invites["r2"] and "DESCRIPTION" not in invites["r2"]

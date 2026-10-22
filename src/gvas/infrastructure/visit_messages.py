@@ -26,6 +26,7 @@ from gvas.scheduling.core.records import (
     SchedulingReminderRecord,
     SchedulingResourceRecord,
 )
+from gvas.scheduling.field_service.records import FieldServiceBookingRecord
 
 logger = logging.getLogger(__name__)
 SENT = "sent"
@@ -93,9 +94,11 @@ class VisitMessenger:
         event = await session.get(SchedulingEventRecord, reminder.event_id)
         person = await session.get(SchedulingParticipantRecord, reminder.participant_id)
         business = await session.get(Business, reminder.business_id)
+        booking = None if event is None else await session.get(FieldServiceBookingRecord, event.id)
+        # The invite names the employee only once the owner has chosen them.
         resource = (
             None
-            if event is None
+            if event is None or booking is None or booking.assigned_at is None
             else await session.get(SchedulingResourceRecord, event.resource_id)
         )
         kind = MessageKind(reminder.kind)
