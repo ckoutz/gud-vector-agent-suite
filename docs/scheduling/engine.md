@@ -73,15 +73,35 @@ first active service. A date's hours set by text become text-sourced blocks.
 
 The worker runs `sweep()` every minute.
 
-## Not yet (V1b and later)
+## Customer messages (V1b)
 
-- Customer confirmations, reminders and calendar invites. Until V1b, an engine
-  booking's confirmation e-mail still says an invite follows, so no business
-  should switch before V1b (the doc says the same for Larkspur).
-- Sending the halfway-approval reminder and the expiry notice that `sweep()`
-  reports.
-- A plain public booking page that holds and confirms (website Gus uses the
-  existing request-then-approve flow, which books the approved time directly).
+- When an event becomes `confirmed`, `queue_confirmed` (core `notify.py`) queues a
+  confirmation now plus reminders 24 h and 2 h before, for each `customer`
+  participant, by e-mail and/or text. Cancelling skips whatever is still
+  pending and queues a cancellation.
+- Every minute the worker runs `VisitMessenger.run_due()`:
+  - E-mails go out as `scheduling.visit_email`, with an iCalendar invite.
+    UID is `<event id>@gudvector.com`; SEQUENCE is the event version;
+    `METHOD:CANCEL` on cancellation.
+  - Texts go only when the GVAS customer with that e-mail has
+    `sms_consent = true`. A text due between 20:00 and 08:00 (in the person's
+    zone, else the visit's) waits for 08:00. Texts not being available is a
+    normal skip, not an error.
+- The confirmation carries a one-visit link `/v1/visits/<token>`. Only the
+  token's hash is stored, and the link expires when the visit ends. A GET shows
+  the visit. A POST cancels it, or asks for another time. Safe default: every
+  reschedule waits for the owner, and the visit stays booked meanwhile. The owner
+  is told either way through the usual owner notice. Links are built from
+  `GVAS_INTAKE_DECISION_LINK_BASE_URL`; with it unset, no link is added.
+
+## Not yet (later)
+
+- Picking the new time on the page itself (today the customer asks and the
+  owner moves the visit), and per-service message templates (FS-20, SHOULD).
+- There is no e-mail opt-out flag on customers yet, so e-mail is always allowed.
+- Intake's own "booked" e-mail and text still go out for engine businesses, so
+  those customers get two confirmations. The duplicate should be dropped before
+  any business switches.
 - A date's hours set by text can only narrow the weekly hours on the engine, not
   widen them as Calendly date overrides can. `ScheduleBlockPort.serves` is
   synchronous, so it follows the fallback calendar's answer.
