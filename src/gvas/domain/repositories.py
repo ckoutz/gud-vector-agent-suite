@@ -121,6 +121,7 @@ class BusinessRecord(BaseModel):
     timezone: str | None = None
     # Invoices are on only where this is set; numbers read ``LL-1042``.
     invoice_prefix: str | None = None
+    scheduler: str = "calendly"
 
     @field_validator("site_url")
     @classmethod

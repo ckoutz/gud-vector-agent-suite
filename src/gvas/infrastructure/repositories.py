@@ -108,6 +108,7 @@ class SqlBusinessRepository:
             calendar_feed_url=row.calendar_feed_url,
             timezone=row.timezone,
             invoice_prefix=row.invoice_prefix,
+            scheduler=row.scheduler,
         )
 
     async def get(self, business_id: BusinessId) -> BusinessRecord | None:

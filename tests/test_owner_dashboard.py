@@ -201,6 +201,7 @@ async def test_owner_email_signs_in_to_an_owner_session_only_owner_routes_accept
 
         me = await http.get("/v1/owner/me", headers=bearer(owner))
         assert me.status_code == 200 and me.json()["role"] == "owner"
+        assert me.json()["business"]["visitEditing"] is False, "Calendly visits change in Calendly"
         # An owner session is not a customer session.
         assert (await http.get("/v1/portal/me", headers=bearer(owner))).status_code == 401
 

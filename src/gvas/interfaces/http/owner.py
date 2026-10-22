@@ -394,6 +394,7 @@ def create_owner_router(
                     "calendlyUrl": context.business.calendly_url,
                     "timezone": context.business.timezone,
                     "invoices": bool(context.business.invoice_prefix),
+                    "visitEditing": context.business.scheduler == "engine",
                 },
             }
         )
