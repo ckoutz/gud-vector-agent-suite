@@ -1,21 +1,27 @@
 """Make, send and reissue invoices by text."""
 
+from datetime import UTC, date, datetime, timedelta
+from typing import cast
+
 import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.application.owner import OwnerContext, OwnerService
 from gvas.composition.owner_change_tools import customer_change_tools, message_change_tools
 from gvas.composition.owner_invoice_tools import SEND_DRAFT_TOOL, invoice_change_tools
 from gvas.domain.enums import CustomerQuoteStatus
-from gvas.domain.invoices import Invoice, InvoiceStatus, invoice_status
+from gvas.domain.invoices import Invoice, InvoiceStatus, due_on, invoice_status
+from gvas.domain.owner import OwnerSession
 from gvas.domain.owner_assistant import OwnerChangeRefusedError, OwnerChangeTool
 from gvas.domain.payments import PaymentSource
 from gvas.domain.repositories import BusinessRecord
 from gvas.infrastructure.models import Business, OutboxMessage
 from gvas.infrastructure.unit_of_work import SqlUnitOfWorkFactory
 from gvas.interfaces import seed_demo
+from gvas.interfaces.http.owner import owner_customer_payload, owner_invoice_payload
 from test_owner_settings_texts import _reload
-from test_seed_demo import NOW, _business
+from test_seed_demo import NOW, ZONE, _business
 
 
 async def _larkspur(
@@ -235,3 +241,88 @@ async def test_a_phone_only_customer_without_text_consent_is_never_sent_to(
     async with session_factory() as session:
         bodies = [str(row.payload) for row in (await session.scalars(select(OutboxMessage))).all()]
     assert not any("9255550188" in body or number in body for body in bodies)
+
+
+@pytest.mark.asyncio
+async def test_a_send_read_back_before_midnight_is_asked_again_after_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business, _, _, _ = await _larkspur(session_factory)
+    clock = [datetime(2026, 10, 15, 6, 59, tzinfo=UTC)]  # 11:59 pm Wed Oct 14 in Oakland
+    create, send, _ = invoice_change_tools(
+        SqlUnitOfWorkFactory(session_factory), can_text=False, now=lambda: clock[0]
+    )
+    plan = await create.prepare(
+        business, {"customer": "luis", "lines": [{"description": "Mow lawn", "amount": "120"}]}
+    )
+    number = _number(await create.apply(business, plan.arguments))
+    offered = await create.follow_up(business, plan.arguments)  # type: ignore[attr-defined]
+    assert offered is not None
+    _, before = offered
+    assert "due Wed Oct 28" in before.summary
+
+    clock[0] = datetime(2026, 10, 15, 7, 1, tzinfo=UTC)  # 12:01 am Thu Oct 15: YES comes late
+    with pytest.raises(OwnerChangeRefusedError, match="out of date now") as refused:
+        await send.apply(business, before.arguments)
+    assert f'Text me "send invoice {number}" again.' in str(refused.value)
+    assert (await _invoices(session_factory, business))[number].sent_at is None
+    async with session_factory() as session:
+        bodies = [str(row.payload) for row in (await session.scalars(select(OutboxMessage))).all()]
+    assert not any(number in body for body in bodies)
+
+    after = await send.prepare(business, {"invoice": number})
+    assert "due Thu Oct 29" in after.summary and "Oct 28" not in after.summary
+    await send.apply(business, after.arguments)
+    sent = (await _invoices(session_factory, business))[number]
+    assert (sent.sent_at, sent.due_on) == (clock[0], due_on(clock[0], ZONE))
+    assert sent.due_on == date(2026, 10, 29)
+    async with session_factory() as session:
+        bodies = [str(row.payload) for row in (await session.scalars(select(OutboxMessage))).all()]
+    assert sum(str(after.arguments["message"]) in body for body in bodies) == 1
+    assert "due Thu Oct 29" in str(after.arguments["message"])
+
+
+@pytest.mark.asyncio
+async def test_a_phone_only_customers_quotes_and_invoices_are_on_their_record(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    business, create, _, reissue = await _larkspur(session_factory)
+    _, add = customer_change_tools(SqlUnitOfWorkFactory(session_factory), now=lambda: NOW)
+    added = await add.prepare(business, {"name": "Ruth Park", "email": None, "phone": "9255550188"})
+    await add.apply(business, added.arguments)
+    plan = await create.prepare(
+        business, {"customer": "Ruth Park", "lines": [{"description": "Weeding", "amount": "80"}]}
+    )
+    old = _number(await create.apply(business, plan.arguments))
+    change = await reissue.prepare(business, {"invoice": old, "amount": "95", "description": None})
+    new = (await reissue.apply(business, change.arguments)).split("draft invoice ")[1].split()[0]
+
+    owner = OwnerContext(
+        session=OwnerSession(
+            token_hash="0" * 64,
+            business_id=business.business_id,
+            email="owner@example.test",
+            expires_at=NOW + timedelta(days=1),
+            created_at=NOW,
+        ),
+        business=business,
+    )
+    summaries = await OwnerService(SqlUnitOfWorkFactory(session_factory)).customers(owner)
+    (row,) = [
+        owner_customer_payload(summary)
+        for summary in summaries
+        if summary.customer.display_name == "Ruth Park"
+    ]
+    assert (row["email"], row["phone"]) == (None, "+19255550188") and not row["smsConsent"]
+
+    # The dashboard's customer page keeps a quote when its id is in quoteIds,
+    # and an invoice when its quoteId is one of those quotes.
+    invoices = await _invoices(session_factory, business)
+    payloads = {
+        number: owner_invoice_payload(invoices[number], None, today=NOW.date())
+        for number in (old, new)
+    }
+    linked = set(cast(list[str], row["quoteIds"]))
+    assert {str(payload["quoteId"]) for payload in payloads.values()} <= linked
+    assert row["quoteCount"] == 2
+    assert (payloads[old]["status"], payloads[new]["status"]) == ("void", "draft")
