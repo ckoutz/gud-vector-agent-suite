@@ -1,0 +1,107 @@
+"""Keeping an outside calendar's busy times mirrored (times only, never
+titles). The provider is behind ``ExternalCalendarPort``; a revoked or
+expired grant marks the link ``reconnect`` so the owner is asked to
+reconnect, and offers stop until then (the stale rule in the engine)."""
+
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Protocol
+from uuid import UUID, uuid4
+
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from gvas.scheduling.core.records import (
+    SchedulingExternalBusyRecord,
+    SchedulingExternalLinkRecord,
+)
+
+SYNC_AHEAD = timedelta(days=60)
+ACTIVE = "active"
+RECONNECT = "reconnect"
+
+
+class ExternalAccessRevokedError(Exception):
+    """The owner withdrew access, or the grant expired."""
+
+
+@dataclass(frozen=True)
+class BusyBlock:
+    external_id: str
+    start: datetime
+    end: datetime
+
+
+class ExternalCalendarPort(Protocol):
+    async def busy(
+        self, credentials_ref: str, start: datetime, end: datetime
+    ) -> Sequence[BusyBlock]: ...
+
+
+async def sync_busy(
+    session_factory: async_sessionmaker[AsyncSession],
+    link_id: UUID,
+    provider: ExternalCalendarPort,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> bool:
+    """Replace the link's mirror with the provider's current busy times.
+    False when the link needs the owner to reconnect (or is gone)."""
+
+    now = clock()
+    async with session_factory() as session:
+        link = await session.get(SchedulingExternalLinkRecord, link_id)
+        if link is None or link.status != ACTIVE or not link.credentials_ref:
+            return False
+        credentials = link.credentials_ref
+    try:
+        blocks = await provider.busy(credentials, now, now + SYNC_AHEAD)
+    except ExternalAccessRevokedError:
+        async with session_factory() as session, session.begin():
+            link = await session.get(SchedulingExternalLinkRecord, link_id)
+            if link is not None:
+                link.status = RECONNECT
+        return False
+    async with session_factory() as session, session.begin():
+        link = await session.get(SchedulingExternalLinkRecord, link_id, with_for_update=True)
+        if link is None:
+            return False
+        await session.execute(
+            delete(SchedulingExternalBusyRecord).where(
+                SchedulingExternalBusyRecord.link_id == link_id
+            )
+        )
+        for block in blocks:
+            if block.start < block.end:
+                session.add(
+                    SchedulingExternalBusyRecord(
+                        id=uuid4(),
+                        link_id=link_id,
+                        external_id=block.external_id,
+                        starts_at=block.start,
+                        ends_at=block.end,
+                    )
+                )
+        link.last_sync_at = now
+    return True
+
+
+async def links_due(
+    session_factory: async_sessionmaker[AsyncSession],
+    every: timedelta,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> list[UUID]:
+    """Active read links whose last good sync is older than ``every`` (the
+    polling fallback when push notices don't arrive)."""
+
+    now = clock()
+    async with session_factory() as session:
+        rows = await session.scalars(
+            select(SchedulingExternalLinkRecord).where(
+                SchedulingExternalLinkRecord.status == ACTIVE,
+                SchedulingExternalLinkRecord.read_busy,
+            )
+        )
+        return [
+            row.id for row in rows if row.last_sync_at is None or now - row.last_sync_at >= every
+        ]

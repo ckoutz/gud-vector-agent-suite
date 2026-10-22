@@ -87,3 +87,39 @@ async def test_ac11_a_stale_outside_calendar_stops_all_offers(
             .values(last_sync_at=clock())
         )
     assert TUESDAY_10 in await offered(engine, business_id, resource_id)
+
+
+async def test_sync_mirrors_busy_times_and_a_revoked_grant_asks_to_reconnect(
+    postgres_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from gvas.scheduling.core.sync import BusyBlock, ExternalAccessRevokedError, sync_busy
+
+    clock = Clock()
+    engine, business_id, resource_id, link_id = await setup(postgres_session_factory, clock)
+    async with postgres_session_factory() as session, session.begin():
+        link = await session.get(SchedulingExternalLinkRecord, link_id)
+        assert link is not None
+        link.credentials_ref = "secret:google:larkspur"
+
+    class Google:
+        blocks = [BusyBlock("g-1", TUESDAY_10, TUESDAY_10 + HOUR)]
+        revoked = False
+
+        async def busy(self, credentials_ref: str, start: object, end: object) -> list[BusyBlock]:
+            if self.revoked:
+                raise ExternalAccessRevokedError()
+            return list(self.blocks)
+
+    google = Google()
+    assert await sync_busy(postgres_session_factory, link_id, google, clock)
+    assert TUESDAY_10 not in await offered(engine, business_id, resource_id)
+
+    google.blocks = []
+    assert await sync_busy(postgres_session_factory, link_id, google, clock)
+    assert TUESDAY_10 in await offered(engine, business_id, resource_id)
+
+    google.revoked = True
+    assert not await sync_busy(postgres_session_factory, link_id, google, clock)
+    async with postgres_session_factory() as session:
+        link = await session.get(SchedulingExternalLinkRecord, link_id)
+    assert link is not None and link.status == "reconnect"
