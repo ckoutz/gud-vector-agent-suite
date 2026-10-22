@@ -27,7 +27,7 @@ from gvas.scheduling.field_service.booking import FieldServiceScheduling
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 CALENDARS_URL = "https://www.googleapis.com/calendar/v3/calendars"
 SCOPES = (
-    "https://www.googleapis.com/auth/calendar.freebusy",
+    "https://www.googleapis.com/auth/calendar.events.freebusy",
     "https://www.googleapis.com/auth/calendar.app.created",
 )
 STATE_TTL = timedelta(minutes=10)

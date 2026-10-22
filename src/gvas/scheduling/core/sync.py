@@ -182,5 +182,45 @@ async def links_due(
             )
         )
         return [
-            row.id for row in rows if row.last_sync_at is None or now - row.last_sync_at >= every
+            row.id
+            for row in rows
+            if row.last_sync_at is None
+            or now - row.last_sync_at >= every
+            or (row.sync_requested_at is not None and row.sync_requested_at > row.last_sync_at)
         ]
+
+
+@dataclass(frozen=True, slots=True)
+class WatchChannel:
+    resource_id: str
+    expires_at: datetime
+
+
+class ExternalWatchPort(Protocol):
+    """Asks the provider to post a notice to us when the outside calendar
+    changes. Notices carry no details; they only trigger a re-read."""
+
+    async def watch(self, credentials_ref: str, *, channel_id: str) -> WatchChannel: ...
+
+    async def stop(self, credentials_ref: str, *, channel_id: str, resource_id: str) -> None: ...
+
+
+async def request_sync(
+    session_factory: async_sessionmaker[AsyncSession],
+    channel_id: str,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> bool:
+    """A change notice arrived on ``channel_id``: re-read that link next round.
+    False when no active link owns the channel."""
+
+    async with session_factory() as session, session.begin():
+        link = await session.scalar(
+            select(SchedulingExternalLinkRecord).where(
+                SchedulingExternalLinkRecord.watch_channel_id == channel_id,
+                SchedulingExternalLinkRecord.status == ACTIVE,
+            )
+        )
+        if link is None:
+            return False
+        link.sync_requested_at = clock()
+        return True

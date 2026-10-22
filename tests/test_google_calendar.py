@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 
 import httpx
@@ -7,8 +8,10 @@ from gvas.infrastructure.google_calendar import (
     FREEBUSY_URL,
     GoogleBusyCalendar,
     GoogleCalendarError,
+    GoogleChangeWatch,
+    channel_token_ok,
 )
-from gvas.scheduling.core.sync import ExternalAccessRevokedError
+from gvas.scheduling.core.sync import ExternalAccessRevokedError, WatchChannel
 
 START = datetime(2026, 10, 27, 15, tzinfo=UTC)
 END = datetime(2026, 10, 28, 15, tzinfo=UTC)
@@ -122,3 +125,42 @@ async def test_a_revoked_refresh_token_means_reconnect_and_an_outage_retries() -
         await tokens(httpx.Response(400, json={"error": "invalid_grant"}))("ref")
     with pytest.raises(GoogleCalendarError):
         await tokens(httpx.Response(503))("ref")
+
+
+SECRET = "s"  # noqa: S105 (a test value)
+
+
+async def _token(credentials_ref: str) -> str:
+    return "at"
+
+
+async def test_a_watch_channel_asks_google_for_change_notices_with_a_checkable_token() -> None:
+    seen: list[dict[str, object]] = []
+
+    def google(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/channels/stop"):
+            return httpx.Response(404)
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json={"resourceId": "res-1", "expiration": "1800000000000"})
+
+    watch = GoogleChangeWatch(
+        httpx.AsyncClient(transport=httpx.MockTransport(google)), _token,
+        address="https://gvas.example/v1/calendar/google/notify", secret=SECRET,
+    )  # fmt: skip
+    channel = await watch.watch("link", channel_id="c1")
+    assert channel == WatchChannel("res-1", datetime.fromtimestamp(1_800_000_000, UTC))
+    [body] = seen
+    assert body["type"] == "web_hook" and body["id"] == "c1"
+    assert body["address"] == "https://gvas.example/v1/calendar/google/notify"
+    assert channel_token_ok(SECRET, "c1", str(body["token"]))
+    assert not channel_token_ok(SECRET, "c2", str(body["token"]))
+    await watch.stop("link", channel_id="c1", resource_id="res-1")
+
+
+async def test_a_watch_refused_by_google_means_reconnect() -> None:
+    watch = GoogleChangeWatch(
+        httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(401))), _token,
+        address="https://gvas.example/n", secret=SECRET,
+    )  # fmt: skip
+    with pytest.raises(ExternalAccessRevokedError):
+        await watch.watch("link", channel_id="c1")

@@ -145,9 +145,17 @@ The worker runs `sweep()` every minute.
   `last_sync_at` empty, so offers pause until the first read (within a minute).
   Needs `GVAS_GOOGLE_REDIRECT_URI` (the site's
   `/portal/owner/calendar/google` page) as well as the client and key.
-- Still to build: the site's Connect button and redirect page, and Google watch
-  channels with renewal (until then, polling every 5 minutes keeps reads inside
-  the 15-minute stale limit).
+- Change notices (`GoogleChangeWatch`, `ExternalWatchPort`): with
+  `GVAS_GOOGLE_NOTIFY_URL` set (our public `/v1/calendar/google/notify`), the
+  worker opens a 7-day channel on each linked calendar and replaces it a day
+  before it expires (new channel first, then the old one is closed). A notice
+  carries no details; one with a valid HMAC channel token sets
+  `sync_requested_at`, and the next round (within a minute) re-reads that
+  calendar. Polling every 5 minutes stays as the fallback.
+- Scopes: `calendar.events.freebusy` (free/busy reads and change notices on the
+  owner's calendar, no titles) and `calendar.app.created` (the visits calendar).
+- Site: Connect / Reconnect on the owner Calendar page; Google returns to
+  `/portal/owner/calendar/google`, which finishes through GVAS.
 
 ## Owner calendar (V1d, in progress)
 

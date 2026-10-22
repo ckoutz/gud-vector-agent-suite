@@ -323,6 +323,12 @@ class SchedulingExternalLinkRecord(Base):
     #: The provider refresh token, sealed by the infrastructure (never plain).
     refresh_token_sealed: Mapped[str | None] = mapped_column(Text)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Set when the provider says something changed; the next round re-reads.
+    sync_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The provider's change-notice channel, replaced before it expires.
+    watch_channel_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    watch_resource_id: Mapped[str | None] = mapped_column(String(255))
+    watch_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 

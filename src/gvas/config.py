@@ -200,6 +200,9 @@ class GoogleCalendarSettings(BaseSettings):
     token_key: str = Field(default="", validation_alias="GVAS_CALENDAR_TOKEN_KEY")
     #: The dashboard page Google sends the owner back to after sign-in.
     redirect_uri: str = ""
+    #: Our public HTTPS address for Google's change notices; without it the
+    #: worker only re-reads every 5 minutes.
+    notify_url: str = ""
 
     @property
     def is_configured(self) -> bool:

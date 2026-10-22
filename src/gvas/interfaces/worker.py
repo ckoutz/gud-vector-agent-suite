@@ -29,6 +29,7 @@ from gvas.infrastructure.db import create_session_factory
 from gvas.infrastructure.google_calendar import (
     GoogleAccessTokens,
     GoogleBusyCalendar,
+    GoogleChangeWatch,
     GoogleVisitWriter,
 )
 from gvas.infrastructure.visit_messages import VisitMessenger
@@ -88,7 +89,7 @@ async def _sweep_schedules(scheduling: SchedulingEngine, messenger: VisitMesseng
         )
 
 
-CalendarSync = tuple[GoogleBusyCalendar, GoogleVisitWriter]
+CalendarSync = tuple[GoogleBusyCalendar, GoogleVisitWriter, GoogleChangeWatch | None]
 
 
 def build_calendar_sync(
@@ -106,8 +107,20 @@ def build_calendar_sync(
         client_secret=google.oauth_client_secret,
         refresh_token=StoredRefreshTokens(sessions, CalendarTokenCipher(google.token_key)),
     )
-    return GoogleBusyCalendar(runtime.http_client, tokens), GoogleVisitWriter(
-        runtime.http_client, tokens
+    watcher = (
+        GoogleChangeWatch(
+            runtime.http_client,
+            tokens,
+            address=google.notify_url,
+            secret=google.oauth_client_secret,
+        )
+        if google.notify_url
+        else None
+    )
+    return (
+        GoogleBusyCalendar(runtime.http_client, tokens),
+        GoogleVisitWriter(runtime.http_client, tokens),
+        watcher,
     )
 
 
@@ -115,7 +128,8 @@ async def _sync_calendars(
     sessions: async_sessionmaker[AsyncSession], calendar_sync: CalendarSync
 ) -> None:
     try:
-        result = await run_sync_round(sessions, *calendar_sync)
+        provider, writer, watcher = calendar_sync
+        result = await run_sync_round(sessions, provider, writer, watcher=watcher)
     except Exception:
         logger.exception("outside calendar sync failed; retrying next round")
         return

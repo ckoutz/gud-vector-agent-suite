@@ -4,13 +4,15 @@ tokens come from ``access_token`` (refresh-token handling lives with the
 credential store); a 401/403 or ``invalid_grant`` means the owner must
 reconnect."""
 
+import hashlib
+import hmac
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from gvas.scheduling.core.sync import BusyBlock, ExternalAccessRevokedError
+from gvas.scheduling.core.sync import BusyBlock, ExternalAccessRevokedError, WatchChannel
 
 FREEBUSY_URL = "https://www.googleapis.com/calendar/v3/freeBusy"
 
@@ -201,3 +203,84 @@ class GoogleAccessTokens:
         if not isinstance(token, str) or not token:
             raise GoogleCalendarError(f"google sign-in returned http {response.status_code}")
         return token
+
+
+WATCH_URL = "https://www.googleapis.com/calendar/v3/calendars/{calendar}/events/watch"
+STOP_URL = "https://www.googleapis.com/calendar/v3/channels/stop"
+WATCH_TTL = timedelta(days=7)
+
+
+def channel_token(secret: str, channel_id: str) -> str:
+    """The token Google echoes on every notice; proves the notice is for a
+    channel we opened, without storing anything."""
+
+    return hmac.new(secret.encode(), channel_id.encode(), hashlib.sha256).hexdigest()
+
+
+def channel_token_ok(secret: str, channel_id: str, token: str) -> bool:
+    return hmac.compare_digest(channel_token(secret, channel_id), token)
+
+
+class GoogleChangeWatch:
+    """Opens and closes Google change-notice channels on the owner's calendar."""
+
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        access_token: Callable[[str], Awaitable[str]],
+        *,
+        address: str,
+        secret: str,
+        calendar_id: str = "primary",
+        ttl: timedelta = WATCH_TTL,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        self._client = client
+        self._access_token = access_token
+        self._address = address
+        self._secret = secret
+        self._calendar_id = calendar_id
+        self._ttl = ttl
+        self._timeout = timeout_seconds
+
+    async def _post(
+        self, url: str, credentials_ref: str, body: dict[str, object]
+    ) -> httpx.Response:
+        token = await self._access_token(credentials_ref)
+        try:
+            response = await self._client.post(
+                url, json=body, headers={"Authorization": f"Bearer {token}"}, timeout=self._timeout
+            )
+        except httpx.HTTPError as error:
+            raise GoogleCalendarError("google calendar was unreachable") from error
+        if response.status_code in (401, 403):
+            raise ExternalAccessRevokedError()
+        return response
+
+    async def watch(self, credentials_ref: str, *, channel_id: str) -> WatchChannel:
+        response = await self._post(
+            WATCH_URL.format(calendar=self._calendar_id),
+            credentials_ref,
+            {
+                "id": channel_id,
+                "type": "web_hook",
+                "address": self._address,
+                "token": channel_token(self._secret, channel_id),
+                "params": {"ttl": str(int(self._ttl.total_seconds()))},
+            },
+        )
+        if response.status_code >= 400:
+            raise GoogleCalendarError(f"google calendar returned http {response.status_code}")
+        try:
+            body = response.json()
+            expires = datetime.fromtimestamp(int(body["expiration"]) / 1000, UTC)
+            return WatchChannel(str(body["resourceId"]), expires)
+        except (ValueError, KeyError, TypeError) as error:
+            raise GoogleCalendarError("google calendar returned an unreadable answer") from error
+
+    async def stop(self, credentials_ref: str, *, channel_id: str, resource_id: str) -> None:
+        response = await self._post(
+            STOP_URL, credentials_ref, {"id": channel_id, "resourceId": resource_id}
+        )
+        if response.status_code >= 400 and response.status_code != 404:
+            raise GoogleCalendarError(f"google calendar returned http {response.status_code}")

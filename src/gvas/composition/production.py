@@ -145,6 +145,7 @@ from gvas.infrastructure.telnyx.installations import (
 from gvas.infrastructure.usage_ledger import SqlUsageLedger
 from gvas.infrastructure.visit_links import VisitLinkService
 from gvas.interfaces.http.app import create_app
+from gvas.interfaces.http.google_calendar import create_google_notify_router
 from gvas.interfaces.http.owner import create_owner_router
 from gvas.interfaces.http.portal import create_portal_router
 from gvas.interfaces.http.public import PerIpRateLimiter, create_public_router
@@ -757,6 +758,10 @@ def build_production_runtime(settings: ProductionSettings | None = None) -> Prod
     routers.append(
         create_visit_router(VisitLinkService(session_factory, SchedulingEngine(session_factory)))
     )
+    if resolved.google.is_configured and resolved.google.notify_url:
+        routers.append(
+            create_google_notify_router(session_factory, resolved.google.oauth_client_secret)
+        )
     routers.append(
         create_public_router(
             application.public_quotes,
