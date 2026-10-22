@@ -1,9 +1,11 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 from gvas.composition.intents import DeterministicIntentResolver
+from gvas.domain.enums import QuoteStatus
 from gvas.domain.identifiers import BusinessId, MessageKey
 from gvas.domain.intents import UNMATCHED_MESSAGE_INTENT
 from gvas.domain.messages import ConversationRef, NormalizedOwnerMessage, SenderRef, TextPart
@@ -54,3 +56,35 @@ async def test_an_unclear_reply_reaches_gus_before_any_active_workflow(text: str
 async def test_short_workflow_commands_still_reach_their_workflows(text: str) -> None:
     with pytest.raises(_WorkflowError):
         await _resolver().resolve(_message(text))
+
+
+@pytest.mark.asyncio
+async def test_a_number_answers_a_quote_waiting_for_its_customer() -> None:
+    resolver = _resolver()
+    calls = 0
+
+    async def quote(message: NormalizedOwnerMessage) -> tuple[None, SimpleNamespace]:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise _WorkflowError
+        return None, SimpleNamespace(status=QuoteStatus.AWAITING_CUSTOMER_SELECTION)
+
+    resolver._resolve_quote = quote  # type: ignore[method-assign,assignment]
+
+    with pytest.raises(_WorkflowError):
+        await resolver.resolve(_message("2"))
+
+
+@pytest.mark.asyncio
+async def test_a_number_without_a_customer_list_is_unclear() -> None:
+    resolver = _resolver()
+
+    async def quote(message: NormalizedOwnerMessage) -> tuple[None, None]:
+        return None, None
+
+    resolver._resolve_quote = quote  # type: ignore[method-assign]
+
+    resolution = await resolver.resolve(_message("2"))
+
+    assert resolution.intent == UNMATCHED_MESSAGE_INTENT

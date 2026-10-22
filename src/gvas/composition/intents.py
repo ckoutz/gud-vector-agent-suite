@@ -79,6 +79,7 @@ class DeterministicIntentResolver:
             pending
             and (is_unclear(text) or reaction(text) is not None)
             and not _explicit_workflow_command(message)
+            and not await self._is_customer_choice(message, text)
         ):
             return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
         # Booking decisions are checked before everything else: the quote
@@ -123,6 +124,17 @@ class DeterministicIntentResolver:
         async with self._message_unit_of_work_factory() as unit_of_work:
             command = await unit_of_work.owner_commands.latest_proposed(message.business_id)
             return command is not None and command.is_live(now)
+
+    async def _is_customer_choice(self, message: NormalizedOwnerMessage, text: str) -> bool:
+        """A bare number answers a quote's "which customer?" list."""
+
+        if not text.strip().rstrip(".").isdigit():
+            return False
+        _, active_quote = await self._resolve_quote(message)
+        return (
+            active_quote is not None
+            and active_quote.status is QuoteStatus.AWAITING_CUSTOMER_SELECTION
+        )
 
     async def _is_calendar_block(self, message: NormalizedOwnerMessage) -> bool:
         """``unavailable 8-12`` / ``unblock tue`` always; ``yes``/``no`` only while
