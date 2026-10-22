@@ -113,3 +113,26 @@ def test_boundary_checker_catches_violations(tmp_path: Path) -> None:
     violations = find_violations("application", path, "import slack_sdk\nvalue = 'slack'\n")
     assert any("forbidden transport substring slack" in violation for violation in violations)
     assert any("forbidden import slack_sdk" in violation for violation in violations)
+
+
+def test_scheduling_never_imports_business_records() -> None:
+    """The engine links to customers, quotes and invoices by id only."""
+
+    denied = ("customer", "quote", "invoice", "payment", "intake", "owner")
+    for path in (ROOT / "scheduling").rglob("*.py"):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported = node.module
+            elif isinstance(node, ast.Import):
+                imported = node.names[0].name
+            else:
+                continue
+            if imported.startswith("gvas.") and not imported.startswith("gvas.scheduling"):
+                assert imported in {
+                    "gvas.domain.identifiers",
+                    "gvas.domain.time_zones",
+                    "gvas.infrastructure.db",
+                    "gvas.infrastructure.models",
+                }, f"{path}: {imported}"
+                assert not any(word in imported for word in denied), f"{path}: {imported}"

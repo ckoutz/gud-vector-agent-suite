@@ -508,3 +508,5 @@ from gvas.infrastructure import plan_models as plan_models  # noqa: E402, F401
 from gvas.infrastructure import template_models as template_models  # noqa: E402, F401
 from gvas.infrastructure import usage_models as usage_models  # noqa: E402, F401
 from gvas.infrastructure.portal import models as portal_models  # noqa: E402, F401
+from gvas.scheduling.core import records as scheduling_records  # noqa: E402, F401
+from gvas.scheduling.field_service import records as field_service_records  # noqa: E402, F401
