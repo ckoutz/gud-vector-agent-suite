@@ -222,3 +222,78 @@ class SchedulingSlotOfferRecord(Base):
     #: The newest change to the resource's occupied time when computed.
     snapshot: Mapped[dict[str, JsonValue]] = mapped_column(json_type, nullable=False)
     at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SchedulingParticipantRecord(Base):
+    """A person linked to events: a customer who never signs in, a crew
+    member, later a family member. Contact details only; consent lives with
+    whoever owns the person (for a customer, GVAS's customer record)."""
+
+    __tablename__ = "scheduling_participants"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(320))
+    phone: Mapped[str | None] = mapped_column(String(32))
+    time_zone: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SchedulingEventParticipantRecord(Base):
+    __tablename__ = "scheduling_event_participants"
+
+    event_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_events.id", ondelete="CASCADE"), primary_key=True
+    )
+    participant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_participants.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class SchedulingReminderRecord(Base):
+    """One message due to one person about one event, on one channel."""
+
+    __tablename__ = "scheduling_reminders"
+    __table_args__ = (Index("ix_scheduling_reminders_due", "status", "fire_at"),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    event_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_events.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    participant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_participants.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    fire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: The event version the message describes; stale ones are skipped.
+    event_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    detail: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SchedulingActionTokenRecord(Base):
+    """A no-login link to change or cancel one event; only its hash is kept."""
+
+    __tablename__ = "scheduling_action_tokens"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    event_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_events.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    actions: Mapped[list[JsonValue]] = mapped_column(json_type, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
