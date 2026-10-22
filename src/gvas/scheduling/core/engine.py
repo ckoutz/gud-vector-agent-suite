@@ -47,6 +47,8 @@ from gvas.scheduling.core.records import (
     SchedulingCalendarPermissionRecord,
     SchedulingCalendarRecord,
     SchedulingEventRecord,
+    SchedulingExternalBusyRecord,
+    SchedulingExternalLinkRecord,
     SchedulingResourceRecord,
     SchedulingSlotOfferRecord,
 )
@@ -58,6 +60,8 @@ HOLD_FOR = timedelta(minutes=10)
 APPROVAL_WINDOW = timedelta(hours=24)
 MAX_HOLDS_PER_VISITOR = 2
 MAX_HOLDS_PER_IP = 5
+#: FS-25: no offers when an outside calendar's last good sync is older.
+STALE_AFTER = timedelta(minutes=15)
 DEFAULT_POLICY = BookingPolicy()
 _OCCUPYING_VALUES = tuple(status.value for status in OCCUPYING)
 
@@ -1000,6 +1004,31 @@ class SchedulingEngine:
             Occupied(event.starts_at, Interval(event.blocked_start, event.blocked_end))
             for event in events
         ]
+        # Outside busy times block like time off. A read link that hasn't
+        # synced within STALE_AFTER stops all offers rather than risk a time
+        # that is really busy.
+        links = list(
+            await session.scalars(
+                select(SchedulingExternalLinkRecord).where(
+                    SchedulingExternalLinkRecord.resource_id == resource.id,
+                    SchedulingExternalLinkRecord.read_busy,
+                    SchedulingExternalLinkRecord.status == "active",
+                )
+            )
+        )
+        if any(
+            link.last_sync_at is None or now - link.last_sync_at > STALE_AFTER for link in links
+        ):
+            return (), {"stale": True, "time_zone": resource.time_zone}
+        if links:
+            busy = await session.scalars(
+                select(SchedulingExternalBusyRecord).where(
+                    SchedulingExternalBusyRecord.link_id.in_([link.id for link in links]),
+                    SchedulingExternalBusyRecord.starts_at < end + reach,
+                    SchedulingExternalBusyRecord.ends_at > start - reach,
+                )
+            )
+            blocks.extend(Block(item.starts_at, item.ends_at) for item in busy)
         policy = BookingPolicy(
             min_notice=min_notice
             if min_notice is not None

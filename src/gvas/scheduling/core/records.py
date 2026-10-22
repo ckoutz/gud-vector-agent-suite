@@ -297,3 +297,41 @@ class SchedulingActionTokenRecord(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SchedulingExternalLinkRecord(Base):
+    """A resource's connection to an outside calendar (Google first): read its
+    busy times in, write confirmed events out. Credentials live elsewhere;
+    ``credentials_ref`` only names them."""
+
+    __tablename__ = "scheduling_external_links"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    business_id: Mapped[UUID] = mapped_column(
+        ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    resource_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_resources.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    provider: Mapped[str] = mapped_column(String(16), nullable=False)
+    read_busy: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    write_events: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    credentials_ref: Mapped[str | None] = mapped_column(String(255))
+    sync_cursor: Mapped[str | None] = mapped_column(Text)
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SchedulingExternalBusyRecord(Base):
+    """A read-only mirror of one outside busy block: times only, never titles."""
+
+    __tablename__ = "scheduling_external_busy"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    link_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_external_links.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
