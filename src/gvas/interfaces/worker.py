@@ -22,7 +22,9 @@ from gvas.composition.production import (
     build_production_runtime,
     worker_identity,
 )
+from gvas.infrastructure.db import create_session_factory
 from gvas.interfaces.logging_setup import configure_logging
+from gvas.scheduling.core.engine import SchedulingEngine
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +57,40 @@ async def _sweep_sandboxes(runtime: ProductionRuntime) -> None:
         logger.exception("demo sandbox sweep failed; retrying next round")
 
 
+SCHEDULE_SWEEP_SECONDS = 60
+
+
+async def _sweep_schedules(scheduling: SchedulingEngine) -> None:
+    """Lapse old holds and expire approvals nobody gave in time."""
+
+    try:
+        result = await scheduling.sweep()
+    except Exception:
+        logger.exception("scheduling sweep failed; retrying next round")
+        return
+    if result.approvals_expired or result.approval_reminders_due:
+        logger.info(
+            "scheduling sweep: %d approvals expired, %d reminders due",
+            len(result.approvals_expired),
+            len(result.approval_reminders_due),
+        )
+
+
 async def run_worker(runtime: ProductionRuntime, stopping: asyncio.Event) -> int:
     worker = build_worker(runtime)
+    scheduling = SchedulingEngine(create_session_factory(runtime.engine))
     poll_seconds = runtime.settings.worker.poll_seconds
     sweep_every = runtime.settings.demo.sandbox_sweep_minutes * 60
     next_sweep = time.monotonic()
+    next_schedule_sweep = time.monotonic()
     batches = 0
     while not stopping.is_set():
         if time.monotonic() >= next_sweep:
             await _sweep_sandboxes(runtime)
             next_sweep = time.monotonic() + sweep_every
+        if time.monotonic() >= next_schedule_sweep:
+            await _sweep_schedules(scheduling)
+            next_schedule_sweep = time.monotonic() + SCHEDULE_SWEEP_SECONDS
         report: WorkerBatchReport = await worker.run_once()
         batches += 1
         if report.claimed == 0:

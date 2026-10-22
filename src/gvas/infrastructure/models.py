@@ -52,6 +52,10 @@ class Business(Base):
     timezone: Mapped[str | None] = mapped_column(String(64))
     # Set (e.g. "LL") only where invoices are on: numbers read LL-1042.
     invoice_prefix: Mapped[str | None] = mapped_column(String(10))
+    # Which calendar books this business: "calendly" or "engine" (ours).
+    scheduler: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="calendly", server_default="calendly"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -508,3 +512,5 @@ from gvas.infrastructure import plan_models as plan_models  # noqa: E402, F401
 from gvas.infrastructure import template_models as template_models  # noqa: E402, F401
 from gvas.infrastructure import usage_models as usage_models  # noqa: E402, F401
 from gvas.infrastructure.portal import models as portal_models  # noqa: E402, F401
+from gvas.scheduling.core import records as scheduling_records  # noqa: E402, F401
+from gvas.scheduling.field_service import records as field_service_records  # noqa: E402, F401
