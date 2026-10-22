@@ -36,6 +36,7 @@ def upgrade() -> None:
         sa.Column("read_busy", sa.Boolean(), nullable=False),
         sa.Column("write_events", sa.Boolean(), nullable=False),
         sa.Column("credentials_ref", sa.String(255)),
+        sa.Column("write_calendar_id", sa.String(255)),
         sa.Column("sync_cursor", sa.Text()),
         sa.Column("last_sync_at", _TZ),
         sa.Column("status", sa.String(16), nullable=False),
@@ -58,8 +59,26 @@ def upgrade() -> None:
         sa.Column("ends_at", _TZ, nullable=False),
     )
     op.create_index("ix_scheduling_external_busy_link_id", "scheduling_external_busy", ["link_id"])
+    op.create_table(
+        "scheduling_external_pushes",
+        sa.Column(
+            "link_id",
+            sa.Uuid(),
+            sa.ForeignKey("scheduling_external_links.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column(
+            "event_id",
+            sa.Uuid(),
+            sa.ForeignKey("scheduling_events.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
+        sa.Column("pushed_version", sa.Integer(), nullable=False),
+        sa.Column("deleted", sa.Boolean(), nullable=False),
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("scheduling_external_pushes")
     op.drop_table("scheduling_external_busy")
     op.drop_table("scheduling_external_links")

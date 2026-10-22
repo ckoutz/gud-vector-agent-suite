@@ -317,6 +317,8 @@ class SchedulingExternalLinkRecord(Base):
     read_busy: Mapped[bool] = mapped_column(Boolean, nullable=False)
     write_events: Mapped[bool] = mapped_column(Boolean, nullable=False)
     credentials_ref: Mapped[str | None] = mapped_column(String(255))
+    #: The dedicated outside calendar confirmed events are written to.
+    write_calendar_id: Mapped[str | None] = mapped_column(String(255))
     sync_cursor: Mapped[str | None] = mapped_column(Text)
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -335,3 +337,18 @@ class SchedulingExternalBusyRecord(Base):
     external_id: Mapped[str] = mapped_column(String(255), nullable=False)
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SchedulingExternalPushRecord(Base):
+    """Which version of an event an outside calendar last received."""
+
+    __tablename__ = "scheduling_external_pushes"
+
+    link_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_external_links.id", ondelete="CASCADE"), primary_key=True
+    )
+    event_id: Mapped[UUID] = mapped_column(
+        ForeignKey("scheduling_events.id", ondelete="CASCADE"), primary_key=True
+    )
+    pushed_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    deleted: Mapped[bool] = mapped_column(Boolean, nullable=False)

@@ -12,9 +12,12 @@ from uuid import UUID, uuid4
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from gvas.scheduling.core.model import EventStatus
 from gvas.scheduling.core.records import (
+    SchedulingEventRecord,
     SchedulingExternalBusyRecord,
     SchedulingExternalLinkRecord,
+    SchedulingExternalPushRecord,
 )
 
 SYNC_AHEAD = timedelta(days=60)
@@ -37,6 +40,82 @@ class ExternalCalendarPort(Protocol):
     async def busy(
         self, credentials_ref: str, start: datetime, end: datetime
     ) -> Sequence[BusyBlock]: ...
+
+
+class ExternalEventWriterPort(Protocol):
+    async def upsert(
+        self,
+        credentials_ref: str,
+        calendar_id: str,
+        *,
+        event_id: str,
+        start: datetime,
+        end: datetime,
+        summary: str,
+    ) -> None: ...
+
+    async def delete(self, credentials_ref: str, calendar_id: str, *, event_id: str) -> None: ...
+
+
+async def push_events(
+    session_factory: async_sessionmaker[AsyncSession],
+    link_id: UUID,
+    writer: ExternalEventWriterPort,
+) -> int:
+    """Send the outside calendar every confirmed event it hasn't seen at its
+    current version, and remove ones since cancelled. Returns how many went.
+    A provider error stops the round; what already went is recorded."""
+
+    async with session_factory() as session:
+        link = await session.get(SchedulingExternalLinkRecord, link_id)
+        if (
+            link is None
+            or link.status != ACTIVE
+            or not link.write_events
+            or not link.credentials_ref
+            or not link.write_calendar_id
+        ):
+            return 0
+        credentials, calendar_id = link.credentials_ref, link.write_calendar_id
+        pushed = {
+            row.event_id: row
+            for row in await session.scalars(
+                select(SchedulingExternalPushRecord).where(
+                    SchedulingExternalPushRecord.link_id == link_id
+                )
+            )
+        }
+        events = list(
+            await session.scalars(
+                select(SchedulingEventRecord).where(
+                    SchedulingEventRecord.resource_id == link.resource_id
+                )
+            )
+        )
+    sent = 0
+    for event in events:
+        before = pushed.get(event.id)
+        if before is not None and before.pushed_version == event.version:
+            continue
+        confirmed = event.status == EventStatus.CONFIRMED.value
+        if confirmed:
+            await writer.upsert(
+                credentials, calendar_id, event_id=str(event.id),
+                start=event.starts_at, end=event.ends_at, summary=event.title,
+            )  # fmt: skip
+        elif before is not None and not before.deleted:
+            await writer.delete(credentials, calendar_id, event_id=str(event.id))
+        else:
+            continue
+        async with session_factory() as session, session.begin():
+            await session.merge(
+                SchedulingExternalPushRecord(
+                    link_id=link_id, event_id=event.id,
+                    pushed_version=event.version, deleted=not confirmed,
+                )
+            )  # fmt: skip
+        sent += 1
+    return sent
 
 
 async def sync_busy(

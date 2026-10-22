@@ -123,3 +123,40 @@ async def test_sync_mirrors_busy_times_and_a_revoked_grant_asks_to_reconnect(
     async with postgres_session_factory() as session:
         link = await session.get(SchedulingExternalLinkRecord, link_id)
     assert link is not None and link.status == "reconnect"
+
+
+async def test_confirmed_visits_go_out_once_per_version_and_a_cancel_removes_them(
+    postgres_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from gvas.scheduling.core.model import EventStatus
+    from gvas.scheduling.core.sync import push_events
+
+    clock = Clock()
+    engine, business_id, resource_id, link_id = await setup(postgres_session_factory, clock)
+    async with postgres_session_factory() as session, session.begin():
+        link = await session.get(SchedulingExternalLinkRecord, link_id)
+        assert link is not None
+        link.credentials_ref = "secret:google:larkspur"
+        link.write_calendar_id = "visits"
+    visit = await engine.add_event(
+        business_id, resource_id, start=TUESDAY_10, end=TUESDAY_10 + HOUR,
+        title="Estimate", by=owner_principal(business_id),
+    )  # fmt: skip
+
+    class Writer:
+        calls: list[tuple[str, str]] = []
+
+        async def upsert(self, credentials_ref: str, calendar_id: str, **visit: object) -> None:
+            self.calls.append(("upsert", str(visit["event_id"])))
+
+        async def delete(self, credentials_ref: str, calendar_id: str, *, event_id: str) -> None:
+            self.calls.append(("delete", event_id))
+
+    writer = Writer()
+    assert await push_events(postgres_session_factory, link_id, writer) == 1
+    assert await push_events(postgres_session_factory, link_id, writer) == 0
+    await engine.set_status(business_id, visit, EventStatus.CANCELLED, actor=Actor.SYSTEM)
+    assert await push_events(postgres_session_factory, link_id, writer) == 1
+    assert await push_events(postgres_session_factory, link_id, writer) == 0
+
+    assert writer.calls == [("upsert", str(visit)), ("delete", str(visit))]
