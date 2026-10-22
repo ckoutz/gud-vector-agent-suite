@@ -32,7 +32,7 @@ from gvas.application.owner import (
 from gvas.domain.enums import QuoteStatus
 from gvas.domain.intake import IntakeConversation
 from gvas.domain.invoices import Invoice, invoice_status
-from gvas.domain.owner import CalendarEvent, calendar_feed_host
+from gvas.domain.owner import CalendarEvent, VisitEditError, calendar_feed_host
 from gvas.domain.owner_commands import OwnerCommand
 from gvas.domain.payments import (
     PLAN_MONTHS_MAX,
@@ -53,6 +53,21 @@ class DeclineBookingBody(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     reason: str | None = Field(default=None, max_length=500)
+
+
+class MoveVisitBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    start: datetime
+    end: datetime
+
+
+class AddVisitBody(MoveVisitBody):
+    name: str = Field(min_length=1, max_length=200)
+    email: str | None = Field(default=None, max_length=320)
+    phone: str | None = Field(default=None, max_length=40)
+    address: str | None = Field(default=None, max_length=500)
+    notes: str | None = Field(default=None, max_length=2000)
 
 
 class SettingsBody(BaseModel):
@@ -314,6 +329,8 @@ def calendar_event_payload(event: CalendarEvent) -> dict[str, object]:
         "inviteeName": event.invitee_name,
         "inviteeEmail": event.invitee_email,
         "reference": event.reference,
+        "eventId": event.event_id,
+        "status": event.status,
     }
 
 
@@ -555,6 +572,35 @@ def create_owner_router(
             context, reference, approve=False, reason=body.reason
         )
         return JSONResponse({"applied": outcome.applied, "message": outcome.text})
+
+    @router.post("/v1/owner/visits", dependencies=limited)
+    async def add_visit(body: AddVisitBody, context: OwnerContext = owner) -> JSONResponse:
+        try:
+            event_id = await service.add_visit(
+                context, start=body.start, end=body.end, name=body.name, email=body.email,
+                phone=body.phone, address=body.address, notes=body.notes,
+            )  # fmt: skip
+        except VisitEditError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        return JSONResponse({"eventId": event_id}, status_code=201)
+
+    @router.post("/v1/owner/visits/{event_id}/move", dependencies=limited)
+    async def move_visit(
+        event_id: str, body: MoveVisitBody, context: OwnerContext = owner
+    ) -> JSONResponse:
+        try:
+            await service.move_visit(context, event_id, body.start, body.end)
+        except VisitEditError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        return JSONResponse({"moved": True})
+
+    @router.post("/v1/owner/visits/{event_id}/cancel", dependencies=limited)
+    async def cancel_visit(event_id: str, context: OwnerContext = owner) -> JSONResponse:
+        try:
+            await service.cancel_visit(context, event_id)
+        except VisitEditError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        return JSONResponse({"cancelled": True})
 
     @router.get("/v1/owner/requests", dependencies=limited)
     async def service_requests(context: OwnerContext = owner) -> JSONResponse:

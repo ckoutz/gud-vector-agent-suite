@@ -108,6 +108,7 @@ from gvas.domain.ports import (
     QuoteDraftingPort,
     ScheduleBlockPort,
     TranscriptionPort,
+    VisitEditorPort,
 )
 from gvas.domain.reporting import ReportEmailPort, ReportGenerationPort
 from gvas.domain.usage import UsageCeilingGuard, UsageCeilings, UsageLedgerPort
@@ -176,6 +177,7 @@ class ApplicationPorts:
     # Owner dashboard calendar: Calendly bookings and the owner's own
     # calendar feed. Either may be absent; the dashboard shows what it has.
     booked_events: BookedEventsPort | None = None
+    visit_editor: VisitEditorPort | None = None
     calendar_feed: CalendarFeedPort | None = None
     # Owner-requested blocks of time (``unavailable 8-12``) on the booking
     # calendar; absent means the owner is told blocking isn't set up.
@@ -345,6 +347,7 @@ def build_application(
         unit_of_work_factory,
         booked_events=ports.booked_events,
         calendar_feed=ports.calendar_feed,
+        visit_editor=ports.visit_editor,
         now=now,
     )
     owner_assistant = (

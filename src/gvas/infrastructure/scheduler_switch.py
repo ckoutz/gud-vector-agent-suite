@@ -21,7 +21,7 @@ from gvas.domain.intake import (
     BookingRequest,
     BookingResult,
 )
-from gvas.domain.owner import CalendarEvent, CalendarEventSource
+from gvas.domain.owner import CalendarEvent, CalendarEventSource, VisitEditError
 from gvas.domain.ports import AvailabilityPort, BookedEventsPort, ScheduleBlockPort
 from gvas.infrastructure.models import Business
 from gvas.scheduling.core.engine import SchedulingEngine, owner_principal
@@ -31,6 +31,7 @@ from gvas.scheduling.core.model import (
     EventStatus,
     IllegalTransitionError,
     NotFoundError,
+    PermissionDeniedError,
     SlotTakenError,
 )
 from gvas.scheduling.field_service.booking import FieldServiceScheduling, Service, VisitDetails
@@ -144,9 +145,76 @@ class EngineAvailability:
                 location=booking.address,
                 invitee_name=event.title,
                 reference=booking.reference,
+                event_id=str(event.id),
+                status=event.status,
             )
             for event, booking in visits
         )
+
+    # --- owner changes from the dashboard calendar (V1d) ---
+
+    @staticmethod
+    def _event_id(event_id: str) -> UUID:
+        try:
+            return UUID(event_id)
+        except ValueError:
+            raise VisitEditError("That visit wasn't found.") from None
+
+    async def move_visit(
+        self, business_id: BusinessId, event_id: str, start: datetime, end: datetime
+    ) -> None:
+        try:
+            await self._engine.move(
+                business_id, self._event_id(event_id), start=start, end=end,
+                by=owner_principal(business_id),
+            )  # fmt: skip
+        except SlotTakenError as error:
+            raise VisitEditError(str(error)) from None
+        except IllegalTransitionError:
+            raise VisitEditError("Only a confirmed visit can be moved.") from None
+        except (NotFoundError, PermissionDeniedError):
+            raise VisitEditError("That visit wasn't found.") from None
+        except ValueError:
+            raise VisitEditError("A visit needs to end after it starts.") from None
+
+    async def cancel_visit(self, business_id: BusinessId, event_id: str) -> None:
+        try:
+            await self._engine.set_status(
+                business_id, self._event_id(event_id), EventStatus.CANCELLED,
+                actor=Actor.OWNER, by=owner_principal(business_id),
+            )  # fmt: skip
+        except IllegalTransitionError:
+            raise VisitEditError("That visit can't be cancelled now.") from None
+        except (NotFoundError, PermissionDeniedError):
+            raise VisitEditError("That visit wasn't found.") from None
+
+    async def add_visit(
+        self,
+        business_id: BusinessId,
+        *,
+        start: datetime,
+        end: datetime,
+        name: str,
+        email: str | None,
+        phone: str | None,
+        address: str | None,
+        notes: str | None,
+    ) -> str:
+        service = await self._service(business_id)
+        try:
+            booked = await self._scheduling.book_approved(
+                business_id, service.service_id, start=start, end=end, title=name,
+                details=VisitDetails(
+                    name=name, email=email, phone=phone, address=address,
+                    job_description=notes,
+                ),
+                reference=None,
+            )  # fmt: skip
+        except SlotTakenError as error:
+            raise VisitEditError(str(error)) from None
+        except ValueError:
+            raise VisitEditError("A visit needs to end after it starts.") from None
+        return str(booked)
 
     # --- blocks by text: a date's own hours, kept as text-sourced blocks ---
 
@@ -275,6 +343,36 @@ class SchedulerRouter:
 
     async def find_booking(self, request: BookingRequest) -> BookingResult | None:
         return await (await self._calendar(request.business_id)).find_booking(request)
+
+    async def _editor(self, business_id: BusinessId) -> EngineAvailability:
+        if not await self._on_engine(business_id):
+            raise VisitEditError("Visits booked through Calendly are changed in Calendly.")
+        return self._engine
+
+    async def move_visit(
+        self, business_id: BusinessId, event_id: str, start: datetime, end: datetime
+    ) -> None:
+        await (await self._editor(business_id)).move_visit(business_id, event_id, start, end)
+
+    async def cancel_visit(self, business_id: BusinessId, event_id: str) -> None:
+        await (await self._editor(business_id)).cancel_visit(business_id, event_id)
+
+    async def add_visit(
+        self,
+        business_id: BusinessId,
+        *,
+        start: datetime,
+        end: datetime,
+        name: str,
+        email: str | None,
+        phone: str | None,
+        address: str | None,
+        notes: str | None,
+    ) -> str:
+        return await (await self._editor(business_id)).add_visit(
+            business_id, start=start, end=end, name=name, email=email, phone=phone,
+            address=address, notes=notes,
+        )  # fmt: skip
 
     async def booking_event_type_uri(self, business_id: BusinessId) -> str | None:
         return await (await self._calendar(business_id)).booking_event_type_uri(business_id)

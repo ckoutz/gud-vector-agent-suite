@@ -532,6 +532,7 @@ def build_demo_ports(
             session_factory, engine_calendar, DemoBookedEvents(session_factory, settings.demo)
         ),
         schedule_blocks=availability,
+        visit_editor=availability,
         intake_agent=OpenAIIntakeAgent(settings.openai, client, usage_ledger=usage_ledger),
         owner_assistant=OpenAIOwnerAssistant(settings.openai, client, usage_ledger=usage_ledger),
         customer_email=customer_email,
@@ -656,6 +657,7 @@ def build_production_ports(
         availability=availability,
         booked_events=booked_events,
         schedule_blocks=availability,
+        visit_editor=availability,
         calendar_feed=IcsCalendarFeed(client),
         intake_agent=intake_agent,
         owner_assistant=owner_assistant,

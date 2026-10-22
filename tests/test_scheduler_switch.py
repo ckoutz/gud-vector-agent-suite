@@ -223,3 +223,42 @@ def test_setup_hours_read_like_a_week() -> None:
     for bad in ("fri-mon=08:00-12:00", "mon=12:00-08:00", "mon 8-12", "xyz=08:00-09:00"):
         with pytest.raises(ValueError):
             parse_hours([bad])
+
+
+@pytest.mark.postgres
+async def test_the_owner_adds_moves_and_cancels_engine_visits_but_not_calendly_ones(
+    postgres_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    from gvas.domain.owner import VisitEditError
+
+    clock = Clock()
+    business_id, calendar = await engine_business(postgres_session_factory, clock)
+    calendly_business = BusinessId(await seed_business(postgres_session_factory, "plumber"))
+    calendly = FakeCalendly()
+    router = SchedulerRouter(postgres_session_factory, calendar, calendly, calendly)
+    booked = SchedulerBookedEvents(postgres_session_factory, calendar, None)
+
+    phone_in = await router.add_visit(
+        business_id, start=TUESDAY_10, end=TUESDAY_10 + HOUR, name="Walt Sims",
+        email=None, phone="+15555550100", address="9 Elm St", notes="Called in",
+    )  # fmt: skip
+    with pytest.raises(VisitEditError, match="overlaps"):
+        await router.add_visit(
+            business_id, start=TUESDAY_10, end=TUESDAY_10 + HOUR, name="Dup",
+            email=None, phone=None, address=None, notes=None,
+        )  # fmt: skip
+    [event] = await booked.upcoming(business_id, START, START + timedelta(days=2))
+    assert (event.event_id, event.status, event.location) == (phone_in, "confirmed", "9 Elm St")
+
+    await router.move_visit(business_id, phone_in, TUESDAY_10 + 2 * HOUR, TUESDAY_10 + 3 * HOUR)
+    [event] = await booked.upcoming(business_id, START, START + timedelta(days=2))
+    assert event.start == TUESDAY_10 + 2 * HOUR
+
+    await router.cancel_visit(business_id, phone_in)
+    assert await booked.upcoming(business_id, START, START + timedelta(days=2)) == ()
+    with pytest.raises(VisitEditError):
+        await router.cancel_visit(business_id, phone_in)
+    with pytest.raises(VisitEditError):
+        await router.move_visit(business_id, "not-an-id", TUESDAY_10, TUESDAY_10 + HOUR)
+    with pytest.raises(VisitEditError, match="Calendly"):
+        await router.cancel_visit(calendly_business, phone_in)

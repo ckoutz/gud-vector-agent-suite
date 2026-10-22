@@ -209,6 +209,30 @@ class AvailabilityPort(Protocol):
         ...
 
 
+class VisitEditorPort(Protocol):
+    """Owner changes to visits on our own scheduling engine (V1d). Each
+    raises ``VisitEditError`` with an owner-safe message when refused."""
+
+    async def move_visit(
+        self, business_id: BusinessId, event_id: str, start: datetime, end: datetime
+    ) -> None: ...
+
+    async def cancel_visit(self, business_id: BusinessId, event_id: str) -> None: ...
+
+    async def add_visit(
+        self,
+        business_id: BusinessId,
+        *,
+        start: datetime,
+        end: datetime,
+        name: str,
+        email: str | None,
+        phone: str | None,
+        address: str | None,
+        notes: str | None,
+    ) -> str: ...
+
+
 class BookedEventsPort(Protocol):
     """The bookings customers scheduled (Calendly), for the owner dashboard.
 

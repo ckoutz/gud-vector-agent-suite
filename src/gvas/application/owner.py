@@ -51,6 +51,7 @@ from gvas.domain.owner import (
     CalendarEventSource,
     OwnerCalendarError,
     OwnerSession,
+    VisitEditError,
     normalize_booking_link,
     normalize_calendar_feed_url,
 )
@@ -76,7 +77,7 @@ from gvas.domain.payments import (
     paid_through,
     plan_nudge_command,
 )
-from gvas.domain.ports import BookedEventsPort, CalendarFeedPort
+from gvas.domain.ports import BookedEventsPort, CalendarFeedPort, VisitEditorPort
 from gvas.domain.quotes import (
     InvalidQuoteTransitionError,
     Quote,
@@ -173,11 +174,13 @@ class OwnerService:
         booked_events: BookedEventsPort | None = None,
         calendar_feed: CalendarFeedPort | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        visit_editor: VisitEditorPort | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._booked_events = booked_events
         self._calendar_feed = calendar_feed
         self._now = now
+        self._visit_editor = visit_editor
 
     # -- sign-in -----------------------------------------------------------
 
@@ -361,6 +364,42 @@ class OwnerService:
         return CalendarView(events=tuple(events), problems=tuple(problems))
 
     # -- actions -----------------------------------------------------------
+
+    def _visits(self) -> VisitEditorPort:
+        if self._visit_editor is None:
+            raise VisitEditError("Visits can't be changed from the dashboard yet.")
+        return self._visit_editor
+
+    async def move_visit(
+        self, context: OwnerContext, event_id: str, start: datetime, end: datetime
+    ) -> None:
+        if start.tzinfo is None or end.tzinfo is None:
+            raise VisitEditError("Times must carry a timezone.")
+        await self._visits().move_visit(context.business.business_id, event_id, start, end)
+
+    async def cancel_visit(self, context: OwnerContext, event_id: str) -> None:
+        await self._visits().cancel_visit(context.business.business_id, event_id)
+
+    async def add_visit(
+        self,
+        context: OwnerContext,
+        *,
+        start: datetime,
+        end: datetime,
+        name: str,
+        email: str | None = None,
+        phone: str | None = None,
+        address: str | None = None,
+        notes: str | None = None,
+    ) -> str:
+        if start.tzinfo is None or end.tzinfo is None:
+            raise VisitEditError("Times must carry a timezone.")
+        if not name.strip():
+            raise VisitEditError("A visit needs the customer's name.")
+        return await self._visits().add_visit(
+            context.business.business_id, start=start, end=end, name=name.strip(),
+            email=email, phone=phone, address=address, notes=notes,
+        )  # fmt: skip
 
     async def decide_booking(
         self, context: OwnerContext, reference: str, *, approve: bool, reason: str | None = None

@@ -104,12 +104,19 @@ class CalendarEvent(OwnerModel):
     invitee_name: str | None = None
     invitee_email: str | None = None
     reference: str | None = None
+    #: Our scheduling engine's event id, when the owner can change it here.
+    event_id: str | None = None
+    status: str | None = None
 
     _aware_start = field_validator("start")(_aware)
 
 
 class OwnerCalendarError(RuntimeError):
     """A calendar source failed; the message is safe to show the owner."""
+
+
+class VisitEditError(ValueError):
+    """A dashboard visit change was refused; the message is owner-safe."""
 
 
 def normalize_booking_link(value: str) -> str:
