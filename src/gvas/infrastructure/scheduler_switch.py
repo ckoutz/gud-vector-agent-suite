@@ -89,7 +89,13 @@ class EngineAvailability:
                 start=request.slot_start,
                 end=request.slot_end,
                 title=request.invitee_name,
-                details=VisitDetails(address=request.address, job_description=request.details),
+                details=VisitDetails(
+                    name=request.invitee_name,
+                    email=request.invitee_email,
+                    phone=request.invitee_phone,
+                    address=request.address,
+                    job_description=request.details,
+                ),
                 reference=request.reference,
             )
         except SlotTakenError:

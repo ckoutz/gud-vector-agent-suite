@@ -594,3 +594,57 @@ async def test_sweep_lapses_old_holds(world: World) -> None:
     world.clock.advance(timedelta(minutes=11))
 
     assert (await world.engine.sweep()).holds_expired == (event_id,)
+
+
+async def test_confirming_queues_a_confirmation_and_reminders_and_cancelling_replaces_them(
+    world: World,
+) -> None:
+    from gvas.scheduling.core.records import SchedulingReminderRecord
+
+    scheduling = field_service(world)
+    service = await scheduling.create_service(
+        world.business_id, world.resource, name="Estimate", duration=HOUR
+    )
+    held = await scheduling.hold(
+        world.business_id,
+        service.service_id,
+        start=TUESDAY_10,
+        holder_ref="chat",
+        holder_ip=None,
+        actor=Actor.GUS,
+    )
+    await scheduling.confirm(
+        world.business_id,
+        held.event_id,
+        VisitDetails(name="Jane", email="jane@example.com", phone="+15550100009"),
+        actor=Actor.GUS,
+    )
+
+    async def queued() -> list[tuple[str, str, str]]:
+        async with world.factory() as session:
+            rows = await session.scalars(
+                select(SchedulingReminderRecord)
+                .where(SchedulingReminderRecord.event_id == held.event_id)
+                .order_by(SchedulingReminderRecord.fire_at, SchedulingReminderRecord.channel)
+            )
+            return [(row.kind, row.channel, row.status) for row in rows]
+
+    assert await queued() == [
+        ("confirmation", "email", "pending"),
+        ("confirmation", "sms", "pending"),
+        ("reminder_24h", "email", "pending"),
+        ("reminder_24h", "sms", "pending"),
+        ("reminder_2h", "email", "pending"),
+        ("reminder_2h", "sms", "pending"),
+    ]
+
+    await world.engine.set_status(
+        world.business_id, held.event_id, EventStatus.CANCELLED, actor=Actor.OWNER, by=world.owner
+    )
+
+    after = await queued()
+    assert sorted(status for kind, _, status in after if kind != "cancelled") == ["skipped"] * 6
+    assert [(kind, channel) for kind, channel, status in after if status == "pending"] == [
+        ("cancelled", "email"),
+        ("cancelled", "sms"),
+    ]

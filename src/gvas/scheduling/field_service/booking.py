@@ -19,6 +19,7 @@ from gvas.scheduling.core.model import (
     Slot,
     SlotUnavailableError,
 )
+from gvas.scheduling.core.notify import add_participant
 from gvas.scheduling.core.records import SchedulingEventRecord
 from gvas.scheduling.field_service.records import FieldServiceBookingRecord, FieldServiceRecord
 
@@ -44,6 +45,10 @@ class Service:
 @dataclass(frozen=True)
 class VisitDetails:
     customer_id: UUID | None = None
+    #: Who hears about the visit (confirmation, reminders, changes).
+    name: str | None = None
+    email: str | None = None
+    phone: str | None = None
     address: str | None = None
     job_description: str | None = None
     gus_notes: str | None = None
@@ -67,6 +72,20 @@ def _service(record: FieldServiceRecord) -> Service:
         horizon=None if record.horizon_days is None else timedelta(days=record.horizon_days),
         questions=tuple(str(question) for question in record.questions),
     )
+
+
+async def _attach_customer(
+    session: AsyncSession, event: SchedulingEventRecord, details: VisitDetails
+) -> None:
+    if details.email or details.phone:
+        await add_participant(
+            session,
+            event,
+            name=details.name or event.title,
+            email=details.email,
+            phone=details.phone,
+            now=event.updated_at,
+        )
 
 
 class FieldServiceScheduling:
@@ -218,6 +237,7 @@ class FieldServiceScheduling:
             record.gus_notes = details.gus_notes
             answers: dict[str, JsonValue] = dict(details.answers)
             record.answers = answers
+            await _attach_customer(session, event, details)
 
         return await self._engine.confirm(
             business_id,
@@ -269,6 +289,7 @@ class FieldServiceScheduling:
                     answers=dict(details.answers),
                 )
             )
+            await _attach_customer(session, event, details)
 
         return await self._engine.add_event(
             business_id,

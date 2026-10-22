@@ -39,6 +39,7 @@ from gvas.scheduling.core.model import (
     require_transition,
     role_allows,
 )
+from gvas.scheduling.core.notify import queue_cancelled, queue_confirmed
 from gvas.scheduling.core.records import (
     SchedulingAuditRecord,
     SchedulingAvailabilityExceptionRecord,
@@ -575,6 +576,8 @@ class SchedulingEngine:
                     await session.flush()
                     if then is not None:
                         await then(session, record)
+                    if new_status is EventStatus.CONFIRMED:
+                        await queue_confirmed(session, record, now)
                     self._audit(
                         session,
                         business_id,
@@ -642,6 +645,7 @@ class SchedulingEngine:
                 await session.flush()
                 if then is not None:
                     await then(session, record)
+                await queue_confirmed(session, record, now)
                 self._audit(
                     session,
                     business_id,
@@ -689,6 +693,10 @@ class SchedulingEngine:
             record.approval_expires_at = None
             record.version += 1
             record.updated_at = now
+            if status is EventStatus.CONFIRMED:
+                await queue_confirmed(session, record, now)
+            elif status is EventStatus.CANCELLED:
+                await queue_cancelled(session, record, now)
             self._audit(
                 session,
                 business_id,
