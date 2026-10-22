@@ -14,6 +14,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from gvas.domain.identifiers import BusinessId, WorkflowIntent
+from gvas.domain.owner_commands import is_no, is_yes
 
 CALENDAR_BLOCK_INTENT = WorkflowIntent("calendar_block")
 BLOCK_PROPOSAL_TTL = timedelta(minutes=30)
@@ -59,8 +60,6 @@ _DAY = re.compile(
     r"|\b(?P<month>1[0-2]|0?[1-9])/(?P<day>3[01]|[12]\d|0?[1-9])\b",
     re.IGNORECASE,
 )
-_YES = frozenset({"yes", "y", "yep", "yeah", "yup", "ok", "okay", "confirm", "do it", "sure"})
-_NO = frozenset({"no", "n", "nope", "cancel", "dont", "don't", "never mind", "nevermind"})
 
 
 class CalendarBlockError(ValueError):
@@ -157,10 +156,9 @@ def unblock_request(text: str) -> str | None:
 
 
 def block_confirmation(text: str) -> bool | None:
-    cleaned = " ".join(re.sub(r"[^\w\s']", " ", text.casefold()).split())
-    if cleaned in _YES:
+    if is_yes(text):
         return True
-    if cleaned in _NO:
+    if is_no(text):
         return False
     return None
 

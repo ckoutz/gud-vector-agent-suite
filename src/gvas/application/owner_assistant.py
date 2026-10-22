@@ -42,8 +42,11 @@ from gvas.domain.owner_commands import (
     OwnerCommandState,
     conversation_key,
     is_no,
+    is_thumbs_up_on,
+    is_unclear,
     is_yes,
     is_yes_and_more,
+    reaction,
 )
 from gvas.domain.payments import month_totals
 from gvas.domain.quotes import Quote
@@ -68,6 +71,7 @@ SETUP_REPLY = (
     "a setup problem on Güd Vector's side. The dashboard has everything in the meantime."
 )
 CONFIRM_PROMPT = "Reply YES in the next 10 minutes to do it, or NO to cancel it."
+UNCLEAR_REPLY = "I didn't catch that. Reply YES to do it or NO to cancel."
 ALREADY_ANSWERED_REPLY = (
     "Your change was already answered by another message, so this message didn't cancel "
     "or change it."
@@ -542,10 +546,14 @@ class OwnerAssistant:
         cancelled = ""
         if pending is not None:
             same_thread = pending.conversation_ref == conversation_key(conversation_ref)
-            if same_thread and is_yes(text):
+            if same_thread and (
+                is_yes(text) or is_thumbs_up_on(text, f"{pending.summary} {CONFIRM_PROMPT}")
+            ):
                 return await self._confirm(business, pending)
             if same_thread and is_yes_and_more(text):
                 return still_waiting_note(pending.summary)
+            if same_thread and (is_unclear(text) or reaction(text) is not None):
+                return UNCLEAR_REPLY
             if not await self._close(pending, OwnerCommandState.CANCELLED, now):
                 if is_yes(text) or is_no(text):
                     return ALREADY_ANSWERED_REPLY

@@ -24,6 +24,7 @@ from gvas.application.owner_assistant import (
     NO_CHANGE_SET_UP_NOTE,
     NOTHING_PENDING_REPLY,
     ONE_CHANGE_NOTE,
+    UNCLEAR_REPLY,
     cancelled_note,
     still_waiting_note,
 )
@@ -45,6 +46,8 @@ from gvas.domain.owner_commands import (
     OwnerCommandConflictError,
     OwnerCommandState,
     conversation_key,
+    is_no,
+    is_unclear,
     is_yes,
     is_yes_and_more,
 )
@@ -235,10 +238,10 @@ async def test_a_done_change_can_offer_the_next_one_which_waits_for_its_own_yes(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("other", ["ok", "sure", "hello", "no", "Nope", "cancel"])
-async def test_any_other_reply_cancels_the_change_and_says_so_first(
-    setup: Setup, other: str
-) -> None:
+@pytest.mark.parametrize(
+    "other", ["no", "Nope", "cancel", "No thanks", "nah.", "never mind", "no, wait", "Stop"]
+)
+async def test_a_clear_no_cancels_the_change_and_says_so_first(setup: Setup, other: str) -> None:
     await setup.text("note gate")
     reply = await setup.text(other)
 
@@ -353,12 +356,147 @@ def test_only_a_plain_yes_confirms() -> None:
         "Yes please",
         "go ahead",
         "Do it!",
+        *NEW_YES,
     ]
     assert all(is_yes(text) for text in plain)
-    more = ["Yes and Friday too", "yes but make it 2 to 4", "y, and Friday", "go ahead with friday"]
+    more = [
+        "Yes and Friday too",
+        "yes but make it 2 to 4",
+        "y, and Friday",
+        "go ahead with friday",
+        "sure, and Friday too",
+        "ok but make it $95",
+        "👍 and add Friday",
+    ]
     assert all(is_yes_and_more(text) and not is_yes(text) for text in more)
-    others = ["ok", "sure", "yess", "yesterday", "you there?", "no", ""]
+    others = ["yess", "yesterday", "you there?", "no", "", "yes?", "ok?", "please", "thanks"]
     assert not any(is_yes(text) or is_yes_and_more(text) for text in others)
+    assert all(is_no(text) for text in ["no", "No thanks", "nope.", "cancel it", "don't"])
+
+
+NEW_YES = [
+    "Yea",
+    "yeh",
+    "Sure",
+    "OK",
+    "okay!",
+    "Confirm",
+    "send it.",
+    "do it",
+    "Sounds good!",
+    "yes do it",
+    "Yes, do it.",
+    "yes please, send it",
+    "Ok thanks",
+    "\N{THUMBS UP SIGN}",
+    "\N{THUMBS UP SIGN}\N{EMOJI MODIFIER FITZPATRICK TYPE-4}",
+    "\N{THUMBS UP SIGN}\N{VARIATION SELECTOR-16}",
+]
+UNCLEAR = [
+    "hello",
+    "hmm",
+    "wait",
+    "yes?",
+    "Is it done?",
+    "Friday 2pm",
+    "k",
+    "send",
+    "\N{GRINNING FACE}",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("yes", NEW_YES)
+async def test_a_natural_yes_confirms_the_change(setup: Setup, yes: str) -> None:
+    await setup.text("note gate")
+    requests = len(setup.model.requests)
+
+    assert await setup.text(yes) == 'Done: added the note "gate".'
+    assert setup.tool.applied == [(setup.business_id, {"text": "gate"})]
+    assert len(setup.model.requests) == requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unclear", UNCLEAR)
+async def test_a_short_unclear_reply_keeps_the_change_waiting(setup: Setup, unclear: str) -> None:
+    assert is_unclear(unclear)
+    await setup.text("note gate")
+    requests = len(setup.model.requests)
+
+    assert await setup.text(unclear) == UNCLEAR_REPLY
+    assert len(setup.model.requests) == requests  # the model never saw it
+    assert await setup.commands() == [(OwnerCommandState.PROPOSED, None)]
+    assert await setup.text("yea") == 'Done: added the note "gate".'
+
+
+@pytest.mark.parametrize(
+    "text", ["note dog", "who owes me", "schedule?", "what about next week", "no thanks"]
+)
+def test_a_short_request_or_no_is_not_unclear(text: str) -> None:
+    assert not is_unclear(text)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("request_text", ["who owes me", "what about next week then"])
+async def test_a_different_request_cancels_and_is_answered(setup: Setup, request_text: str) -> None:
+    await setup.text("note gate")
+
+    reply = await setup.text(request_text)
+
+    assert reply == cancelled_note('I will add the note "gate".') + "\n\nHi there."
+    assert await setup.commands() == [(OwnerCommandState.CANCELLED, None)]
+
+
+@pytest.mark.asyncio
+async def test_a_thumbs_up_tapback_on_the_read_back_confirms(setup: Setup) -> None:
+    await setup.text("note gate")
+
+    assert (
+        await setup.text(f'Liked \u201cI will add the note "gate". {CONFIRM_PROMPT}\u201d')
+        == 'Done: added the note "gate".'
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tapback",
+    [
+        'Liked \u201cDone: added the note "fence" yesterday afternoon.\u201d',
+        'Laughed at \u201cI will add the note "gate".\u201d',
+        'Reacted \N{THUMBS DOWN SIGN} to \u201cI will add the note "gate".\u201d',
+    ],
+)
+async def test_another_tapback_keeps_the_change_waiting(setup: Setup, tapback: str) -> None:
+    await setup.text("note gate")
+
+    assert await setup.text(tapback) == UNCLEAR_REPLY
+    assert await setup.commands() == [(OwnerCommandState.PROPOSED, None)]
+
+
+@pytest.mark.asyncio
+async def test_the_demo_copy_takes_the_same_yes_and_unclear_replies(setup: Setup) -> None:
+    assistant = setup.application.owner_assistant
+    assert assistant is not None
+    await assistant.answer(setup.business_id, "note gate", conversation_ref="demo")
+
+    assert await assistant.answer(setup.business_id, "hmm", conversation_ref="demo") == (
+        UNCLEAR_REPLY
+    )
+    assert await assistant.answer(setup.business_id, "Yea", conversation_ref="demo") == (
+        'Done: added the note "gate".'
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unclear_reply_from_another_thread_still_cancels(setup: Setup) -> None:
+    assistant = setup.application.owner_assistant
+    assert assistant is not None
+    await assistant.answer(setup.business_id, "note gate", conversation_ref="sms:a")
+
+    reply = await assistant.answer(setup.business_id, "hmm", conversation_ref="sms:b")
+
+    assert reply.startswith(cancelled_note('I will add the note "gate".'))
+    assert await setup.commands() == [(OwnerCommandState.CANCELLED, None)]
 
 
 @pytest.mark.asyncio
@@ -417,7 +555,7 @@ async def test_other_words_after_a_claimed_change_say_it_was_answered(setup: Set
 
     assistant._pending = claimed_meanwhile  # type: ignore[method-assign]
 
-    assert await setup.text("hello") == f"{ALREADY_ANSWERED_REPLY}\n\nHi there."
+    assert await setup.text("hello, what is on today") == f"{ALREADY_ANSWERED_REPLY}\n\nHi there."
 
 
 def _command(business_id: BusinessId, now: datetime) -> OwnerCommand:

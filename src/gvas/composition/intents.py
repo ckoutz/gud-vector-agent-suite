@@ -24,7 +24,7 @@ from gvas.domain.intents import (
     IntentUnresolvedError,
 )
 from gvas.domain.messages import NormalizedOwnerMessage
-from gvas.domain.owner_commands import is_no, is_yes, is_yes_and_more
+from gvas.domain.owner_commands import is_no, is_unclear, is_yes, is_yes_and_more, reaction
 from gvas.domain.quotes import Quote, quote_trigger_request_text
 from gvas.domain.repositories import UnitOfWork
 
@@ -63,14 +63,21 @@ class DeterministicIntentResolver:
 
     async def resolve(self, message: NormalizedOwnerMessage) -> IntentResolution:
         # While a change Gus proposed is waiting, every message goes to Gus: a
-        # plain YES applies it, a yes with more on it keeps it waiting, and
-        # anything else cancels it and says so before the rest of the answer.
+        # plain yes applies it, a yes with more on it or a short unclear reply
+        # keeps it waiting, and a no or a new request cancels it and says so
+        # before the rest of the answer.
         # Gus has tools for booking decisions and calendar blocks, so those go
         # to him too; quote and field-note commands keep their own workflows
         # and leave the change waiting, untouched.
         text = normalized_text(message)
         pending = await self._owner_command_pending(message)
-        if pending and (is_yes(text) or is_yes_and_more(text) or is_no(text)):
+        if pending and (
+            is_yes(text)
+            or is_yes_and_more(text)
+            or is_no(text)
+            or is_unclear(text)
+            or reaction(text) is not None
+        ):
             return IntentResolution(intent=UNMATCHED_MESSAGE_INTENT, confidence=1)
         # Booking decisions are checked before everything else: the quote
         # selector claims every message in a conversation with an active
