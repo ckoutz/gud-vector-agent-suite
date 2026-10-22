@@ -23,6 +23,7 @@ from gvas.composition.production import (
     worker_identity,
 )
 from gvas.infrastructure.db import create_session_factory
+from gvas.infrastructure.visit_messages import VisitMessenger
 from gvas.interfaces.logging_setup import configure_logging
 from gvas.scheduling.core.engine import SchedulingEngine
 
@@ -60,11 +61,13 @@ async def _sweep_sandboxes(runtime: ProductionRuntime) -> None:
 SCHEDULE_SWEEP_SECONDS = 60
 
 
-async def _sweep_schedules(scheduling: SchedulingEngine) -> None:
-    """Lapse old holds and expire approvals nobody gave in time."""
+async def _sweep_schedules(scheduling: SchedulingEngine, messenger: VisitMessenger) -> None:
+    """Lapse old holds, expire approvals nobody gave in time and queue the
+    visit messages now due."""
 
     try:
         result = await scheduling.sweep()
+        await messenger.run_due()
     except Exception:
         logger.exception("scheduling sweep failed; retrying next round")
         return
@@ -78,7 +81,13 @@ async def _sweep_schedules(scheduling: SchedulingEngine) -> None:
 
 async def run_worker(runtime: ProductionRuntime, stopping: asyncio.Event) -> int:
     worker = build_worker(runtime)
-    scheduling = SchedulingEngine(create_session_factory(runtime.engine))
+    schedule_sessions = create_session_factory(runtime.engine)
+    scheduling = SchedulingEngine(schedule_sessions)
+    messenger = VisitMessenger(
+        schedule_sessions,
+        organizer_email=runtime.settings.resend.reply_to_address
+        or runtime.settings.resend.from_address,
+    )
     poll_seconds = runtime.settings.worker.poll_seconds
     sweep_every = runtime.settings.demo.sandbox_sweep_minutes * 60
     next_sweep = time.monotonic()
@@ -89,7 +98,7 @@ async def run_worker(runtime: ProductionRuntime, stopping: asyncio.Event) -> int
             await _sweep_sandboxes(runtime)
             next_sweep = time.monotonic() + sweep_every
         if time.monotonic() >= next_schedule_sweep:
-            await _sweep_schedules(scheduling)
+            await _sweep_schedules(scheduling, messenger)
             next_schedule_sweep = time.monotonic() + SCHEDULE_SWEEP_SECONDS
         report: WorkerBatchReport = await worker.run_once()
         batches += 1

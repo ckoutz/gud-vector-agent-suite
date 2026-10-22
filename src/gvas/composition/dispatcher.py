@@ -84,6 +84,7 @@ from gvas.domain.reporting import (
     FIELD_NOTES_REPORT_PUBLISH_COMMAND_TYPE,
     report_email_idempotency_key,
 )
+from gvas.domain.visit_email import VISIT_EMAIL_COMMAND_TYPE, VisitEmailPort, visit_email_request
 
 
 class UnknownCommandTypeError(RuntimeError):
@@ -161,7 +162,9 @@ class OutboxCommandDispatcher:
         intake_booking_cancel: CancelIntakeBookingService | None = None,
         owner_email: SendOwnerEmailService | None = None,
         manual_payments: ManualPaymentEffectsService | None = None,
+        visit_email: VisitEmailPort | None = None,
     ) -> None:
+        self._visit_email = visit_email
         self._owner_email = owner_email
         self._manual_payments = manual_payments
         self._quote_text = quote_text
@@ -223,6 +226,8 @@ class OutboxCommandDispatcher:
             return await self._send_intake_email(command)
         if command.command_type == INTAKE_CUSTOMER_TEXT_COMMAND_TYPE:
             return await self._send_intake_text(command)
+        if command.command_type == VISIT_EMAIL_COMMAND_TYPE:
+            return await self._send_visit_email(command)
         if command.command_type in (
             CHECKOUT_EXPIRE_COMMAND_TYPE,
             MANUAL_RECEIPT_COMMAND_TYPE,
@@ -318,6 +323,16 @@ class OutboxCommandDispatcher:
         if self._intake_email is None:
             raise UnknownCommandTypeError("intake customer e-mail is not wired")
         await self._intake_email.send(command.business_id, command.payload)
+        return DispatchOutcome(command.command_type, "sent")
+
+    async def _send_visit_email(self, command: OutboxCommand) -> DispatchOutcome:
+        if self._visit_email is None:
+            raise UnknownCommandTypeError("visit e-mail is not wired")
+        receipt = await self._visit_email.send(
+            visit_email_request(command.business_id, command.payload)
+        )
+        if receipt.status is DeliveryStatus.FAILED:
+            raise RuntimeError(receipt.detail or "visit e-mail failed")
         return DispatchOutcome(command.command_type, "sent")
 
     async def _manual_payment_effect(self, command: OutboxCommand) -> DispatchOutcome:

@@ -47,6 +47,7 @@ from gvas.domain.messages import (
 from gvas.domain.owner import CalendarEvent, CalendarEventSource
 from gvas.domain.owner_email import OwnerEmailRequest
 from gvas.domain.reporting import ReportEmailRequest
+from gvas.domain.visit_email import VisitEmail
 from gvas.infrastructure.calendar_block_models import DemoDayHoursRecord
 from gvas.infrastructure.hosted_links import PORTAL_LOGIN_LINK_REFERENCE
 from gvas.infrastructure.intake_models import IntakeConversation as IntakeRow
@@ -97,6 +98,20 @@ def _log(kind: str, business_id: BusinessId, to: str, text: str) -> None:
 
     del to, text
     logger.info("demo mode, not sent: %s (business %s)", kind, business_id)
+
+
+class LoggedVisitEmail:
+    """Visit e-mails (with their invite), logged instead of sent."""
+
+    async def send(self, email: VisitEmail) -> DeliveryReceipt:
+        invite = "invite attached" if email.invite else "no invite"
+        _log(
+            "visit e-mail",
+            email.business_id,
+            email.to,
+            f"Subject: {email.subject}\n{email.body}\n({invite})",
+        )
+        return _receipt(email.idempotency_key, emailed=True)
 
 
 class LoggedCustomerEmail:

@@ -76,6 +76,7 @@ from gvas.infrastructure.demo import (
     LoggedOwnerReply,
     LoggedPortalLoginEmail,
     LoggedReportEmail,
+    LoggedVisitEmail,
     NoAttachments,
 )
 from gvas.infrastructure.object_storage import R2ObjectStorage
@@ -99,6 +100,7 @@ from gvas.infrastructure.resend import (
     ResendPortalLoginEmailAdapter,
     ResendQuoteDeliveryAdapter,
     ResendReportEmailAdapter,
+    ResendVisitEmailAdapter,
 )
 from gvas.infrastructure.scheduler_switch import (
     SchedulerBookedEvents,
@@ -530,6 +532,7 @@ def build_demo_ports(
         intake_agent=OpenAIIntakeAgent(settings.openai, client, usage_ledger=usage_ledger),
         owner_assistant=OpenAIOwnerAssistant(settings.openai, client, usage_ledger=usage_ledger),
         customer_email=customer_email,
+        visit_email=LoggedVisitEmail(),
         owner_email=LoggedOwnerEmail(),
         quote_delivery=SiteAwareQuoteDelivery(customer_email),
         customer_text=LoggedCustomerText(),
@@ -657,6 +660,7 @@ def build_production_ports(
             owner_email, settings.resend.alert_to_address
         ),
         customer_email=resend_quotes,
+        visit_email=ResendVisitEmailAdapter(settings.resend, client),
         owner_email=owner_email,
         quote_delivery=quote_delivery,
         customer_text=customer_text,

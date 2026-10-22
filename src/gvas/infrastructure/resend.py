@@ -19,6 +19,7 @@ from gvas.domain.enums import DeliveryStatus, RecipientAddressKind
 from gvas.domain.messages import CustomerDeliveryRequest, DeliveryReceipt
 from gvas.domain.owner_email import OwnerEmailRequest
 from gvas.domain.reporting import ReportEmailRequest
+from gvas.domain.visit_email import VisitEmail
 from gvas.infrastructure.hosted_links import PORTAL_LOGIN_LINK_REFERENCE
 
 EMAILS_PATH: Final = "/emails"
@@ -164,6 +165,24 @@ class ResendReportEmailAdapter(_ResendEmailClient):
                 }
             ],
         )
+
+
+class ResendVisitEmailAdapter(_ResendEmailClient):
+    """Visit e-mails, with the calendar invite attached so the customer's
+    calendar adds, moves or removes the visit."""
+
+    async def send(self, email: VisitEmail) -> DeliveryReceipt:
+        extra: dict[str, object] = {}
+        if email.invite is not None:
+            method = "CANCEL" if email.cancelled else "REQUEST"
+            extra["attachments"] = [
+                {
+                    "filename": "invite.ics",
+                    "content": base64.b64encode(email.invite.encode()).decode("ascii"),
+                    "content_type": f"text/calendar; method={method}",
+                }
+            ]
+        return await self._send(email.to, email.subject, email.body, email.idempotency_key, **extra)
 
 
 class ResendOwnerEmailAdapter(_ResendEmailClient):

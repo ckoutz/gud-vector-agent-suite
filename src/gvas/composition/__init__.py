@@ -111,6 +111,7 @@ from gvas.domain.ports import (
 )
 from gvas.domain.reporting import ReportEmailPort, ReportGenerationPort
 from gvas.domain.usage import UsageCeilingGuard, UsageCeilings, UsageLedgerPort
+from gvas.domain.visit_email import VisitEmailPort
 from gvas.domain.workflows import WorkflowRouter
 from gvas.infrastructure.db import create_engine, create_session_factory
 from gvas.infrastructure.field_note_repositories import SqlFieldNoteUnitOfWorkFactory
@@ -182,6 +183,8 @@ class ApplicationPorts:
     # Owner notices as text + HTML; absent means they go out text-only
     # through ``customer_email``.
     owner_email: OwnerEmailPort | None = None
+    # Visit e-mails with calendar invites (scheduling engine businesses).
+    visit_email: VisitEmailPort | None = None
 
 
 @dataclass(frozen=True)
@@ -479,6 +482,7 @@ def build_application(
         owner_email=(
             SendOwnerEmailService(ports.owner_email) if ports.owner_email is not None else None
         ),
+        visit_email=ports.visit_email,
         manual_payments=ManualPaymentEffectsService(
             unit_of_work_factory,
             checkout=ports.payment_checkout,
