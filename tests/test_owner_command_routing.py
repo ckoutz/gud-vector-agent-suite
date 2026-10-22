@@ -28,10 +28,10 @@ class _WorkflowError(Exception):
 def _resolver() -> DeterministicIntentResolver:
     resolver = object.__new__(DeterministicIntentResolver)
 
-    async def pending(_message: NormalizedOwnerMessage) -> bool:
+    async def pending(message: NormalizedOwnerMessage) -> bool:
         return True
 
-    async def quote(_message: NormalizedOwnerMessage) -> None:
+    async def quote(message: NormalizedOwnerMessage) -> None:
         raise _WorkflowError  # an active quote or field-note case would claim the reply here
 
     resolver._owner_command_pending = pending  # type: ignore[method-assign]
