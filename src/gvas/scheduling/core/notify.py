@@ -117,13 +117,17 @@ async def _skip_pending(session: AsyncSession, event: SchedulingEventRecord) -> 
 
 
 async def queue_confirmed(
-    session: AsyncSession, event: SchedulingEventRecord, now: datetime
+    session: AsyncSession,
+    event: SchedulingEventRecord,
+    now: datetime,
+    kind: MessageKind = MessageKind.CONFIRMATION,
 ) -> None:
-    """A confirmation now, then the reminders still ahead."""
+    """A confirmation (or a moved-visit notice) now, then the reminders
+    still ahead. Reminders for the old time are skipped."""
 
     await _skip_pending(session, event)
     for person in await _notified(session, event):
-        _queue(session, event, person, MessageKind.CONFIRMATION, now, now)
+        _queue(session, event, person, kind, now, now)
         for kind, fire_at in reminder_times(event.starts_at, now):
             _queue(session, event, person, kind, fire_at, now)
 

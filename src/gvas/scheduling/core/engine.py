@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from gvas.domain.identifiers import JsonValue
 from gvas.domain.time_zones import normalize_time_zone
+from gvas.scheduling.core.messages import MessageKind
 from gvas.scheduling.core.model import (
     OCCUPYING,
     Actor,
@@ -28,6 +29,7 @@ from gvas.scheduling.core.model import (
     EventStatus,
     HoldExpiredError,
     HoldLimitError,
+    IllegalTransitionError,
     Interval,
     NotFoundError,
     Occupied,
@@ -712,6 +714,59 @@ class SchedulingEngine:
                 _event_state(record),
             )
         await self._publish(business_id, event_id, status, actor, now)
+
+    async def move(
+        self,
+        business_id: UUID,
+        event_id: UUID,
+        *,
+        start: datetime,
+        end: datetime,
+        by: str,
+    ) -> None:
+        """The owner moves a confirmed event (FS-30). Its buffers move with
+        it, the overlap guarantee still holds, and the people on it are told
+        and get reminders for the new time."""
+
+        if start >= end:
+            raise ValueError("an event needs a start before its end")
+        now = self._clock()
+        try:
+            async with self._session_factory() as session, session.begin():
+                record = await self._event(session, business_id, event_id)
+                await self._resource(session, business_id, record.resource_id, lock=True)
+                await session.refresh(record)
+                await self._require(
+                    session, business_id, record.calendar_id, by, CalendarAction.CHANGE
+                )
+                if record.status != EventStatus.CONFIRMED.value:
+                    raise IllegalTransitionError("only a confirmed event can be moved")
+                await self._expire_lapsed_holds(session, record.resource_id, now)
+                before = _event_state(record)
+                buffer_before = record.starts_at - record.blocked_start
+                buffer_after = record.blocked_end - record.ends_at
+                record.starts_at, record.ends_at = start, end
+                record.blocked_start = start - buffer_before
+                record.blocked_end = end + buffer_after
+                record.version += 1
+                record.updated_at = now
+                await session.flush()
+                await queue_confirmed(session, record, now, MessageKind.RESCHEDULED)
+                self._audit(
+                    session,
+                    business_id,
+                    Actor.OWNER,
+                    "event",
+                    event_id,
+                    "moved",
+                    before,
+                    _event_state(record),
+                )
+        except IntegrityError as error:
+            raise SlotTakenError(
+                "That time overlaps another visit or a time someone is booking."
+            ) from error
+        await self._publish(business_id, event_id, EventStatus.CONFIRMED, Actor.OWNER, now)
 
     async def event(self, business_id: UUID, event_id: UUID, *, by: str) -> EventView:
         async with self._session_factory() as session:

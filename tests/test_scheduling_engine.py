@@ -648,3 +648,38 @@ async def test_confirming_queues_a_confirmation_and_reminders_and_cancelling_rep
         ("cancelled", "email"),
         ("cancelled", "sms"),
     ]
+
+
+async def test_the_owner_moves_a_visit_with_its_buffer_but_never_onto_another(
+    world: World,
+) -> None:
+    first = await world.engine.add_event(
+        world.business_id, world.resource, start=TUESDAY_10, end=TUESDAY_10 + HOUR,
+        title="Visit", by=world.owner, buffer_after=timedelta(minutes=15),
+    )  # fmt: skip
+    await world.engine.add_event(
+        world.business_id, world.resource, start=TUESDAY_10 + 3 * HOUR,
+        end=TUESDAY_10 + 4 * HOUR, title="Other", by=world.owner,
+    )  # fmt: skip
+
+    with pytest.raises(SlotTakenError):
+        await world.engine.move(
+            world.business_id, first, start=TUESDAY_10 + 2 * HOUR + timedelta(minutes=30),
+            end=TUESDAY_10 + 3 * HOUR + timedelta(minutes=30), by=world.owner,
+        )  # fmt: skip
+    await world.engine.move(
+        world.business_id, first, start=TUESDAY_10 + HOUR,
+        end=TUESDAY_10 + 2 * HOUR, by=world.owner,
+    )  # fmt: skip
+
+    async with world.factory() as session:
+        moved = await session.get(SchedulingEventRecord, first)
+        assert moved is not None
+        assert (moved.starts_at, moved.blocked_end, moved.version) == (
+            TUESDAY_10 + HOUR, TUESDAY_10 + 2 * HOUR + timedelta(minutes=15), 2,
+        )  # fmt: skip
+    assert TUESDAY_10 in await offered(world)
+    with pytest.raises(PermissionDeniedError):
+        await world.engine.move(
+            world.business_id, first, start=TUESDAY_10, end=TUESDAY_10 + HOUR, by="stranger",
+        )  # fmt: skip
