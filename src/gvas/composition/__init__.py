@@ -94,6 +94,7 @@ from gvas.domain.ports import (
     AvailabilityPort,
     BillingAccountPort,
     BookedEventsPort,
+    CalendarConnectPort,
     CalendarFeedPort,
     ChecklistEvidencePort,
     CustomerQuoteDeliveryPort,
@@ -178,6 +179,7 @@ class ApplicationPorts:
     # calendar feed. Either may be absent; the dashboard shows what it has.
     booked_events: BookedEventsPort | None = None
     visit_editor: VisitEditorPort | None = None
+    calendar_connect: CalendarConnectPort | None = None
     calendar_feed: CalendarFeedPort | None = None
     # Owner-requested blocks of time (``unavailable 8-12``) on the booking
     # calendar; absent means the owner is told blocking isn't set up.
@@ -348,6 +350,7 @@ def build_application(
         booked_events=ports.booked_events,
         calendar_feed=ports.calendar_feed,
         visit_editor=ports.visit_editor,
+        calendar_connect=ports.calendar_connect,
         now=now,
     )
     owner_assistant = (

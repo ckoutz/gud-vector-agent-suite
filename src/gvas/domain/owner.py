@@ -119,6 +119,21 @@ class VisitEditError(ValueError):
     """A dashboard visit change was refused; the message is owner-safe."""
 
 
+class CalendarConnectError(ValueError):
+    """Connecting an outside calendar was refused; the message is owner-safe."""
+
+
+class CalendarConnection(BaseModel):
+    """Where the business's outside-calendar link stands: ``none`` (never
+    connected), ``active`` or ``reconnect`` (access withdrawn)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    available: bool
+    state: str = "none"
+    last_sync_at: datetime | None = None
+
+
 def normalize_booking_link(value: str) -> str:
     """A booking link customers follow: absolute https (http only for a local
     host); a path is allowed."""

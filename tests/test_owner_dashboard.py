@@ -21,6 +21,8 @@ from gvas.domain.intake import (
     INTAKE_CUSTOMER_EMAIL_COMMAND_TYPE,
 )
 from gvas.domain.owner import (
+    CalendarConnectError,
+    CalendarConnection,
     CalendarEvent,
     CalendarEventSource,
     OwnerCalendarError,
@@ -92,6 +94,7 @@ async def owner_business(
     booked_events: BookedEventsFake | None = None,
     calendar_feed: CalendarFeedFake | None = None,
     visit_editor: "VisitEditorFake | None" = None,  # noqa: UP037
+    calendar_connect: "CalendarConnectFake | None" = None,  # noqa: UP037
 ) -> tuple[Application, BusinessId]:
     """A hosted business with one quote to ``customer_email``; approved by
     text when ``approve``, else waiting for the owner's OK."""
@@ -121,6 +124,7 @@ async def owner_business(
             booked_events=booked_events,
             calendar_feed=calendar_feed,
             visit_editor=visit_editor,
+            calendar_connect=calendar_connect,
         ),
         session_factory=session_factory,
         now=Clock(),
@@ -791,3 +795,58 @@ async def test_the_owner_adds_moves_and_cancels_visits_for_their_own_business_on
         ("move", business_id, "v1", WINDOW_START),
         ("cancel", business_id, "v1"),
     ]
+
+
+class CalendarConnectFake:
+    def __init__(self) -> None:
+        self.finished: list[tuple[BusinessId, str]] = []
+
+    async def status(self, business_id: BusinessId) -> CalendarConnection:
+        return CalendarConnection(available=True, state="reconnect", last_sync_at=NOW)
+
+    async def start_url(self, business_id: BusinessId) -> str:
+        return f"https://accounts.google.com/o/oauth2/v2/auth?state={business_id}"
+
+    async def finish(self, business_id: BusinessId, *, code: str, state: str) -> None:
+        if state != str(business_id):
+            raise CalendarConnectError("Google didn't accept the sign-in.")
+        self.finished.append((business_id, code))
+
+
+async def test_google_calendar_connect_is_owner_only_and_bound_to_their_business(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    connect = CalendarConnectFake()
+    application, business_id = await owner_business(session_factory, calendar_connect=connect)
+    google = f"https://accounts.google.com/o/oauth2/v2/auth?state={business_id}"
+    async with http_client(application) as http:
+        assert (await http.get("/v1/owner/calendar/google")).status_code == 401
+        assert (await http.post("/v1/owner/calendar/google/start")).status_code == 401
+        owner = await sign_in(session_factory, http, business_id)
+        status = (await http.get("/v1/owner/calendar/google", headers=bearer(owner))).json()
+        assert status == {"available": True, "state": "reconnect", "lastSyncAt": NOW.isoformat()}
+        start = await http.post("/v1/owner/calendar/google/start", headers=bearer(owner))
+        assert start.json() == {"url": google}
+        wrong = await http.post(
+            "/v1/owner/calendar/google/finish", json={"code": "c", "state": "other"},
+            headers=bearer(owner),
+        )  # fmt: skip
+        assert wrong.status_code == 409 and "accept" in wrong.json()["detail"]
+        done = await http.post(
+            "/v1/owner/calendar/google/finish", json={"code": "c", "state": str(business_id)},
+            headers=bearer(owner),
+        )  # fmt: skip
+        assert done.json() == {"connected": True}
+    assert connect.finished == [(business_id, "c")]
+
+
+async def test_without_google_set_up_the_dashboard_says_so(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    application, business_id = await owner_business(session_factory)
+    async with http_client(application) as http:
+        owner = await sign_in(session_factory, http, business_id)
+        status = (await http.get("/v1/owner/calendar/google", headers=bearer(owner))).json()
+        assert status == {"available": False, "state": "none", "lastSyncAt": None}
+        start = await http.post("/v1/owner/calendar/google/start", headers=bearer(owner))
+        assert start.status_code == 409

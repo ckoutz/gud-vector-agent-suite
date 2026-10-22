@@ -26,7 +26,7 @@ from gvas.domain.messages import (
     TranscriptResult,
 )
 from gvas.domain.object_storage import ObjectCustodyRequest, StoredObject
-from gvas.domain.owner import CalendarEvent
+from gvas.domain.owner import CalendarConnection, CalendarEvent
 from gvas.domain.owner_email import OwnerEmailRequest
 from gvas.domain.owner_understanding import (
     OwnerIntentInterpretation,
@@ -207,6 +207,19 @@ class AvailabilityPort(Protocol):
         provider failures raise ``AvailabilityError``.
         """
         ...
+
+
+class CalendarConnectPort(Protocol):
+    """Connects a business's booking calendar to the owner's Google Calendar.
+    Errors raise ``CalendarConnectError`` with an owner-safe message."""
+
+    async def status(self, business_id: BusinessId) -> CalendarConnection: ...
+
+    async def start_url(self, business_id: BusinessId) -> str:
+        """The provider sign-in address, carrying a signed, expiring state."""
+        ...
+
+    async def finish(self, business_id: BusinessId, *, code: str, state: str) -> None: ...
 
 
 class VisitEditorPort(Protocol):

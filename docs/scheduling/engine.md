@@ -135,9 +135,19 @@ The worker runs `sweep()` every minute.
   `GVAS_GOOGLE_OAUTH_CLIENT_ID`, `GVAS_GOOGLE_OAUTH_CLIENT_SECRET` and
   `GVAS_CALENDAR_TOKEN_KEY` are all set; a malformed key stops the worker at
   startup.
-- Still to build: the OAuth connect/reconnect screen and Google watch channels
-  with renewal (until then, polling every 5 minutes keeps reads inside the
-  15-minute stale limit). Both need a Google Cloud OAuth client.
+- Connecting (`GoogleCalendarConnect`, `CalendarConnectPort`): owner-only
+  `GET /v1/owner/calendar/google` (available, state, lastSyncAt),
+  `POST .../start` (the Google sign-in address) and `POST .../finish` (code and
+  state from Google's redirect). The state is HMAC-signed, names the business
+  and expires in 10 minutes. Scopes: `calendar.freebusy` and
+  `calendar.app.created` only. Finishing creates one "Güd Office visits"
+  calendar (reused on reconnect), stores the sealed refresh token and leaves
+  `last_sync_at` empty, so offers pause until the first read (within a minute).
+  Needs `GVAS_GOOGLE_REDIRECT_URI` (the site's
+  `/portal/owner/calendar/google` page) as well as the client and key.
+- Still to build: the site's Connect button and redirect page, and Google watch
+  channels with renewal (until then, polling every 5 minutes keeps reads inside
+  the 15-minute stale limit).
 
 ## Owner calendar (V1d, in progress)
 

@@ -80,6 +80,7 @@ from gvas.infrastructure.demo import (
     LoggedVisitEmail,
     NoAttachments,
 )
+from gvas.infrastructure.google_connect import GoogleCalendarConnect
 from gvas.infrastructure.object_storage import R2ObjectStorage
 from gvas.infrastructure.openai_checklist_evidence import OpenAIChecklistEvidenceAnnotator
 from gvas.infrastructure.openai_contradiction_guard import OpenAIContradictionGuard
@@ -150,6 +151,7 @@ from gvas.interfaces.http.public import PerIpRateLimiter, create_public_router
 from gvas.interfaces.http.visits import create_visit_router
 from gvas.interfaces.logging_setup import configure_logging
 from gvas.scheduling.core.engine import SchedulingEngine
+from gvas.scheduling.field_service.booking import FieldServiceScheduling
 
 if TYPE_CHECKING:
     from gvas.interfaces.demo_sandboxes import DemoSandboxes
@@ -564,6 +566,19 @@ def build_demo_ports(
     )
 
 
+def _calendar_connect(
+    settings: ProductionSettings,
+    client: httpx.AsyncClient,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> GoogleCalendarConnect | None:
+    if not (settings.google.is_configured and settings.google.redirect_uri):
+        return None
+    engine = SchedulingEngine(session_factory)
+    return GoogleCalendarConnect(
+        settings.google, client, session_factory, FieldServiceScheduling(engine, session_factory)
+    )
+
+
 def build_production_ports(
     settings: ProductionSettings,
     client: httpx.AsyncClient,
@@ -661,6 +676,7 @@ def build_production_ports(
         booked_events=booked_events,
         schedule_blocks=availability,
         visit_editor=availability,
+        calendar_connect=_calendar_connect(settings, client, session_factory),
         calendar_feed=IcsCalendarFeed(client),
         intake_agent=intake_agent,
         owner_assistant=owner_assistant,

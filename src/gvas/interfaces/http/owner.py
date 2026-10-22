@@ -32,7 +32,12 @@ from gvas.application.owner import (
 from gvas.domain.enums import QuoteStatus
 from gvas.domain.intake import IntakeConversation
 from gvas.domain.invoices import Invoice, invoice_status
-from gvas.domain.owner import CalendarEvent, VisitEditError, calendar_feed_host
+from gvas.domain.owner import (
+    CalendarConnectError,
+    CalendarEvent,
+    VisitEditError,
+    calendar_feed_host,
+)
 from gvas.domain.owner_commands import OwnerCommand
 from gvas.domain.payments import (
     PLAN_MONTHS_MAX,
@@ -60,6 +65,12 @@ class MoveVisitBody(BaseModel):
 
     start: datetime
     end: datetime
+
+
+class FinishCalendarConnectBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    code: str = Field(min_length=1, max_length=2000)
+    state: str = Field(min_length=1, max_length=500)
 
 
 class AddVisitBody(MoveVisitBody):
@@ -602,6 +613,37 @@ def create_owner_router(
         except VisitEditError as error:
             return JSONResponse({"detail": str(error)}, status_code=409)
         return JSONResponse({"cancelled": True})
+
+    @router.get("/v1/owner/calendar/google", dependencies=limited)
+    async def calendar_connection(context: OwnerContext = owner) -> JSONResponse:
+        connection = await service.calendar_connection(context)
+        return JSONResponse(
+            {
+                "available": connection.available,
+                "state": connection.state,
+                "lastSyncAt": connection.last_sync_at.isoformat()
+                if connection.last_sync_at
+                else None,
+            }
+        )
+
+    @router.post("/v1/owner/calendar/google/start", dependencies=limited)
+    async def start_calendar_connect(context: OwnerContext = owner) -> JSONResponse:
+        try:
+            url = await service.start_calendar_connect(context)
+        except CalendarConnectError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        return JSONResponse({"url": url})
+
+    @router.post("/v1/owner/calendar/google/finish", dependencies=limited)
+    async def finish_calendar_connect(
+        body: FinishCalendarConnectBody, context: OwnerContext = owner
+    ) -> JSONResponse:
+        try:
+            await service.finish_calendar_connect(context, code=body.code, state=body.state)
+        except CalendarConnectError as error:
+            return JSONResponse({"detail": str(error)}, status_code=409)
+        return JSONResponse({"connected": True})
 
     @router.get("/v1/owner/requests", dependencies=limited)
     async def service_requests(context: OwnerContext = owner) -> JSONResponse:

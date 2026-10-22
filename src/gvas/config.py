@@ -198,6 +198,8 @@ class GoogleCalendarSettings(BaseSettings):
     oauth_client_id: str = ""
     oauth_client_secret: str = ""
     token_key: str = Field(default="", validation_alias="GVAS_CALENDAR_TOKEN_KEY")
+    #: The dashboard page Google sends the owner back to after sign-in.
+    redirect_uri: str = ""
 
     @property
     def is_configured(self) -> bool:

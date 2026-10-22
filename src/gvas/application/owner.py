@@ -47,6 +47,8 @@ from gvas.domain.owner import (
     CALENDAR_WINDOW_MAX_DAYS,
     DISPLAY_NAME_MAX_CHARS,
     OWNER_SESSION_TTL,
+    CalendarConnectError,
+    CalendarConnection,
     CalendarEvent,
     CalendarEventSource,
     OwnerCalendarError,
@@ -77,7 +79,12 @@ from gvas.domain.payments import (
     paid_through,
     plan_nudge_command,
 )
-from gvas.domain.ports import BookedEventsPort, CalendarFeedPort, VisitEditorPort
+from gvas.domain.ports import (
+    BookedEventsPort,
+    CalendarConnectPort,
+    CalendarFeedPort,
+    VisitEditorPort,
+)
 from gvas.domain.quotes import (
     InvalidQuoteTransitionError,
     Quote,
@@ -175,12 +182,14 @@ class OwnerService:
         calendar_feed: CalendarFeedPort | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         visit_editor: VisitEditorPort | None = None,
+        calendar_connect: CalendarConnectPort | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
         self._booked_events = booked_events
         self._calendar_feed = calendar_feed
         self._now = now
         self._visit_editor = visit_editor
+        self._calendar_connect = calendar_connect
 
     # -- sign-in -----------------------------------------------------------
 
@@ -364,6 +373,23 @@ class OwnerService:
         return CalendarView(events=tuple(events), problems=tuple(problems))
 
     # -- actions -----------------------------------------------------------
+
+    async def calendar_connection(self, context: OwnerContext) -> CalendarConnection:
+        if self._calendar_connect is None:
+            return CalendarConnection(available=False)
+        return await self._calendar_connect.status(context.business.business_id)
+
+    async def start_calendar_connect(self, context: OwnerContext) -> str:
+        if self._calendar_connect is None:
+            raise CalendarConnectError("Google Calendar isn't set up yet.")
+        return await self._calendar_connect.start_url(context.business.business_id)
+
+    async def finish_calendar_connect(
+        self, context: OwnerContext, *, code: str, state: str
+    ) -> None:
+        if self._calendar_connect is None:
+            raise CalendarConnectError("Google Calendar isn't set up yet.")
+        await self._calendar_connect.finish(context.business.business_id, code=code, state=state)
 
     def _visits(self) -> VisitEditorPort:
         if self._visit_editor is None:
