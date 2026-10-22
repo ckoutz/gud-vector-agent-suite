@@ -152,3 +152,52 @@ class GoogleVisitWriter:
         response = await self._call("DELETE", url, credentials_ref)
         if response.status_code >= 400 and response.status_code not in (404, 410):
             raise GoogleCalendarError(f"google calendar returned http {response.status_code}")
+
+
+TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105 (an address, not a secret)
+
+
+class GoogleAccessTokens:
+    """Turns a stored refresh token into a short-lived access token.
+    ``invalid_grant`` (revoked, expired, password changed) means reconnect."""
+
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        client_id: str,
+        client_secret: str,
+        refresh_token: Callable[[str], Awaitable[str]],
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        self._client = client
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._refresh_token = refresh_token
+        self._timeout = timeout_seconds
+
+    async def __call__(self, credentials_ref: str) -> str:
+        refresh = await self._refresh_token(credentials_ref)
+        try:
+            response = await self._client.post(
+                TOKEN_URL,
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh,
+                    "client_id": self._client_id,
+                    "client_secret": self._client_secret,
+                },
+                timeout=self._timeout,
+            )
+        except httpx.HTTPError as error:
+            raise GoogleCalendarError("google sign-in was unreachable") from error
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if response.status_code in (400, 401) and body.get("error") == "invalid_grant":
+            raise ExternalAccessRevokedError()
+        token = body.get("access_token") if response.status_code < 400 else None
+        if not isinstance(token, str) or not token:
+            raise GoogleCalendarError(f"google sign-in returned http {response.status_code}")
+        return token

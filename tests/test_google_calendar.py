@@ -87,3 +87,38 @@ async def test_a_visit_is_written_once_under_our_id_and_cancelling_deletes_it() 
         ("PUT", google_id),
         ("DELETE", google_id),
     ]
+
+
+async def stored_refresh(ref: str) -> str:
+    return "1//refresh"
+
+
+async def test_a_refresh_token_becomes_an_access_token() -> None:
+    from gvas.infrastructure.google_calendar import TOKEN_URL, GoogleAccessTokens
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == TOKEN_URL
+        assert b"refresh_token=1%2F%2Frefresh" in request.content
+        return httpx.Response(200, json={"access_token": "ya29.x", "expires_in": 3599})
+
+    tokens = GoogleAccessTokens(
+        httpx.AsyncClient(transport=httpx.MockTransport(answer)),
+        client_id="id", client_secret="test-only", refresh_token=stored_refresh,  # noqa: S106
+    )  # fmt: skip
+
+    assert await tokens("secret:google:larkspur") == "ya29.x"
+
+
+async def test_a_revoked_refresh_token_means_reconnect_and_an_outage_retries() -> None:
+    from gvas.infrastructure.google_calendar import GoogleAccessTokens
+
+    def tokens(response: httpx.Response) -> GoogleAccessTokens:
+        return GoogleAccessTokens(
+            httpx.AsyncClient(transport=httpx.MockTransport(lambda request: response)),
+            client_id="id", client_secret="test-only", refresh_token=stored_refresh,  # noqa: S106
+        )  # fmt: skip
+
+    with pytest.raises(ExternalAccessRevokedError):
+        await tokens(httpx.Response(400, json={"error": "invalid_grant"}))("ref")
+    with pytest.raises(GoogleCalendarError):
+        await tokens(httpx.Response(503))("ref")
