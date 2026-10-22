@@ -24,6 +24,7 @@ from gvas.domain.owner import (
     CalendarEvent,
     CalendarEventSource,
     OwnerCalendarError,
+    VisitEditError,
     calendar_feed_host,
     normalize_calendar_feed_url,
 )
@@ -90,6 +91,7 @@ async def owner_business(
     approve: bool = False,
     booked_events: BookedEventsFake | None = None,
     calendar_feed: CalendarFeedFake | None = None,
+    visit_editor: "VisitEditorFake | None" = None,  # noqa: UP037
 ) -> tuple[Application, BusinessId]:
     """A hosted business with one quote to ``customer_email``; approved by
     text when ``approve``, else waiting for the owner's OK."""
@@ -118,6 +120,7 @@ async def owner_business(
             report_generation=DeterministicReportGenerator(),
             booked_events=booked_events,
             calendar_feed=calendar_feed,
+            visit_editor=visit_editor,
         ),
         session_factory=session_factory,
         now=Clock(),
@@ -722,3 +725,68 @@ async def test_command_log_lists_this_business_texts_newest_first(
     assert rows[1]["outcome"] == "Done: marked paid."
     assert rows[1]["requestedText"] == "mark LL-1036 paid"
     assert "arguments" not in rows[0]
+
+
+class VisitEditorFake:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, ...]] = []
+
+    async def move_visit(
+        self, business_id: BusinessId, event_id: str, start: datetime, end: datetime
+    ) -> None:
+        if event_id == "taken":
+            raise VisitEditError("That time overlaps another visit.")
+        self.calls.append(("move", business_id, event_id, start))
+
+    async def cancel_visit(self, business_id: BusinessId, event_id: str) -> None:
+        self.calls.append(("cancel", business_id, event_id))
+
+    async def add_visit(self, business_id: BusinessId, **visit: object) -> str:
+        self.calls.append(("add", business_id, visit["name"], visit["start"]))
+        return "new-visit"
+
+
+async def test_the_owner_adds_moves_and_cancels_visits_for_their_own_business_only(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    editor = VisitEditorFake()
+    application, business_id = await owner_business(session_factory, visit_editor=editor)
+    start, end = WINDOW_START.isoformat(), (WINDOW_START + timedelta(hours=1)).isoformat()
+    async with http_client(application) as http:
+        assert (await http.post("/v1/owner/visits/x/cancel")).status_code == 401
+        owner = await sign_in(session_factory, http, business_id)
+        added = await http.post(
+            "/v1/owner/visits",
+            json={"start": start, "end": end, "name": " Walt Sims ", "phone": "+15555550100"},
+            headers=bearer(owner),
+        )
+        assert (added.status_code, added.json()) == (201, {"eventId": "new-visit"})
+        nameless = await http.post(
+            "/v1/owner/visits", json={"start": start, "end": end, "name": " "},
+            headers=bearer(owner),
+        )  # fmt: skip
+        assert nameless.status_code == 409
+        moved = await http.post(
+            "/v1/owner/visits/v1/move", json={"start": start, "end": end}, headers=bearer(owner)
+        )
+        assert moved.json() == {"moved": True}
+        refused = await http.post(
+            "/v1/owner/visits/taken/move", json={"start": start, "end": end}, headers=bearer(owner)
+        )
+        assert (refused.status_code, refused.json()["detail"]) == (
+            409, "That time overlaps another visit.",
+        )  # fmt: skip
+        naive = await http.post(
+            "/v1/owner/visits/v1/move",
+            json={"start": "2026-03-02T09:00:00", "end": "2026-03-02T10:00:00"},
+            headers=bearer(owner),
+        )
+        assert naive.status_code == 409
+        cancelled = await http.post("/v1/owner/visits/v1/cancel", headers=bearer(owner))
+        assert cancelled.json() == {"cancelled": True}
+
+    assert editor.calls == [
+        ("add", business_id, "Walt Sims", WINDOW_START),
+        ("move", business_id, "v1", WINDOW_START),
+        ("cancel", business_id, "v1"),
+    ]
