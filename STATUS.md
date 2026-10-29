@@ -1,10 +1,10 @@
 # Güd Vector — Project Status Dashboard
 
-**Last updated:** 2026-10-29 01:05 UTC (auto-refreshed by the Devin dashboard automation)
+**Last updated:** 2026-10-29 13:06 UTC (auto-refreshed by the Devin dashboard automation)
 
 ## Where we are
 
-Nothing merged, deployed or pushed since the 2026-10-28 19:05 UTC refresh. **Deploy gap (still open, ~165 h):** GVAS main is `a5ed75d` (#98, merged 2026-10-22 03:55 UTC), but the latest GitHub deployment for Railway production is still `af29c7a` (#95, 2026-10-20 23:19 UTC). That leaves #96 (owner-text customers, draft/send/void invoices, migration `0033`) and #98 (same-business startup check) **merged but not deployed**. The combined commit status on `a5ed75d` is `pending` with no Railway web/worker statuses posted, so the worker may not have redeployed either. Main CI is 4/4 green. `/healthz` returns 200 (0.31–0.39 s); `/health` and `/` return 404 (routes don't exist). Site main is `f82cb5d` (#46) and is live on Vercel production (deployment status success). Open PRs are unchanged: [#97](https://github.com/ckoutz/gud-vector-agent-suite/pull/97) (natural yeses) is mergeable and green, and [#99](https://github.com/ckoutz/gud-vector-agent-suite/pull/99) (scheduling engine V1a) is a **draft** marked "Do not merge yet". Pushed branches with no PR are unchanged since 2026-10-22: the GVAS scheduling stack on top of #99 (`scheduling-v1b` → `v1c` → `v1d` → `v1e`) and the site calendar pair (`owner-calendar-views` → `team-calendars`). gudvector.com and gudvector-site.vercel.app both return 200 and show "couldn't find" for an unknown quote token. Telnyx toll-free verification for +18775411550 is **Verified**. Stripe is in sandbox and its production webhook is `enabled` with 7 events. **Tooling note:** git fetch through the Devin git proxy and the builtin PR tools still fail (403 / Unauthorized, re-checked this run); the Railway/Vercel APIs were not queried. Data comes from `gh api` and public endpoints, and this file was written through the GitHub contents API.
+Nothing merged, deployed or pushed since the 2026-10-29 01:05 UTC refresh; nothing merged in either repo in the last 7 days. **Deploy gap (still open, ~177 h):** GVAS main is `a5ed75d` (#98, merged 2026-10-22 03:55 UTC), but the latest GitHub deployment for Railway production is still `af29c7a` (#95, 2026-10-20 23:19 UTC). That leaves #96 (owner-text customers, draft/send/void invoices, migration `0033`) and #98 (same-business startup check) **merged but not deployed**. The combined commit status on `a5ed75d` is `pending` with no Railway web/worker statuses posted, so the worker may not have redeployed either. Main CI is 4/4 green. `/healthz` returns 200 (0.45 s); `/health` and `/` return 404 (routes don't exist). Site main is `f82cb5d` (#46) and is live on Vercel production (deployment status success). Open PRs are unchanged: [#97](https://github.com/ckoutz/gud-vector-agent-suite/pull/97) (natural yeses) is mergeable and green, and [#99](https://github.com/ckoutz/gud-vector-agent-suite/pull/99) (scheduling engine V1a) is a **draft** marked "Do not merge yet". Pushed branches with no PR are unchanged since 2026-10-22: the GVAS scheduling stack on top of #99 (`scheduling-v1b` → `v1c` → `v1d` → `v1e`) and the site calendar pair (`owner-calendar-views` → `team-calendars`). gudvector.com and gudvector-site.vercel.app both return 200 and show "couldn't find" for an unknown quote token. Telnyx toll-free verification for +18775411550 is **Verified**. Stripe is in sandbox and its production webhook is `enabled` with 7 events. **Tooling note:** git fetch through the Devin git proxy and the builtin PR tools still fail (403 / Unauthorized, re-checked this run); the Railway/Vercel APIs were not queried. Data comes from `gh api` and public endpoints, and this file was written through the GitHub contents API.
 
 ## Demo pipeline
 
@@ -13,7 +13,7 @@ Status comes from public endpoints and API checks only. This refresh did not run
 | Step | Status | Note |
 | --- | --- | --- |
 | Contact form | LIVE | gudvector.com and gudvector-site.vercel.app return 200 (Resend). Vercel prod is `f82cb5d` (#46). |
-| Calendly | LIVE | Lookup, availability and booking are deployed. The `/calendly/events` webhook is not mounted (POST 404, re-checked 01:05 UTC). Scheduling engine V1a is in #99 (draft, PR OPEN, not to merge yet); V1b–V1e are on branches with no PR. |
+| Calendly | LIVE | Lookup, availability and booking are deployed. The `/calendly/events` webhook is not mounted (POST 404, re-checked 2026-10-29 13:06 UTC). Scheduling engine V1a is in #99 (draft, PR OPEN, not to merge yet); V1b–V1e are on branches with no PR. |
 | Quote drafting | LIVE / MERGED-NOT-DEPLOYED | Slack/Telnyx owner channels are live on `af29c7a`. #96 (owner-text customers and invoices) and #98 (same-business check) are merged but not deployed. |
 | Owner approval | LIVE / PR OPEN | Slack/SMS commands, signed e-mail links and dashboard approve/decline are live. Natural "yea"-style yeses are in #97 (PR OPEN). |
 | Email/SMS delivery | LIVE | Resend e-mail. Telnyx TFV is **Verified**; customer SMS goes out when `sms_consent = true`. |
@@ -26,8 +26,8 @@ Status comes from public endpoints and API checks only. This refresh did not run
 
 | Repo | PR | Title | Base | Mergeable | CI | Age | Merge order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| gud-vector-agent-suite | [#97](https://github.com/ckoutz/gud-vector-agent-suite/pull/97) | Owner texts: natural yeses confirm; a short unclear reply keeps the change waiting | main | MERGEABLE | 4/4 check runs success (ruff, mypy, alembic, pytest); mergeable_state clean | ~166 h (opened 2026-10-22 03:23 UTC) | **1**. No migration. Deploy web afterwards, together with #96/#98. |
-| gud-vector-agent-suite | [#99](https://github.com/ckoutz/gud-vector-agent-suite/pull/99) | Scheduling engine V1a: the engine, a database no-overlap guarantee, and a per-business switch (Calendly by default) | main | MERGEABLE, **draft** | 4/4 success (ruff, mypy, alembic, pytest) | ~165 h (opened 2026-10-22 04:09 UTC) | **Hold.** The PR body says "Do not merge yet" (branch only). Migration `0035_scheduling_engine` adds `btree_gist`. |
+| gud-vector-agent-suite | [#97](https://github.com/ckoutz/gud-vector-agent-suite/pull/97) | Owner texts: natural yeses confirm; a short unclear reply keeps the change waiting | main | MERGEABLE | 4/4 check runs success (ruff, mypy, alembic, pytest); mergeable_state clean | ~178 h (opened 2026-10-22 03:23 UTC) | **1**. No migration. Deploy web afterwards, together with #96/#98. |
+| gud-vector-agent-suite | [#99](https://github.com/ckoutz/gud-vector-agent-suite/pull/99) | Scheduling engine V1a: the engine, a database no-overlap guarantee, and a per-business switch (Calendly by default) | main | MERGEABLE, **draft** | 4/4 success (ruff, mypy, alembic, pytest) | ~177 h (opened 2026-10-22 04:09 UTC) | **Hold.** The PR body says "Do not merge yet" (branch only). Migration `0035_scheduling_engine` adds `btree_gist`. |
 
 No stacked PRs; both target `main`. No open PRs in gudvector-site. Branches with no PR (each contains the one before it): GVAS `devin/1792643571-scheduling-v1b` (`3c09934`, 2026-10-22 04:43 UTC) → `devin/1792644230-scheduling-v1c` (`761fd17`, 04:48) → `devin/1792644621-scheduling-v1d` (`980cee6`, 07:47) → `devin/1792676629-scheduling-v1e` (`e8be686`, 15:36). Site: `devin/1792644805-owner-calendar-views` (`bf9da14`, 05:20) → `devin/1792677187-team-calendars` (`97c172b`, 13:57; Vercel preview only). If these become PRs, merge in that order after #99.
 
@@ -38,11 +38,11 @@ No stacked PRs; both target `main`. No open PRs in gudvector-site. Branches with
 | GVAS main | `a5ed75d` 2026-10-22 03:55 UTC: Merge #98. Main CI 4/4 success (ruff, mypy, alembic, pytest). Combined commit status is `pending`, with no Railway web/worker statuses posted. |
 | GVAS web deployed commit | **`af29c7a`** (#95). The latest GitHub deployment, `gud-vector-agent-suite / production`, was 2026-10-20 23:19 UTC. There are no deployments for #96 or #98: **2 merges are undeployed, including migration `0033`.** |
 | Larkspur demo (Railway) | The latest `larkspur-demo / demo` deployment is `bccabb5` (2026-10-20 20:42 UTC). No newer deployment is recorded. Host not probed. |
-| GVAS web `/healthz` | **200** `{"status":"ok"}` (0.37 s; repeats 0.39 s / 0.31 s) |
-| GVAS web `/health`, `/` | 404 `{"detail":"Not Found"}` (0.37 s / 0.34 s). This is the app's own 404; those routes don't exist. |
+| GVAS web `/healthz` | **200** `{"status":"ok"}` (0.45 s) |
+| GVAS web `/health`, `/` | 404 `{"detail":"Not Found"}` (0.44 s / 0.33 s). This is the app's own 404; those routes don't exist. |
 | gudvector-site main | `f82cb5d` 2026-10-22 02:43 UTC: Merge #46. `Production – gudvector-site` deployment `f82cb5d` at 02:44 UTC, status success (also gudvector-sitev2 and larkspur-dashboard). |
-| gudvector-site.vercel.app | `/` 200 (0.41 s; repeat 0.27 s); `/q/nonexistent-token` 200 "couldn't find" (1.30 s). No "temporarily unavailable". |
-| gudvector.com | `/` 200 (0.38 s, served by Vercel, resolves to 216.198.79.1); `/q/nonexistent-token` 200 "couldn't find" (0.42 s). `www` returns 308 (redirect). **Domain is up.** |
+| gudvector-site.vercel.app | `/` 200 (0.44 s); `/q/nonexistent-token` 200 "couldn't find" (1.23 s). No "temporarily unavailable". |
+| gudvector.com | `/` 200 (0.32 s); `/q/nonexistent-token` 200 "couldn't find" (0.51 s). **Domain is up.** |
 
 ## Integrations
 
@@ -58,7 +58,7 @@ No stacked PRs; both target `main`. No open PRs in gudvector-site. Branches with
 
 ## Owner to-do
 
-- [ ] **Trigger the Railway web deploy now** (outstanding since 2026-10-22 03:55 UTC, ~165 h), for production and the Larkspur demo. Web is on `af29c7a`; main `a5ed75d` adds #96 (migration `0033`) and #98. Web does not auto-deploy on push; the worker does.
+- [ ] **Trigger the Railway web deploy now** (outstanding since 2026-10-22 03:55 UTC, ~177 h), for production and the Larkspur demo. Web is on `af29c7a`; main `a5ed75d` adds #96 (migration `0033`) and #98. Web does not auto-deploy on push; the worker does.
 - [ ] Merge GVAS #97 (natural yeses), then deploy web. You can merge it before the deploy above and do a single deploy.
 - [ ] Hold GVAS #99 (scheduling engine V1a, draft, "Do not merge yet"). Merging it runs migration `0035` on the next deploy. V1b–V1e (branches `scheduling-v1b` … `scheduling-v1e`, stacked on V1a) have no PRs yet.
 - [ ] Decide on site branches `devin/1792644805-owner-calendar-views` → `devin/1792677187-team-calendars` (Google Calendar connect, team view). They have no PRs and depend on the scheduling stack.
@@ -83,13 +83,6 @@ No stacked PRs; both target `main`. No open PRs in gudvector-site. Branches with
 - **Open follow-ups (not built):** Stripe Connect per-business payouts (`businesses.stripe_account_id` unused); contact-form API behind business `public_key`; per-business timezone for Calendly windows/timestamps; customer-editable phone in portal.
 - **Not planned for pilot:** second workspace/owner, auto-distribution outside the thread, workspace-wide auth, field notes/voice/reports over SMS.
 
-## Recent changes (merged, last 7 days: since 2026-10-22 01:05 UTC)
+## Recent changes (merged, last 7 days: since 2026-10-22 13:06 UTC)
 
-| Repo | PR | Merged (UTC) |
-| --- | --- | --- |
-| gud-vector-agent-suite | [#98](https://github.com/ckoutz/gud-vector-agent-suite/pull/98) Startup: owner texts must reach the same business as Slack | 2026-10-22 03:55 |
-| gud-vector-agent-suite | [#96](https://github.com/ckoutz/gud-vector-agent-suite/pull/96) Owner texts: create a customer, make a draft invoice, send it with its own YES, void-and-reissue an amount | 2026-10-22 02:43 |
-| gudvector-site | [#46](https://github.com/ckoutz/gudvector-site/pull/46) Owner customers: a customer with only a phone (no e-mail) lists, opens and shows no portal sign-in | 2026-10-22 02:44 |
-| gudvector-site | [#48](https://github.com/ckoutz/gudvector-site/pull/48) Trade pages close with the made-up-company line; footer and Who we help link: "No software to learn" | 2026-10-22 02:40 |
-
-Site #43, #44, #45 and #47 (merged 2026-10-21) dropped out of the 7-day window. All merges above will drop out by the next refresh.
+None in either repo. The last merges were GVAS #98 (2026-10-22 03:55 UTC) and site #46 (2026-10-22 02:44 UTC), now outside the 7-day window.
