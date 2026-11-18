@@ -39,10 +39,10 @@ No stacked PRs; both target `main`. No open PRs in gudvector-site. Branches with
 | GVAS web deployed commit | **`af29c7a`** (#95). The latest GitHub deployment, `gud-vector-agent-suite / production`, was 2026-10-20 23:19 UTC. There are no deployments for #96 or #98: **2 merges are undeployed, including migration `0033`.** |
 | Larkspur demo (Railway) | The latest `larkspur-demo / demo` deployment is `bccabb5` (2026-10-20 20:42 UTC; GitHub status now `inactive`). No newer deployment is recorded. Host not probed. |
 | GVAS web `/healthz` | **200** `{"status":"ok"}` (0.40 s); `/health` (the configured probe path) returns 404 |
-| GVAS web `/health`, `/` | 404 `{"detail":"Not Found"}` (0.37–0.41 s). This is the app's own 404; those routes don't exist. |
+| GVAS web `/health`, `/` | 404 `{"detail":"Not Found"}` (0.38–0.42 s). This is the app's own 404; those routes don't exist. |
 | `web-demo-5831.up.railway.app` | **Does not resolve** (no DNS records, curl exit 6). |
 | gudvector-site main | `f82cb5d` 2026-10-22 02:43 UTC: Merge #46. `Production – gudvector-site` deployment `f82cb5d` at 02:44 UTC, status success. |
-| gudvector-site.vercel.app | `/` 200 (0.10–0.42 s); `/q/nonexistent-token` 200 "couldn't find" (1.45 s). No "temporarily unavailable". |
+| gudvector-site.vercel.app | `/` 200 (0.40 s); `/q/nonexistent-token` 200 "couldn't find" (1.75 s). No "temporarily unavailable". |
 | gudvector.com | `/` 200 (0.34 s, Vercel, resolves to 216.198.79.1; www 308 redirect); `/q/nonexistent-token` 200 "couldn't find". **Domain is up.** |
 
 ## Integrations
