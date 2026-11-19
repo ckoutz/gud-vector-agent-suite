@@ -1,89 +1,92 @@
 # Güd Vector — Project Status Dashboard
 
-**Last updated:** 2026-11-19 08:05 UTC (auto-refreshed by the Devin dashboard automation)
+**Last updated 2026-11-19 14:06 UTC**
 
 ## Where we are
 
-Nothing merged, deployed or pushed since the 2026-11-19 02:05 UTC refresh; nothing merged in either repo in the last 7 days. **Deploy gap (still open, ~676 h):** GVAS main is `a5ed75d` (#98, merged 2026-10-22 03:55 UTC), but the latest GitHub deployment for Railway production is still `af29c7a` (#95, 2026-10-20 23:19 UTC, status success). That leaves #96 (owner-text customers, draft/send/void invoices, migration `0033`) and #98 (same-business startup check) **merged but not deployed**. The combined commit status on `a5ed75d` is still `pending` with no Railway web/worker statuses posted. Main CI is 4/4 green. `/healthz` returns 200 (0.38 s); `/health` and `/` return 404 (routes don't exist). The second Stripe webhook host, `web-demo-5831.up.railway.app`, still does not resolve in DNS (curl exit 6). Site main is `f82cb5d` (#46) and is live on Vercel production (deployment status success). Open PRs are unchanged: [#97](https://github.com/ckoutz/gud-vector-agent-suite/pull/97) (natural yeses) is mergeable and green, and [#99](https://github.com/ckoutz/gud-vector-agent-suite/pull/99) (scheduling engine V1a) is a **draft** marked "Do not merge yet". Pushed branches with no PR are unchanged since 2026-10-22 (same head SHAs). gudvector.com and gudvector-site.vercel.app both return 200 and show "couldn't find" for an unknown quote token. Telnyx toll-free verification for +18775411550 is **Verified**. Stripe is in sandbox and its production webhook is `enabled` with 7 events. **Tooling note:** git fetch through the Devin git proxy still fails (403), so PR state, CI and deployments come from `gh api`, and this file was written through the GitHub contents API. The Railway and Vercel APIs were not queried.
+Railway production's last successful deployment recorded by GitHub is `af29c7a`. GVAS main is `a5ed75d`, leaving #96 (owner-text customers and invoices, migration `0033`) and #98 (same-business startup check) **merged and awaiting a web deploy**. The backend serves `/healthz` and both site domains serve the quote portal. Telnyx toll-free verification is **Verified**, and the Stripe sandbox webhook is enabled with seven events. GVAS #97 is ready to merge, #99 is on hold as a draft, and neither repo recorded a merge in the last seven days.
 
 ## Demo pipeline
 
-Status comes from public endpoints and API checks only. This refresh did not run the pipeline end to end.
+Status reflects public GET probes, provider API results, and the last recorded deployments. Actions such as booking, sending messages, signing in, and paying were outside the read-only checks.
 
 | Step | Status | Note |
 | --- | --- | --- |
-| Contact form | LIVE | gudvector.com and gudvector-site.vercel.app return 200 (Resend). Vercel prod is `f82cb5d` (#46). |
-| Calendly | LIVE | Lookup, availability and booking are deployed. The `/calendly/events` webhook is not mounted (POST 404, re-checked 2026-11-19 08:05 UTC). Scheduling engine V1a is in #99 (draft, PR OPEN, not to merge yet); V1b–V1e are on branches with no PR. |
-| Quote drafting | LIVE / MERGED-NOT-DEPLOYED | Slack/Telnyx owner channels are live on `af29c7a`. #96 (owner-text customers and invoices) and #98 (same-business check) are merged but not deployed. |
+| Contact form | LIVE | Both site homepages return 200. The deployed contact form is wired to Resend. |
+| Calendly | LIVE / BLOCKED | Lookup, availability and booking are deployed. The optional `/calendly/events` webhook last returned 404 at 08:05 UTC. Scheduling engine V1a is PR OPEN in draft #99. |
+| Quote drafting | LIVE / MERGED-NOT-DEPLOYED | Existing Slack and Telnyx owner flows are on `af29c7a`. The owner-text customer and invoice additions in #96 and the startup check in #98 await the web deploy. |
 | Owner approval | LIVE / PR OPEN | Slack/SMS commands, signed e-mail links and dashboard approve/decline are live. Natural "yea"-style yeses are in #97 (PR OPEN). |
-| Email/SMS delivery | LIVE | Resend e-mail. Telnyx TFV is **Verified**; customer SMS goes out when `sms_consent = true`. |
+| Email/SMS delivery | LIVE | Resend is wired and Telnyx toll-free verification is **Verified**. Customer SMS requires recorded consent. |
 | /q/\<token\> portal | LIVE | `/q/nonexistent-token` returns 200 "couldn't find" on both domains. |
-| Stripe payment | LIVE (sandbox) | Webhook `enabled`, 7 events, livemode=false. |
-| Customer portal | LIVE / MERGED-NOT-DEPLOYED | `/v1/portal/*` is deployed and the site is live on `f82cb5d`. Phone-only customers (site #46) need GVAS #96 deployed. |
+| Stripe payment | LIVE (sandbox) | Production callback is `enabled` in Stripe test mode with seven events. |
+| Customer portal | LIVE / MERGED-NOT-DEPLOYED | `/portal` returns 200 on Vercel. The owner portal's phone-only customer support (site #46) needs the GVAS #96 deployment. |
 | AI booking agent | LIVE | `/v1/businesses/{key}/intake/*` is deployed and the site chat widget is live. |
 
 ## Open PRs
 
 | Repo | PR | Title | Base | Mergeable | CI | Age | Merge order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| gud-vector-agent-suite | [#97](https://github.com/ckoutz/gud-vector-agent-suite/pull/97) | Owner texts: natural yeses confirm; a short unclear reply keeps the change waiting | main | MERGEABLE (clean) | success on `287143e` (ruff, mypy, alembic, pytest) | ~677 h (opened 2026-10-22 03:23 UTC) | **1**. No migration. Deploy web afterwards, together with #96/#98. |
-| gud-vector-agent-suite | [#99](https://github.com/ckoutz/gud-vector-agent-suite/pull/99) | Scheduling engine V1a: the engine, a database no-overlap guarantee, and a per-business switch (Calendly by default) | main | MERGEABLE (clean), **draft** | success on `a446d7c` (ruff, mypy, alembic, pytest) | ~676 h (opened 2026-10-22 04:09 UTC) | **Hold.** The PR body says "Do not merge yet" (branch only). Migration `0035_scheduling_engine` adds `btree_gist`. |
+| gud-vector-agent-suite | [#97](https://github.com/ckoutz/gud-vector-agent-suite/pull/97) | Owner texts: natural yeses confirm; a short unclear reply keeps the change waiting | `main` | Clean, mergeable | 4/4 CI passed on `287143e`. Devin Review passed. | 28d 10h (opened Oct 22 03:23 UTC) | **1.** Merge before the web deploy if bundling with #96 and #98. |
+| gud-vector-agent-suite | [#99](https://github.com/ckoutz/gud-vector-agent-suite/pull/99) | Scheduling engine V1a: the engine, a database no-overlap guarantee, and a per-business switch (Calendly by default) | `main` | Clean, mergeable, **draft** | 4/4 CI passed on `a446d7c`. | 28d 10h (opened Oct 22 04:09 UTC) | **Hold.** The PR says “Do not merge yet.” Migration `0035_scheduling_engine` adds `btree_gist`. |
+| gudvector-site | — | No open PRs | — | — | — | — | — |
 
-No stacked PRs; both target `main`. No open PRs in gudvector-site. Branches with no PR (each contains the one before it): GVAS `devin/1792643571-scheduling-v1b` (`3c09934`, 2026-10-22 04:43 UTC) → `devin/1792644230-scheduling-v1c` (`761fd17`, 04:48) → `devin/1792644621-scheduling-v1d` (`980cee6`, 07:47) → `devin/1792676629-scheduling-v1e` (`e8be686`, 15:36). Site: `devin/1792644805-owner-calendar-views` (`bf9da14`, 05:20) → `devin/1792677187-team-calendars` (`97c172b`, 13:57; Vercel preview only). If these become PRs, merge in that order after #99.
+Both open PRs target `main` independently. If the stacked branches become PRs, the merge order is #99 → GVAS V1b (`3c09934`) → V1c (`761fd17`) → V1d (`980cee6`) → V1e (`e8be686`), then site owner calendar views (`bf9da14`) → team calendars (`97c172b`, Vercel preview).
 
 ## Deploy & health
 
 | Target | Result |
 | --- | --- |
-| GVAS main | `a5ed75d` 2026-10-22 03:55 UTC: Merge #98. Main CI 4/4 success (ruff, mypy, alembic, pytest). Combined commit status is `pending`, with no Railway web/worker statuses posted. |
-| GVAS web deployed commit | **`af29c7a`** (#95). The latest GitHub deployment, `gud-vector-agent-suite / production`, was 2026-10-20 23:19 UTC. There are no deployments for #96 or #98: **2 merges are undeployed, including migration `0033`.** |
-| Larkspur demo (Railway) | The latest `larkspur-demo / demo` deployment is `bccabb5` (2026-10-20 20:42 UTC; GitHub status now `inactive`). No newer deployment is recorded. Host not probed. |
-| GVAS web `/healthz` | **200** `{"status":"ok"}` (0.38 s); `/health` (the configured probe path) returns 404 |
-| GVAS web `/health`, `/` | 404 `{"detail":"Not Found"}` (0.40–0.42 s). This is the app's own 404; those routes don't exist. |
-| `web-demo-5831.up.railway.app` | **Does not resolve** (no DNS records, curl exit 6). |
-| gudvector-site main | `f82cb5d` 2026-10-22 02:43 UTC: Merge #46. `Production – gudvector-site` deployment `f82cb5d` at 02:44 UTC, status success. |
-| gudvector-site.vercel.app | `/` 200 (0.27 s); `/q/nonexistent-token` 200 "couldn't find" (1.38 s). No "temporarily unavailable". |
-| gudvector.com | `/` 200 (0.10–0.15 s, Vercel, resolves to 216.198.79.1; www 308 redirect); `/q/nonexistent-token` 200 "couldn't find". **Domain is up.** |
+| GVAS main | `a5ed75d` (#98), 2026-10-22 03:55 UTC. Main CI 4/4 passed (ruff, mypy, alembic, pytest). The GitHub combined commit status is `pending` with zero web/worker statuses. |
+| GVAS Railway production | Latest GitHub deployment `af29c7a` (#95), 2026-10-20 23:19 UTC, `success`. #96 and #98 are absent from the latest recorded deployment. |
+| GVAS Railway HTTP probes | `/health` **404** (385 ms) and fallback `/` **404** (363 ms). The app's `/healthz` returns **200** `{"status":"ok"}` (429 ms). |
+| Larkspur demo on Railway | Latest GitHub deployment `bccabb5`, 2026-10-20 20:42 UTC, `inactive`. Current demo host health is unknown. |
+| gudvector-site main and Vercel production | Main `f82cb5d` (#46), 2026-10-22 02:43 UTC. `Production – gudvector-site` deployed the same commit at 02:44 UTC, `success`. |
+| gudvector-site.vercel.app | `/` **200** (386 ms). `/q/nonexistent-token` **200** with “couldn't find” (1,344 ms), indicating the quote route reaches GVAS. |
+| gudvector.com | Resolves to `216.198.79.1`. `/` **200** (197 ms), `/q/nonexistent-token` **200** with “couldn't find” (408 ms), and `www` redirects with **308**. |
+
+PR and deployment data came from GitHub CLI and deployment records. Railway and Vercel runtime commit IDs were inferred from those records.
 
 ## Integrations
 
 | Integration | Status |
 | --- | --- |
-| Calendly | Wired and deployed. `/calendly/events` webhook not mounted (POST 404, re-checked). The in-house scheduling engine is in draft #99; Calendly stays the default. |
-| Resend | Wired: contact form, quote links, magic links, owner notification e-mails. |
-| Telnyx | TFV `f77d0422-bdb9-5f33-9783-2cba342f865c` (+18775411550): **Verified** (updated 2026-10-08 16:01 UTC). Campaign text status is not checked here. |
-| Stripe | Sandbox. `web-production-9d848…/webhooks/stripe`: `enabled`, 7 events, livemode=false. A second endpoint, `web-demo-5831.up.railway.app/webhooks/stripe`, is also `enabled` (7 events), but its host no longer resolves in DNS (re-checked 2026-11-19 08:05 UTC). |
-| Slack | Wired; `/slack/events` deployed. |
-| OpenAI | Wired (review model, free-text quotes, intake agent, owner texts). Runtime status unknown (no public probe). |
-| Cloudflare R2 | Wired when `GVAS_R2_*` is set. Runtime status unknown (no public probe). |
+| Calendly | Wired for lookup, availability and booking. Provider runtime is unknown from this pass. The previous 08:05 UTC refresh recorded a 404 from `/calendly/events`. |
+| Resend | Wired for contact forms, quote links, magic links and owner email. Delivery status is unknown. |
+| Telnyx | Request `f77d0422-bdb9-5f33-9783-2cba342f865c` (+18775411550) is **Verified** (updated 2026-10-08 16:01 UTC). Separate campaign text status is unknown. |
+| Stripe | Sandbox (`livemode=false`). `web-production-9d848.up.railway.app/webhooks/stripe` is `enabled` with **7 events**. The demo endpoint is also `enabled` with 7 events. Its host failed DNS in the previous refresh and current reachability is unknown. |
+| Slack | `/slack/events` is wired on GVAS. Live Slack status is unknown because this session has no Slack connection. |
+| OpenAI | Wired for review, free-text quotes, intake and owner texts. Runtime status is unknown. |
+| Cloudflare R2 | Wired when `GVAS_R2_*` is configured. Runtime status is unknown. |
 
 ## Owner to-do
 
-- [ ] **Trigger the Railway web deploy now** (outstanding since 2026-10-22 03:55 UTC, ~676 h), for production and the Larkspur demo. Web is on `af29c7a`; main `a5ed75d` adds #96 (migration `0033`) and #98. Web does not auto-deploy on push; the worker does.
+- [ ] **Trigger the Railway web deploy** for production and the Larkspur demo. The latest recorded production deploy is `af29c7a` and main `a5ed75d` adds #96 (migration `0033`) and #98. Deploy web manually after backend merges. The worker auto-deploys on push.
 - [ ] Merge GVAS #97 (natural yeses), then deploy web. You can merge it before the deploy above and do a single deploy.
 - [ ] Hold GVAS #99 (scheduling engine V1a, draft, "Do not merge yet"). Merging it runs migration `0035` on the next deploy. V1b–V1e (branches `scheduling-v1b` … `scheduling-v1e`, stacked on V1a) have no PRs yet.
 - [ ] Decide on site branches `devin/1792644805-owner-calendar-views` → `devin/1792677187-team-calendars` (Google Calendar connect, team view). They have no PRs and depend on the scheduling stack.
 - [x] GVAS #96 and #98 are merged. Site #46 and #48 are merged and live on Vercel prod `f82cb5d`.
 - [ ] Confirm the new Telnyx campaign text (matching the #35 consent wording) was approved or submitted. This can't be checked from here.
-- [ ] Set `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` and register the Calendly webhook (`/calendly/events` still returns 404).
+- [ ] Set `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` and register the Calendly webhook. The last recorded webhook probe returned 404.
 - [x] Namecheap: registrant WHOIS verification is done. gudvector.com resolves and returns 200.
 - [x] gudvector.com DNS points at Vercel and serves the current gudvector-site build.
 - [ ] Swap site_url/CORS/Telnyx URLs in the GVAS business config from gudvector-site.vercel.app to gudvector.com. Public checks can't confirm this.
 - [x] Telnyx: toll-free verification is **Verified** (2026-10-08). Customer SMS stays consent-gated.
 - [ ] Fix intake threat-model finding **M1** before building more on the intake path.
 - [ ] Update `docs/roadmap.md`. It doesn't list the owner-texts assistant (#78–#98) or the scheduling engine (#99), and "Office manager" still reads "Not started".
-- [ ] Remove or disable the second Stripe webhook endpoint (`web-demo-5831.up.railway.app`); its host no longer resolves.
+- [ ] Remove or disable the second Stripe webhook endpoint (`web-demo-5831.up.railway.app`). It remains enabled and its host failed DNS in the previous refresh.
 - [ ] Revoke temporary tokens given to Devin (Railway, Stripe test key, Calendly, Cloudflare R2, Telnyx, OpenRouter, Cursor, Vercel).
 - [ ] Stripe: switch to live keys at production cutover. Stripe Connect for multi-tenant payouts is deferred.
 
-## Roadmap (docs/roadmap.md on main, last changed `2348d85` 2026-10-12)
+## Roadmap
 
-- **Done:** field-note intake (text/voice) and append, evidence-only report, review-model benchmark, contradiction pass, DOCX publish and publish-failure notice, worker logging, unmatched-message triggers, R2 storage, checklist evidence annotator, plan custody, email report, Telnyx owner SMS (quotes), cost ceilings, Calendly lookup, free-text quotes, portal quote handoff, hosted customer quotes + Stripe Checkout, customer portal + recurring quotes, AI booking intake, per-business intake profile, owner notification e-mail, owner dashboard backend, customer SMS consent, booked-mode intake (reschedule/cancel, signed decision links), unified owner notification e-mails, channel-agnostic owner understanding step.
-- **In progress:** "Audit follow-ups (2026-09): all four items landed (#23, #25, #26, #28)". The doc does not yet cover the owner-texts work merged in #78–#98, open #97, or the scheduling engine in #99.
-- **Next (ordered):** 1) Letterhead DOCX templates per business. **Needs decision:** who supplies the template and where the binding manifest lives. 2) Office manager owner assistant over Slack/SMS, with every write behind the owner's YES, owner-only, existing keyword commands matched first. Marked "Not started; design review pending". **Needs decision:** D1–D6 in `docs/office_manager.md`. Prerequisite: fix M1. Later: flag cancel/reschedule hidden in customer notes. 3) Retention and redaction of transcripts, media, reports.
-- **Open follow-ups (not built):** Stripe Connect per-business payouts (`businesses.stripe_account_id` unused); contact-form API behind business `public_key`; per-business timezone for Calendly windows/timestamps; customer-editable phone in portal.
-- **Not planned for pilot:** second workspace/owner, auto-distribution outside the thread, workspace-wide auth, field notes/voice/reports over SMS.
+The [roadmap on main](https://github.com/ckoutz/gud-vector-agent-suite/blob/main/docs/roadmap.md) last changed on 2026-10-12 (`2348d85`) and predates the latest owner-text work and scheduling PR.
 
-## Recent changes (merged, last 7 days: since 2026-11-12 08:05 UTC)
+- **Done.** Text and voice field notes, evidence review, DOCX publishing and email, worker logging, R2 storage and plan custody, cost ceilings, Calendly lookup, Slack/Telnyx quotes, hosted quotes and Stripe Checkout, customer portal and recurring quotes, AI booking and per-business intake, owner notifications and dashboard, SMS consent, and reschedule/cancel with signed decision links.
+- **In progress.** The roadmap lists September audit follow-ups here and records all four as landed (#23, #25, #26, #28).
+- **Next in order.** Business-specific DOCX letterhead templates, office manager over Slack/SMS with owner-confirmed writes (design review pending, intake finding M1 is a prerequisite), then retention and redaction of transcripts, media and reports.
+- **Open decisions.** Decide who supplies the DOCX templates and where the binding manifest lives. Resolve D1–D6 in the [office manager design](https://github.com/ckoutz/gud-vector-agent-suite/blob/main/docs/office_manager.md).
+- **Other follow-ups.** Stripe Connect payouts, business-key contact form API, per-business Calendly timezone, and customer-editable phone in the portal.
 
-None in either repo. The last merges were GVAS #98 (2026-10-22 03:55 UTC) and site #46 (2026-10-22 02:43 UTC), now outside the 7-day window.
+## Recent changes
+
+No PRs merged in either repo in the seven days since 2026-11-12 14:06 UTC. The latest merges were GVAS #98 (2026-10-22 03:55 UTC) and gudvector-site #46 (2026-10-22 02:44 UTC).
