@@ -4,7 +4,7 @@
 
 ## Where we are
 
-Railway production's last successful deployment recorded by GitHub is `af29c7a`. GVAS main is `a5ed75d`, so #96 (owner-text customers and invoices, migration `0033`) and #98 (same-business startup check) are **merged and still awaiting a web deploy**. The backend serves `/healthz` (200) and both site domains serve the quote portal. Telnyx toll-free verification is **Verified**. The Stripe sandbox webhook is enabled with seven events. GVAS #97 is ready to merge and #99 is on hold as a draft. Neither repo recorded a merge in the last seven days, and nothing changed since the 2026-11-21 20:11 UTC refresh.
+Railway production's last successful deployment recorded by GitHub is `af29c7a`. GVAS main is `a5ed75d`, so #96 (owner-text customers and invoices, migration `0033`) and #98 (same-business startup check) are **merged and still awaiting a web deploy**. The backend serves `/healthz` (200) and both site domains serve the quote portal. Telnyx toll-free verification is **Verified**. The Stripe sandbox webhook is enabled with seven events. GVAS #97 is ready to merge and #99 is on hold as a draft. Neither repo recorded a merge in the last seven days, and nothing changed since the 2026-11-22 14:10 UTC refresh.
 
 ## Demo pipeline
 
