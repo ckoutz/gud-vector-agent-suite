@@ -1,10 +1,10 @@
 # Güd Vector — Project Status Dashboard
 
-**Last updated 2026-11-25 20:05 UTC**
+**Last updated 2026-11-26 02:05 UTC**
 
 ## Where we are
 
-Railway production's last successful deployment recorded by GitHub is `af29c7a`. GVAS main is `a5ed75d`, so #96 (owner-text customers and invoices, migration `0033`) and #98 (same-business startup check) are **merged and still awaiting a web deploy**. The backend serves `/healthz` (200) and both site domains serve the quote portal. Telnyx toll-free verification is **Verified**. The Stripe sandbox webhook is enabled with seven events. GVAS #97 is ready to merge and #99 is on hold as a draft. Neither repo recorded a merge in the last seven days, and nothing changed since the 2026-11-25 14:05 UTC refresh. The Devin git proxy still returns HTTP 403, so PR state, CI and this commit went through the GitHub API.
+Railway production's last successful deployment recorded by GitHub is `af29c7a`. GVAS main is `a5ed75d`, so #96 (owner-text customers and invoices, migration `0033`) and #98 (same-business startup check) are **merged and still awaiting a web deploy**. The backend serves `/healthz` (200) and both site domains serve the quote portal. Telnyx toll-free verification is **Verified**. The Stripe sandbox webhook is enabled with seven events. GVAS #97 is ready to merge and #99 is on hold as a draft. Neither repo recorded a merge in the last seven days, and nothing changed since the 2026-11-25 20:05 UTC refresh. The Devin git proxy still returns HTTP 403, so PR state, CI and this commit went through the GitHub API.
 
 ## Demo pipeline
 
@@ -13,7 +13,7 @@ Status reflects public GET probes, provider API results, and the last recorded d
 | Step | Status | Note |
 | --- | --- | --- |
 | Contact form | LIVE | Both site homepages return 200. The deployed contact form is wired to Resend. |
-| Calendly | LIVE / BLOCKED | Lookup, availability and booking are deployed. The optional `/calendly/events` webhook returned 404 at 20:05 UTC. Scheduling engine V1a is PR OPEN in draft #99. |
+| Calendly | LIVE / BLOCKED | Lookup, availability and booking are deployed. The optional `/calendly/events` webhook returned 404 at 02:05 UTC. Scheduling engine V1a is PR OPEN in draft #99. |
 | Quote drafting | LIVE / MERGED-NOT-DEPLOYED | Existing Slack and Telnyx owner flows are on `af29c7a`. The owner-text customer and invoice additions in #96 and the startup check in #98 await the web deploy. |
 | Owner approval | LIVE / PR OPEN | Slack/SMS commands, signed e-mail links and dashboard approve/decline are live. Natural "yea"-style yeses are in #97 (PR OPEN). |
 | Email/SMS delivery | LIVE | Resend is wired and Telnyx toll-free verification is **Verified**. Customer SMS requires recorded consent. |
@@ -26,8 +26,8 @@ Status reflects public GET probes, provider API results, and the last recorded d
 
 | Repo | PR | Title | Base | Mergeable | CI | Age | Merge order |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| gud-vector-agent-suite | [#97](https://github.com/ckoutz/gud-vector-agent-suite/pull/97) | Owner texts: natural yeses confirm; a short unclear reply keeps the change waiting | `main` | Clean, mergeable | 4/4 CI passed on `287143e`. | 34d 16h (opened Oct 22 03:23 UTC) | **1.** Merge before the web deploy if bundling with #96 and #98. |
-| gud-vector-agent-suite | [#99](https://github.com/ckoutz/gud-vector-agent-suite/pull/99) | Scheduling engine V1a: the engine, a database no-overlap guarantee, and a per-business switch (Calendly by default) | `main` | Clean, mergeable, **draft** | 4/4 CI passed on `a446d7c`. | 34d 15h (opened Oct 22 04:09 UTC) | **Hold.** The PR says “Do not merge yet.” Migration `0035_scheduling_engine` adds `btree_gist`. |
+| gud-vector-agent-suite | [#97](https://github.com/ckoutz/gud-vector-agent-suite/pull/97) | Owner texts: natural yeses confirm; a short unclear reply keeps the change waiting | `main` | Clean, mergeable | 4/4 CI passed on `287143e`. | 34d 22h (opened Oct 22 03:23 UTC) | **1.** Merge before the web deploy if bundling with #96 and #98. |
+| gud-vector-agent-suite | [#99](https://github.com/ckoutz/gud-vector-agent-suite/pull/99) | Scheduling engine V1a: the engine, a database no-overlap guarantee, and a per-business switch (Calendly by default) | `main` | Clean, mergeable, **draft** | 4/4 CI passed on `a446d7c`. | 34d 21h (opened Oct 22 04:09 UTC) | **Hold.** The PR says “Do not merge yet.” Migration `0035_scheduling_engine` adds `btree_gist`. |
 | gudvector-site | — | No open PRs | — | — | — | — | — |
 
 Both open PRs target `main` independently, so none are stacked. If the stacked branches become PRs, merge #99 → GVAS V1b → V1c → V1d → V1e, then site owner calendar views (`bf9da14`) → team calendars (`97c172b`, Vercel preview).
@@ -38,11 +38,11 @@ Both open PRs target `main` independently, so none are stacked. If the stacked b
 | --- | --- |
 | GVAS main | `a5ed75d` (#98), 2026-10-22 03:55 UTC. Main CI 4/4 passed (ruff, mypy, alembic, pytest). |
 | GVAS Railway production | Latest GitHub deployment `af29c7a` (#95), 2026-10-20 23:19 UTC, `success`. #96 and #98 are absent from the latest recorded deployment. |
-| GVAS Railway HTTP probes | `/health` **404** (363 ms) and fallback `/` **404** (351 ms). The app's `/healthz` returns **200** `{"status":"ok"}` (374 ms). |
+| GVAS Railway HTTP probes | `/health` **404** (373 ms) and fallback `/` **404** (352 ms). The app's `/healthz` returns **200** `{"status":"ok"}` (299 ms). |
 | Larkspur demo on Railway | Latest GitHub deployment `bccabb5`, 2026-10-20 20:42 UTC, `inactive`. Current demo host health is unknown. |
 | gudvector-site main and Vercel production | Main `f82cb5d` (#46), 2026-10-22 02:43 UTC. `Production – gudvector-site` deployed the same commit at 02:44 UTC. |
-| gudvector-site.vercel.app | `/` **200** (275 ms). `/q/nonexistent-token` **200** with “couldn't find” (1522 ms), so the quote route reaches GVAS. `/portal` **200**. |
-| gudvector.com | Resolves to `216.198.79.1`. `/` **200** (301 ms), `/q/nonexistent-token` **200** with “couldn't find” (372 ms), and `www` redirects with **308**. |
+| gudvector-site.vercel.app | `/` **200** (260 ms). `/q/nonexistent-token` **200** with “couldn't find” (1379 ms), so the quote route reaches GVAS. `/portal` **200**. |
+| gudvector.com | Resolves to `216.198.79.1`. `/` **200** (419 ms), `/q/nonexistent-token` **200** with “couldn't find” (311 ms), and `www` redirects with **308**. |
 
 PR and deployment data came from GitHub deployment records. Railway and Vercel runtime commit IDs were inferred from those records.
 
@@ -50,10 +50,10 @@ PR and deployment data came from GitHub deployment records. Railway and Vercel r
 
 | Integration | Status |
 | --- | --- |
-| Calendly | Wired for lookup, availability and booking. Provider runtime is unknown from this pass. `POST /calendly/events` returned 404 at 20:05 UTC (webhook not mounted). |
+| Calendly | Wired for lookup, availability and booking. Provider runtime is unknown from this pass. `POST /calendly/events` returned 404 at 02:05 UTC (webhook not mounted). |
 | Resend | Wired for contact forms, quote links, magic links and owner email. Delivery status is unknown. |
 | Telnyx | Request `f77d0422-bdb9-5f33-9783-2cba342f865c` (+18775411550) is **Verified** (updated 2026-10-08 16:01 UTC). Separate campaign text status is unknown. |
-| Stripe | Sandbox (`livemode=false`). `web-production-9d848.up.railway.app/webhooks/stripe` is `enabled` with **7 events**. The demo endpoint `web-demo-5831.up.railway.app/webhooks/stripe` is also `enabled` with 7 events, but its host does not resolve in DNS (re-checked 20:05 UTC). |
+| Stripe | Sandbox (`livemode=false`). `web-production-9d848.up.railway.app/webhooks/stripe` is `enabled` with **7 events**. The demo endpoint `web-demo-5831.up.railway.app/webhooks/stripe` is also `enabled` with 7 events, but its host does not resolve in DNS (re-checked 02:05 UTC). |
 | Slack | `/slack/events` is wired on GVAS. Live Slack status is unknown; this pass made no Slack calls. |
 | OpenAI | Wired for review, free-text quotes, intake and owner texts. Runtime status is unknown. |
 | Cloudflare R2 | Wired when `GVAS_R2_*` is configured. Runtime status is unknown. |
@@ -66,7 +66,7 @@ PR and deployment data came from GitHub deployment records. Railway and Vercel r
 - [ ] Decide on site branches `devin/1792644805-owner-calendar-views` → `devin/1792677187-team-calendars` (Google Calendar connect, team view). They have no PRs and depend on the scheduling stack.
 - [x] GVAS #96 and #98 are merged. Site #46 and #48 are merged and live on Vercel prod `f82cb5d`.
 - [ ] Confirm whether the new Telnyx campaign text (matching the #35 consent wording) was approved or submitted. This dashboard can't check it.
-- [ ] Set `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` and register the Calendly webhook. `/calendly/events` still returns 404 (20:05 UTC).
+- [ ] Set `GVAS_CALENDLY_WEBHOOK_SIGNING_KEY` and register the Calendly webhook. `/calendly/events` still returns 404 (02:05 UTC).
 - [x] Namecheap: registrant WHOIS verification is done. gudvector.com resolves and returns 200.
 - [x] gudvector.com DNS points at Vercel and serves the current gudvector-site build.
 - [ ] Swap site_url/CORS/Telnyx URLs in the GVAS business config from gudvector-site.vercel.app to gudvector.com. Public checks can't confirm this.
@@ -89,4 +89,4 @@ The [roadmap on main](https://github.com/ckoutz/gud-vector-agent-suite/blob/main
 
 ## Recent changes
 
-Neither repo merged a PR in the seven days since 2026-11-18 20:05 UTC. The latest merges were GVAS #98 (2026-10-22 03:55 UTC) and gudvector-site #46 (2026-10-22 02:44 UTC).
+Neither repo merged a PR in the seven days since 2026-11-19 02:05 UTC. The latest merges were GVAS #98 (2026-10-22 03:55 UTC) and gudvector-site #46 (2026-10-22 02:44 UTC).
